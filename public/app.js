@@ -4,6 +4,8 @@
    GM calls: POST /api/gm  ->  Netlify Function -> Anthropic API
 --------------------------------------------------------- */
 
+(function () {
+
 const cfg = window.LEDGER_CONFIG || {};
 let supabase = null;
 if (cfg.SUPABASE_URL && cfg.SUPABASE_ANON_KEY && cfg.SUPABASE_URL.indexOf("YOUR-PROJECT") === -1) {
@@ -147,13 +149,15 @@ function renderLanding() {
         <div class="choice-card">
           <h3>Enter the Hollow</h3>
           <p>Already have a room code from a friend? Join their table and build your character.</p>
-          <button class="btn wide" onclick="VIEW='join';render()">Join with Code</button>
+          <button class="btn wide" onclick="goToJoin()">Join with Code</button>
         </div>
       </div>
     </div>
   `;
 }
 function startNewCampaign(mode) { MODE = mode; VIEW = 'create'; render(); }
+function goToJoin() { VIEW = 'join'; render(); }
+function goToLanding() { VIEW = 'landing'; render(); }
 
 /* ---------------- CREATE CAMPAIGN ---------------- */
 let createDraft = { name: '', length: 'arc', ruleset: '5e2014', tone: '', seed: '', seedMode: 'blank' };
@@ -171,7 +175,7 @@ function renderCreate() {
         { k: 'long', t: 'Long Campaign', d: 'Open-ended, builds over months' },
       ];
   el('app').innerHTML = `
-    <div class="top-nav"><button class="link-btn" onclick="VIEW='landing';render()">&larr; Back</button></div>
+    <div class="top-nav"><button class="link-btn" onclick="goToLanding()">&larr; Back</button></div>
     <div class="panel" style="max-width:640px;margin:0 auto;">
       <div class="eyebrow">${MODE === 'solo' ? 'New Solo Story' : 'New Group Campaign'}</div>
       <h2>${MODE === 'solo' ? 'Play Solo' : 'Break Ground'}</h2>
@@ -245,7 +249,7 @@ async function submitCreate() {
 /* ---------------- JOIN (group mode only) ---------------- */
 function renderJoin() {
   el('app').innerHTML = `
-    <div class="top-nav"><button class="link-btn" onclick="VIEW='landing';render()">&larr; Back</button></div>
+    <div class="top-nav"><button class="link-btn" onclick="goToLanding()">&larr; Back</button></div>
     <div class="panel" style="max-width:480px;margin:0 auto;">
       <div class="eyebrow">Join Campaign</div>
       <h2>Enter the Hollow</h2>
@@ -331,20 +335,23 @@ function renderCharSetup() {
 function renderSkillRows() {
   el('skillRows').innerHTML = draftChar.skills.map((s, i) => `
     <div class="skill-row">
-      <input type="text" placeholder="Skill name" value="${s.name}" oninput="draftChar.skills[${i}].name=this.value">
-      <input type="number" placeholder="+0" value="${s.mod}" oninput="draftChar.skills[${i}].mod=parseInt(this.value||0)">
+      <input type="text" placeholder="Skill name" value="${s.name}" oninput="setSkillName(${i}, this.value)">
+      <input type="number" placeholder="+0" value="${s.mod}" oninput="setSkillMod(${i}, this.value)">
       <button class="remove-x" onclick="removeSkillRow(${i})">&times;</button>
     </div>`).join('');
 }
 function addSkillRow() { draftChar.skills.push({ name: '', mod: 0 }); renderSkillRows(); }
 function removeSkillRow(i) { draftChar.skills.splice(i, 1); renderSkillRows(); }
+function setSkillName(i, val) { draftChar.skills[i].name = val; }
+function setSkillMod(i, val) { draftChar.skills[i].mod = parseInt(val || 0); }
 function renderInvRows() {
   el('invRows').innerHTML = draftChar.inventory.map((it, i) => `
     <div class="skill-row">
-      <input type="text" placeholder="Item" value="${it}" style="flex:1;" oninput="draftChar.inventory[${i}]=this.value">
+      <input type="text" placeholder="Item" value="${it}" style="flex:1;" oninput="setInvItem(${i}, this.value)">
       <button class="remove-x" onclick="removeInvRow(${i})">&times;</button>
     </div>`).join('');
 }
+function setInvItem(i, val) { draftChar.inventory[i] = val; }
 function addInvRow() { draftChar.inventory.push(''); renderInvRows(); }
 function removeInvRow(i) { draftChar.inventory.splice(i, 1); renderInvRows(); }
 
@@ -655,5 +662,35 @@ function renderHelpTab() {
   `;
 }
 
+/* ---------------- Expose handlers referenced by inline HTML attributes ---------------- */
+/* Everything else stays scoped to this closure so it can't collide with
+   globals declared by browser extensions or other scripts on the page. */
+window.startNewCampaign = startNewCampaign;
+window.goToJoin = goToJoin;
+window.goToLanding = goToLanding;
+window.setLen = setLen;
+window.setSeedMode = setSeedMode;
+window.submitCreate = submitCreate;
+window.submitJoin = submitJoin;
+window.copyCode = copyCode;
+window.addSkillRow = addSkillRow;
+window.removeSkillRow = removeSkillRow;
+window.setSkillName = setSkillName;
+window.setSkillMod = setSkillMod;
+window.addInvRow = addInvRow;
+window.removeInvRow = removeInvRow;
+window.setInvItem = setInvItem;
+window.submitCharacter = submitCharacter;
+window.setTab = setTab;
+window.advanceSession = advanceSession;
+window.submitAction = submitAction;
+window.askGM = askGM;
+window.hpDelta = hpDelta;
+window.addItem = addItem;
+window.removeItem = removeItem;
+window.saveNotes = saveNotes;
+
 /* ---------------- Boot ---------------- */
 if (checkConfigured()) render();
+
+})();
