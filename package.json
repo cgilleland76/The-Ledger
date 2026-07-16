@@ -1,0 +1,12 @@
+{
+  "name": "the-ledger-tabletop-hub",
+  "version": "1.0.0",
+  "description": "A remote tabletop hub with solo and group play, AI game-mastered by Claude.",
+  "private": true,
+  "scripts": {
+    "dev": "netlify dev"
+  },
+  "devDependencies": {
+    "netlify-cli": "^17.0.0"
+  }
+}
