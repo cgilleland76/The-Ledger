@@ -437,7 +437,7 @@ function renderStoryTab() {
   body.innerHTML = `
     <div class="game-grid">
       <div>
-        <div class="log" id="logBox">${LOG.map(entryHTML).join('') || '<p class="thinking">The story hasn\\'t begun yet...</p>'}</div>
+        <div class="log" id="logBox">${LOG.map(entryHTML).join('') || '<p class="thinking">The story hasn&#39;t begun yet...</p>'}</div>
         <div class="composer">
           <input type="text" id="composerInput" placeholder="Type an action, say something in character, or use /roll +modifier..." onkeydown="if(event.key==='Enter') submitAction()">
           <button class="btn solid" onclick="submitAction()">Send</button>
