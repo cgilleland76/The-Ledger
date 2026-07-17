@@ -22,6 +22,12 @@ let MY_CHAR_ID = null;
 let ACTIVE_TAB = 'story';
 let draftChar = null;
 let realtimeChannel = null;
+let GM_PENDING = false;
+let GM_ABORT = null;
+let charGenMode = 'auto'; // 'auto' | 'manual'
+let CHARGEN_PENDING = false;
+let CHARGEN_ABORT = null;
+let CHARGEN_ERROR = '';
 
 const el = id => document.getElementById(id);
 const uid = (n = 8) => Array.from({ length: n }, () => "abcdefghjkmnpqrstuvwxyz23456789"[Math.floor(Math.random() * 32)]).join('');
@@ -40,11 +46,27 @@ function checkConfigured() {
   return true;
 }
 
+/* ---------------- Capacity limits ---------------- */
+const MAX_PLAYERS_PER_ROOM = 6;
+const MAX_TOTAL_ROOMS = 20;
+
 /* ---------------- Supabase helpers ---------------- */
 async function dbGetRoom(code) {
   const { data, error } = await supabase.from('rooms').select('*').eq('code', code).maybeSingle();
   if (error) { console.error(error); return null; }
   return data;
+}
+async function dbCountRooms() {
+  const { count, error } = await supabase.from('rooms').select('code', { count: 'exact', head: true });
+  if (error) { console.error(error); return 0; }
+  return count || 0;
+}
+async function dbEvictOldestRoomIfAtCapacity() {
+  const total = await dbCountRooms();
+  if (total < MAX_TOTAL_ROOMS) return;
+  const { data, error } = await supabase.from('rooms').select('code').order('created_at', { ascending: true }).limit(1);
+  if (error || !data || !data.length) { console.error(error); return; }
+  await supabase.from('rooms').delete().eq('code', data[0].code);
 }
 async function dbInsertRoom(code, mode, meta) {
   const { error } = await supabase.from('rooms').insert({ code, mode, meta });
@@ -134,7 +156,7 @@ function renderLanding() {
       </svg>
       <div class="eyebrow">Remote Tabletop</div>
       <h1>The Ledger</h1>
-      <p class="sub">A shared table for you and your party, or a story just for you — either way, a Claude-powered Game Master keeps things moving.</p>
+      <p class="sub">A shared table for you and your party, or a story just for you — either way, a tireless Game Master keeps the tale moving.</p>
       <div class="choice-row">
         <div class="choice-card">
           <h3>Play Solo</h3>
@@ -209,7 +231,7 @@ function renderCreate() {
       <div class="field">
         <label>Opening Story Seed</label>
         <div class="radio-grid" style="margin-bottom:10px;">
-          <div class="radio-card ${createDraft.seedMode === 'blank' ? 'active' : ''}" onclick="setSeedMode('blank')"><b>Let Claude invent it</b><span>Fresh hook from your genre/tone</span></div>
+          <div class="radio-card ${createDraft.seedMode === 'blank' ? 'active' : ''}" onclick="setSeedMode('blank')"><b>Let the GM invent it</b><span>Fresh hook from your genre/tone</span></div>
           <div class="radio-card ${createDraft.seedMode === 'custom' ? 'active' : ''}" onclick="setSeedMode('custom')"><b>I'll write it</b><span>Bring your own premise</span></div>
         </div>
         ${createDraft.seedMode === 'custom' ? `<textarea id="seed" placeholder="Describe the opening situation, setting, and hook...">${createDraft.seed}</textarea>` : `<p class="helptext">Leave this — once you continue, the GM will generate an opening scene from the genre and tone above.</p>`}
@@ -241,6 +263,7 @@ async function submitCreate() {
     openingGenerated: false
   };
   ROOM = code;
+  await dbEvictOldestRoomIfAtCapacity();
   await dbInsertRoom(code, MODE, META);
   VIEW = 'charsetup';
   render();
@@ -283,16 +306,24 @@ async function submitJoin() {
 function blankChar() {
   return {
     player: '', name: '', race: '', klass: '', level: 1, hp: 10, maxhp: 10, ac: 10,
+    str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10,
     skills: [{ name: '', mod: 0 }], inventory: [''], spells: [], notes: ''
   };
 }
+function abilityMod(score) { return Math.floor(((score ?? 10) - 10) / 2); }
+function fmtMod(n) { return (n >= 0 ? '+' : '') + n; }
+function passivePerception(c) { return 10 + abilityMod(c.wis); }
+function initiativeBonus(c) { return abilityMod(c.dex); }
 function renderCharSetup() {
-  if (!draftChar) draftChar = blankChar();
+  if (!draftChar) { draftChar = blankChar(); charGenMode = 'auto'; CHARGEN_ERROR = ''; }
   const d = draftChar;
   el('app').innerHTML = `
     <div class="top-nav">
-      <span class="badge">${MODE === 'solo' ? 'Solo Story' : 'Room ' + ROOM}</span>
-      ${MODE === 'group' ? `<button class="link-btn" onclick="copyCode()">Copy invite code</button>` : ''}
+      <span class="badge">${MODE === 'solo' ? 'Solo Story' : 'Room <span class="room-code">' + ROOM + '</span>'}</span>
+      <div style="display:flex;gap:14px;align-items:center;">
+        ${MODE === 'group' ? `<button class="link-btn" onclick="copyCode()">Copy invite code</button>` : ''}
+        <button class="link-btn" onclick="leaveTable()">Leave</button>
+      </div>
     </div>
     <div class="panel" style="max-width:680px;margin:0 auto;">
       <div class="eyebrow">Build Your Character</div>
@@ -303,14 +334,41 @@ function renderCharSetup() {
       <div class="field"><label>Character Name</label><input type="text" id="cCharName" value="${d.name}"></div>
 
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
-        <div class="field"><label>Race / Species</label><input type="text" id="cRace" value="${d.race}"></div>
-        <div class="field"><label>Class</label><input type="text" id="cClass" value="${d.klass}"></div>
+        <div class="field"><label>Race / Species ${charGenMode === 'auto' ? '(optional — leave blank to let the GM choose)' : ''}</label><input type="text" id="cRace" value="${d.race}"></div>
+        <div class="field"><label>Class ${charGenMode === 'auto' ? '(optional — leave blank to let the GM choose)' : ''}</label><input type="text" id="cClass" value="${d.klass}"></div>
+      </div>
+
+      <div class="field">
+        <label>Character Creation</label>
+        <div class="radio-grid" style="margin-bottom:10px;">
+          <div class="radio-card ${charGenMode === 'auto' ? 'active' : ''}" onclick="setCharGenMode('auto')"><b>Let the GM build it</b><span>Auto-fills ability scores, HP/AC, skills &amp; starting gear for your class and campaign</span></div>
+          <div class="radio-card ${charGenMode === 'manual' ? 'active' : ''}" onclick="setCharGenMode('manual')"><b>I'll roll my own</b><span>Enter everything yourself below</span></div>
+        </div>
+        ${charGenMode === 'auto' ? (CHARGEN_PENDING
+          ? `<div class="gm-pending"><span class="thinking">The GM is building your character<span class="thinking-dots"><span>.</span><span>.</span><span>.</span></span></span><button class="btn rust" onclick="cancelCharGen()">Cancel</button></div>`
+          : `<button class="btn" onclick="generateCharacter()">${d.__generated ? 'Regenerate Character' : 'Generate Character'}</button>
+             <p class="helptext" style="margin-top:6px;">Everything below is generated for you and fully editable — review it before you begin.</p>`
+        ) : ''}
+        ${CHARGEN_ERROR ? `<div class="error-text" style="margin-top:8px;">${escapeHtml(CHARGEN_ERROR)}</div>` : ''}
       </div>
 
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;">
         <div class="field"><label>Level</label><input type="text" id="cLevel" value="${d.level}"></div>
         <div class="field"><label>Max HP</label><input type="text" id="cMaxHP" value="${d.maxhp}"></div>
         <div class="field"><label>AC</label><input type="text" id="cAC" value="${d.ac}"></div>
+      </div>
+
+      <div class="field">
+        <label>Ability Scores</label>
+        <div class="ability-grid">
+          <div><label>STR</label><input type="text" id="cSTR" value="${d.str}"></div>
+          <div><label>DEX</label><input type="text" id="cDEX" value="${d.dex}"></div>
+          <div><label>CON</label><input type="text" id="cCON" value="${d.con}"></div>
+          <div><label>INT</label><input type="text" id="cINT" value="${d.int}"></div>
+          <div><label>WIS</label><input type="text" id="cWIS" value="${d.wis}"></div>
+          <div><label>CHA</label><input type="text" id="cCHA" value="${d.cha}"></div>
+        </div>
+        <p class="helptext">Passive Perception and Initiative are calculated from these automatically.</p>
       </div>
 
       <div class="field skills-editor">
@@ -327,6 +385,7 @@ function renderCharSetup() {
 
       <div class="field"><label>Notes / Backstory (optional)</label><textarea id="cNotes">${d.notes}</textarea></div>
 
+      <div id="charErr" class="error-text"></div>
       <button class="btn solid wide" onclick="submitCharacter()">${MODE === 'solo' ? 'Begin' : 'Join the Table'}</button>
     </div>
   `;
@@ -355,7 +414,78 @@ function setInvItem(i, val) { draftChar.inventory[i] = val; }
 function addInvRow() { draftChar.inventory.push(''); renderInvRows(); }
 function removeInvRow(i) { draftChar.inventory.splice(i, 1); renderInvRows(); }
 
+function setCharGenMode(m) { charGenMode = m; CHARGEN_ERROR = ''; renderCharSetup(); }
+function cancelCharGen() { if (CHARGEN_ABORT) CHARGEN_ABORT.abort(); }
+
+function parseCharacterJSON(text) {
+  const cleaned = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '');
+  const start = cleaned.indexOf('{');
+  const end = cleaned.lastIndexOf('}');
+  if (start === -1 || end === -1) throw new Error("The GM's response wasn't valid JSON.");
+  return JSON.parse(cleaned.slice(start, end + 1));
+}
+
+async function generateCharacter() {
+  if (CHARGEN_PENDING) return;
+  CHARGEN_PENDING = true;
+  CHARGEN_ERROR = '';
+  CHARGEN_ABORT = new AbortController();
+  const raceHint = (el('cRace')?.value || '').trim();
+  const classHint = (el('cClass')?.value || '').trim();
+  renderCharSetup();
+
+  const prompt = `Generate a complete tabletop RPG character sheet for a new level 1 character in a ${MODE === 'solo' ? 'solo story' : 'campaign'} titled "${META.name}". Ruleset: ${META.ruleset}. Genre/tone: ${META.tone || 'unspecified — pick something fitting'}.
+${raceHint ? `The player wants a ${raceHint} character.` : 'Choose a race/species that fits the tone.'}
+${classHint ? `The player wants to play a ${classHint}.` : 'Choose a class that fits the tone.'}
+
+Respond with ONLY a single JSON object, no markdown code fences, no commentary, matching exactly this shape:
+{"race":"string","klass":"string","str":10,"dex":10,"con":10,"int":10,"wis":10,"cha":10,"maxhp":10,"ac":10,"skills":[{"name":"string","mod":0}],"inventory":["string"],"notes":"one or two sentence backstory hook"}
+
+Use sensible 5e-appropriate ability scores for the class (e.g. the standard array 15/14/13/12/10/8 assigned to fit the class), a reasonable starting HP and AC for a level 1 character, 3-5 class-appropriate skills with realistic modifiers, and 4-8 pieces of starting gear specifically appropriate to that class and the campaign's tone — not generic fantasy-adventurer gear unless the tone calls for it.`;
+
+  try {
+    const text = await fetchGM(prompt, CHARGEN_ABORT.signal);
+    const parsed = parseCharacterJSON(text);
+    draftChar = {
+      ...draftChar,
+      race: parsed.race || draftChar.race,
+      klass: parsed.klass || draftChar.klass,
+      str: parsed.str ?? draftChar.str,
+      dex: parsed.dex ?? draftChar.dex,
+      con: parsed.con ?? draftChar.con,
+      int: parsed.int ?? draftChar.int,
+      wis: parsed.wis ?? draftChar.wis,
+      cha: parsed.cha ?? draftChar.cha,
+      maxhp: parsed.maxhp ?? draftChar.maxhp,
+      hp: parsed.maxhp ?? draftChar.maxhp,
+      ac: parsed.ac ?? draftChar.ac,
+      skills: Array.isArray(parsed.skills) && parsed.skills.length ? parsed.skills : draftChar.skills,
+      inventory: Array.isArray(parsed.inventory) && parsed.inventory.length ? parsed.inventory : draftChar.inventory,
+      notes: parsed.notes || draftChar.notes,
+      __generated: true,
+    };
+  } catch (e) {
+    if (e.name !== 'AbortError') {
+      console.error(e);
+      CHARGEN_ERROR = `Couldn't generate a character: ${e.message}. Try again, or switch to "I'll roll my own."`;
+    }
+  } finally {
+    CHARGEN_PENDING = false;
+    CHARGEN_ABORT = null;
+    renderCharSetup();
+  }
+}
+
 async function submitCharacter() {
+  if (MODE === 'group') {
+    const existing = await dbGetCharacters(ROOM);
+    const alreadyMine = MY_CHAR_ID && existing.some(r => r.id === MY_CHAR_ID);
+    if (!alreadyMine && existing.length >= MAX_PLAYERS_PER_ROOM) {
+      el('charErr').innerText = `This table is full (max ${MAX_PLAYERS_PER_ROOM} players).`;
+      return;
+    }
+  }
+  el('charErr').innerText = '';
   draftChar.player = el('pName').value.trim() || 'Player';
   draftChar.name = el('cCharName').value.trim() || 'Unnamed';
   draftChar.race = el('cRace').value.trim();
@@ -364,6 +494,12 @@ async function submitCharacter() {
   draftChar.maxhp = parseInt(el('cMaxHP').value) || 10;
   draftChar.hp = draftChar.maxhp;
   draftChar.ac = parseInt(el('cAC').value) || 10;
+  draftChar.str = parseInt(el('cSTR').value) || 10;
+  draftChar.dex = parseInt(el('cDEX').value) || 10;
+  draftChar.con = parseInt(el('cCON').value) || 10;
+  draftChar.int = parseInt(el('cINT').value) || 10;
+  draftChar.wis = parseInt(el('cWIS').value) || 10;
+  draftChar.cha = parseInt(el('cCHA').value) || 10;
   draftChar.notes = el('cNotes').value.trim();
   draftChar.skills = draftChar.skills.filter(s => s.name.trim());
   draftChar.inventory = draftChar.inventory.filter(i => i.trim());
@@ -397,6 +533,15 @@ function copyCode() {
   const b = event.target; const old = b.innerText; b.innerText = 'Copied!'; setTimeout(() => b.innerText = old, 1200);
 }
 
+function leaveTable() {
+  if (realtimeChannel) { supabase.removeChannel(realtimeChannel); realtimeChannel = null; }
+  if (GM_ABORT) GM_ABORT.abort();
+  ROOM = null; META = null; ROSTER = {}; LOG = []; MY_CHAR_ID = null; draftChar = null;
+  MODE = 'group'; ACTIVE_TAB = 'story';
+  VIEW = 'landing';
+  render();
+}
+
 /* ---------------- GAME SCREEN ---------------- */
 const lengthLabel = { oneshot: 'One-Shot', arc: 'Short Arc', long: 'Long Campaign' };
 
@@ -408,13 +553,14 @@ function renderGame() {
     <div class="game-header">
       <div>
         <h1>${META.name}</h1>
-        ${MODE === 'group' ? `<span class="badge">Room ${ROOM}</span>` : `<span class="badge">Solo Story</span>`}
+        ${MODE === 'group' ? `<span class="badge">Room <span class="room-code">${ROOM}</span></span>` : `<span class="badge">Solo Story</span>`}
         <span class="badge">${lengthLabel[META.length]}</span>
         <span class="badge">Session ${META.session}</span>
       </div>
       <div style="display:flex;gap:8px;">
         ${MODE === 'group' ? `<button class="btn" onclick="copyCode()">Copy Invite Code</button>` : ''}
         <button class="btn rust" onclick="advanceSession()">Advance Session</button>
+        <button class="btn" onclick="leaveTable()">Leave Table</button>
       </div>
     </div>
     <div class="tabs">
@@ -441,6 +587,9 @@ async function advanceSession() {
 function renderStoryTab() {
   const body = el('tabBody');
   const sideHTML = MODE === 'group' ? `<div class="side-panel" id="rosterMini"></div>` : `<div class="side-panel">${sheetMiniHTML()}</div>`;
+  const gmControlsHTML = GM_PENDING
+    ? `<div class="gm-pending"><span class="thinking">The GM is thinking<span class="thinking-dots"><span>.</span><span>.</span><span>.</span></span></span><button class="btn rust" onclick="cancelGM()">Cancel</button></div>`
+    : `<button class="btn" id="gmBtn" onclick="askGM()">Ask the GM to continue the story</button>`;
   body.innerHTML = `
     <div class="game-grid">
       <div>
@@ -451,7 +600,7 @@ function renderStoryTab() {
         </div>
         <div class="hint-bar">Try <code>/roll +5</code> to roll a d20 and add your modifier &middot; <code>/roll +3 adv</code> for advantage &middot; plain text is narrated as your action.</div>
         <div style="margin-top:10px;">
-          <button class="btn" id="gmBtn" onclick="askGM()">Ask the GM to continue the story</button>
+          ${gmControlsHTML}
         </div>
       </div>
       ${sideHTML}
@@ -460,6 +609,11 @@ function renderStoryTab() {
   if (MODE === 'group') renderRosterMini();
   const box = el('logBox'); if (box) box.scrollTop = box.scrollHeight;
 }
+function abilityGridHTML(c) {
+  const abilities = [['STR', c.str], ['DEX', c.dex], ['CON', c.con], ['INT', c.int], ['WIS', c.wis], ['CHA', c.cha]];
+  return `<div class="stat-grid">${abilities.map(([k, v]) => `<div class="stat-chip"><span class="k">${k}</span><span class="v">${v ?? 10} (${fmtMod(abilityMod(v))})</span></div>`).join('')}</div>
+    <div class="derived-row"><span><b>Passive Perception</b> ${passivePerception(c)}</span><span><b>Initiative</b> ${fmtMod(initiativeBonus(c))}</span></div>`;
+}
 function sheetMiniHTML() {
   const c = ROSTER[MY_CHAR_ID]; if (!c) return '';
   const pct = Math.max(0, Math.min(100, Math.round((c.hp / c.maxhp) * 100)));
@@ -467,6 +621,7 @@ function sheetMiniHTML() {
     <div class="rname"><b>${c.name}</b><span class="rclass">Lv${c.level} ${c.race} ${c.klass}</span></div>
     <div class="hpbar"><div class="hpbar-fill ${pct < 30 ? 'low' : ''}" style="width:${pct}%"></div></div>
     <div class="hprow"><span>HP ${c.hp}/${c.maxhp}</span><span>AC ${c.ac}</span></div>
+    ${abilityGridHTML(c)}
   </div>`;
 }
 function entryHTML(e) {
@@ -484,6 +639,7 @@ function renderRosterMini() {
       <div class="rname"><b>${c.name}</b><span class="rclass">Lv${c.level} ${c.race} ${c.klass}</span></div>
       <div class="hpbar"><div class="hpbar-fill ${pct < 30 ? 'low' : ''}" style="width:${pct}%"></div></div>
       <div class="hprow"><span>HP ${c.hp}/${c.maxhp}</span><span>AC ${c.ac}</span></div>
+      ${abilityGridHTML(c)}
     </div>`;
   }).join('');
 }
@@ -519,12 +675,51 @@ async function submitAction() {
   render();
 }
 
-async function askGM() {
-  const btn = el('gmBtn'); if (btn) { btn.disabled = true; btn.innerText = 'The GM is thinking...'; }
+async function fetchGM(prompt, signal) {
+  const resp = await fetch('/api/gm', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt }),
+    signal,
+  });
+  const data = await resp.json();
+  if (!resp.ok || data.error) throw new Error(data.error || `Request failed (${resp.status})`);
+  return data.text || '';
+}
+
+async function callGM(prompt, fallbackEntry) {
+  GM_PENDING = true;
+  GM_ABORT = new AbortController();
+  if (VIEW === 'game') render();
+  let entry;
   try {
-    const recent = LOG.slice(-30).map(e => `${e.author} (${e.type}): ${e.text}`).join('\n');
-    const party = Object.values(ROSTER).map(c => `${c.name} — Lv${c.level} ${c.race} ${c.klass}, HP ${c.hp}/${c.maxhp}, AC ${c.ac}, inventory: ${(c.inventory || []).join(', ') || 'none'}`).join('\n');
-    const prompt = `You are the Game Master for a tabletop RPG ${MODE === 'solo' ? 'solo story' : 'session'} titled "${META.name}".
+    const text = await fetchGM(prompt, GM_ABORT.signal);
+    entry = { id: uid(6), author: 'Game Master', type: 'gm', text: text || '(The GM pauses, gathering thoughts... try again in a moment.)' };
+  } catch (e) {
+    if (e.name === 'AbortError') {
+      entry = { id: uid(6), author: 'The Ledger', type: 'system', text: 'Cancelled — ' + fallbackEntry };
+    } else {
+      console.error(e);
+      entry = { id: uid(6), author: 'The Ledger', type: 'system', text: `The GM could not be reached: ${e.message}` };
+    }
+  } finally {
+    GM_PENDING = false;
+    GM_ABORT = null;
+  }
+  await dbInsertLog(ROOM, entry);
+  LOG.push({ ...entry, ts: Date.now() });
+  if (VIEW === 'game') render();
+}
+
+function cancelGM() {
+  if (GM_ABORT) GM_ABORT.abort();
+}
+
+async function askGM() {
+  if (GM_PENDING) return;
+  const recent = LOG.slice(-30).map(e => `${e.author} (${e.type}): ${e.text}`).join('\n');
+  const party = Object.values(ROSTER).map(c => `${c.name} — Lv${c.level} ${c.race} ${c.klass}, HP ${c.hp}/${c.maxhp}, AC ${c.ac}, inventory: ${(c.inventory || []).join(', ') || 'none'}`).join('\n');
+  const prompt = `You are the Game Master for a tabletop RPG ${MODE === 'solo' ? 'solo story' : 'session'} titled "${META.name}".
 Ruleset: ${META.ruleset}. Tone/genre: ${META.tone || 'unspecified — infer something fitting'}. Length: ${lengthLabel[META.length]}.
 ${META.seed ? 'Opening premise the GM previously established: ' + META.seed : ''}
 ${MODE === 'solo' ? 'Character' : 'Party'}:
@@ -535,34 +730,17 @@ ${recent}
 
 Continue the story. Narrate consequences of the most recent action(s)/roll(s) in 2-4 short paragraphs, stay consistent with everything established, and end by presenting clear options or an open question. Do not roll dice yourself or invent skill-check results — if a roll is needed, ask the player to use /roll. Never resolve combat or damage on your own initiative without the player(s) acting first. Keep it vivid but concise.`;
 
-    const resp = await fetch('/api/gm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt }) });
-    const data = await resp.json();
-    const entry = { id: uid(6), author: 'Game Master', type: 'gm', text: data.text || '(The GM pauses, gathering thoughts... try again in a moment.)' };
-    await dbInsertLog(ROOM, entry);
-    LOG.push({ ...entry, ts: Date.now() });
-    render();
-  } catch (e) {
-    console.error(e);
-    const entry = { id: uid(6), author: 'The Ledger', type: 'system', text: 'The GM could not be reached. Try again.' };
-    LOG.push({ ...entry, ts: Date.now() });
-    render();
-  }
+  await callGM(prompt, 'the GM was not asked to continue.');
 }
 
 async function generateOpening() {
-  try {
-    const party = Object.values(ROSTER).map(c => `${c.name} — Lv${c.level} ${c.race} ${c.klass}`).join('\n');
-    const prompt = META.seedMode === 'custom' && META.seed
-      ? `Open the ${MODE === 'solo' ? 'solo story' : 'campaign'} "${META.name}" (tone: ${META.tone || 'unspecified'}) using this premise: ${META.seed}\n\n${MODE === 'solo' ? 'Character' : 'Party'}:\n${party}\n\nWrite an evocative opening scene (3-5 paragraphs) that establishes the setting and hooks the ${MODE === 'solo' ? 'character' : 'party'} into action, ending with a clear prompt for what they do first.`
-      : `Invent a fresh, original opening scene for a new tabletop ${MODE === 'solo' ? 'solo story' : 'campaign'} called "${META.name}". Genre/tone: ${META.tone || 'your choice — pick something fitting and interesting'}. Ruleset: ${META.ruleset}.\n\n${MODE === 'solo' ? 'Character' : 'Party'}:\n${party}\n\nWrite an evocative opening scene (3-5 paragraphs) establishing setting, stakes, and a hook, ending with a clear prompt for what they do first. Make it feel distinct, not generic fantasy-tavern-start unless the tone specifically calls for it.`;
+  if (GM_PENDING) return;
+  const party = Object.values(ROSTER).map(c => `${c.name} — Lv${c.level} ${c.race} ${c.klass}`).join('\n');
+  const prompt = META.seedMode === 'custom' && META.seed
+    ? `Open the ${MODE === 'solo' ? 'solo story' : 'campaign'} "${META.name}" (tone: ${META.tone || 'unspecified'}) using this premise: ${META.seed}\n\n${MODE === 'solo' ? 'Character' : 'Party'}:\n${party}\n\nWrite an evocative opening scene (3-5 paragraphs) that establishes the setting and hooks the ${MODE === 'solo' ? 'character' : 'party'} into action, ending with a clear prompt for what they do first.`
+    : `Invent a fresh, original opening scene for a new tabletop ${MODE === 'solo' ? 'solo story' : 'campaign'} called "${META.name}". Genre/tone: ${META.tone || 'your choice — pick something fitting and interesting'}. Ruleset: ${META.ruleset}.\n\n${MODE === 'solo' ? 'Character' : 'Party'}:\n${party}\n\nWrite an evocative opening scene (3-5 paragraphs) establishing setting, stakes, and a hook, ending with a clear prompt for what they do first. Make it feel distinct, not generic fantasy-tavern-start unless the tone specifically calls for it.`;
 
-    const resp = await fetch('/api/gm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt }) });
-    const data = await resp.json();
-    const entry = { id: uid(6), author: 'Game Master', type: 'gm', text: data.text || 'The GM will open the scene shortly — ask them to continue if nothing appears.' };
-    await dbInsertLog(ROOM, entry);
-    LOG.push({ ...entry, ts: Date.now() });
-    if (VIEW === 'game') render();
-  } catch (e) { console.error(e); }
+  await callGM(prompt, 'no opening scene was generated. Use "Ask the GM to continue" when ready.');
 }
 
 /* ---------------- PARTY TAB (group mode) ---------------- */
@@ -576,6 +754,7 @@ function renderPartyTab() {
           <div class="rclass">Lv${c.level} ${c.race} ${c.klass}</div>
           <div class="hpbar"><div class="hpbar-fill ${pct < 30 ? 'low' : ''}" style="width:${pct}%"></div></div>
           <div class="hprow"><span>HP ${c.hp}/${c.maxhp}</span><span>AC ${c.ac}</span></div>
+          ${abilityGridHTML(c)}
           ${(c.inventory && c.inventory.length) ? `<div class="helptext" style="margin-top:8px;"><b style="color:var(--parchment-dim)">Carries:</b> ${c.inventory.join(', ')}</div>` : ''}
         </div>`;
       }).join('')}
@@ -596,6 +775,7 @@ function renderSheetTab() {
         <div class="sheet-stat"><div class="label">AC</div><div class="val">${c.ac}</div></div>
         <div class="sheet-stat"><div class="label">Level</div><div class="val">${c.level}</div></div>
       </div>
+      ${abilityGridHTML(c)}
       <div class="mini-btns" style="max-width:260px;margin-bottom:20px;">
         <button class="mini-btn" onclick="hpDelta(-1)">HP -1</button>
         <button class="mini-btn" onclick="hpDelta(-5)">HP -5</button>
@@ -673,6 +853,7 @@ window.setSeedMode = setSeedMode;
 window.submitCreate = submitCreate;
 window.submitJoin = submitJoin;
 window.copyCode = copyCode;
+window.leaveTable = leaveTable;
 window.addSkillRow = addSkillRow;
 window.removeSkillRow = removeSkillRow;
 window.setSkillName = setSkillName;
@@ -681,10 +862,14 @@ window.addInvRow = addInvRow;
 window.removeInvRow = removeInvRow;
 window.setInvItem = setInvItem;
 window.submitCharacter = submitCharacter;
+window.setCharGenMode = setCharGenMode;
+window.generateCharacter = generateCharacter;
+window.cancelCharGen = cancelCharGen;
 window.setTab = setTab;
 window.advanceSession = advanceSession;
 window.submitAction = submitAction;
 window.askGM = askGM;
+window.cancelGM = cancelGM;
 window.hpDelta = hpDelta;
 window.addItem = addItem;
 window.removeItem = removeItem;
