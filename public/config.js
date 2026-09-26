@@ -7,4 +7,6 @@
 window.LEDGER_CONFIG = {
   SUPABASE_URL: "https://jmhgkbeqvbbxrztkvenb.supabase.co",
   SUPABASE_ANON_KEY: "sb_publishable_sLJhcEDWSBYAORmiL85VpA_PkNak436",
+  // Where the Feedback button / footer / Help box send email. Leave blank to hide them.
+  CONTACT_EMAIL: "cgilleland76@gmail.com",
 };

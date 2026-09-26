@@ -84,6 +84,15 @@ this file is never committed).
 
 ---
 
+
+## Feedback button
+
+Every screen shows a floating **✉ Feedback** button, a footer line, and (in-game) a box in the Field Notes tab.
+All of them open a pre-filled `mailto:` link that includes the current screen, plus room code and campaign
+name when mid-game. Change the address with `CONTACT_EMAIL` in `public/config.js` (blank hides the feedback UI).
+`mailto:` needs a mail client on the visitor's device; a Netlify Function or Supabase `feedback` table would be
+the upgrade if you want a real form.
+
 ## How it works
 
 - **Solo mode:** creates a room with `mode: 'solo'`, skips the invite-code

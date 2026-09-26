@@ -134,12 +134,50 @@ function recallCharacter(code) {
 }
 
 function render() {
+  renderView();
+  const app = el('app');
+  if (app && CONTACT_EMAIL) app.insertAdjacentHTML('beforeend', feedbackFooterHTML());
+  renderFeedbackFab();
+}
+function renderView() {
   if (VIEW === 'landing') return renderLanding();
   if (VIEW === 'modepick') return renderModePick();
   if (VIEW === 'create') return renderCreate();
   if (VIEW === 'join') return renderJoin();
   if (VIEW === 'charsetup') return renderCharSetup();
   if (VIEW === 'game') return renderGame();
+}
+
+/* ---------------- Feedback / contact ---------------- */
+const CONTACT_EMAIL = (cfg.CONTACT_EMAIL || '').trim();
+const escapeAttr = s => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+function feedbackMailto() {
+  const screens = { landing: 'Home', modepick: 'Mode select', create: 'Create campaign', join: 'Join with code', charsetup: 'Character setup', game: 'In game (' + ACTIVE_TAB + ' tab)' };
+  const lines = ['(Describe the bug or suggestion here)', '', '', '---', 'Screen: ' + (screens[VIEW] || VIEW)];
+  if (ROOM) lines.push('Room code: ' + ROOM);
+  if (META && META.name) lines.push('Campaign: ' + META.name);
+  lines.push('Browser: ' + navigator.userAgent);
+  return `mailto:${CONTACT_EMAIL}?subject=${encodeURIComponent('The Ledger feedback')}&body=${encodeURIComponent(lines.join('\n'))}`;
+}
+function renderFeedbackFab() {
+  let fab = el('feedbackFab');
+  if (!CONTACT_EMAIL) { if (fab) fab.remove(); return; }
+  if (!fab) {
+    fab = document.createElement('a');
+    fab.id = 'feedbackFab';
+    fab.className = 'feedback-fab';
+    fab.textContent = '✉ Feedback';
+    document.body.appendChild(fab);
+  }
+  fab.href = feedbackMailto();
+}
+function feedbackFooterHTML() {
+  return `<div class="footer-contact">Found a bug or have a suggestion? <a href="${escapeAttr(feedbackMailto())}">Email ${escapeAttr(CONTACT_EMAIL)}</a></div>`;
+}
+function feedbackBoxHTML() {
+  if (!CONTACT_EMAIL) return '';
+  return `<div class="feedback-box"><h3>Feedback</h3><p class="helptext">Something broken, confusing, or missing? Send a note — it pre-fills which screen and room you were on.</p><a class="btn" href="${escapeAttr(feedbackMailto())}">Email feedback</a></div>`;
 }
 
 /* ---------------- LANDING ---------------- */
@@ -328,7 +366,7 @@ function renderCharSetup() {
     <div class="panel" style="max-width:680px;margin:0 auto;">
       <div class="eyebrow">Build Your Character</div>
       <h2>${META.name}</h2>
-      <p class="helptext">${META.ruleset === 'loose' ? 'Loose narrative mode — modifiers are approximate, the GM will use judgment.' : 'Enter your skill modifiers as already-calculated numbers. When you type <code style="color:var(--glow)">/roll</code> later, only the d20 gets rolled — your modifier is added automatically.'}</p>
+      <p class="helptext">${META.ruleset === 'loose' ? 'Loose narrative mode — modifiers are approximate, the GM will use judgment.' : 'Enter your skill modifiers as already-calculated numbers. <code style="color:var(--glow)">/roll +5</code> rolls a d20+5; <code style="color:var(--glow)">/roll 2d6+3</code> rolls any other dice, like damage.'}</p>
 
       <div class="field"><label>Your Name (player)</label><input type="text" id="pName" value="${d.player}"></div>
       <div class="field"><label>Character Name</label><input type="text" id="cCharName" value="${d.name}"></div>
@@ -598,7 +636,7 @@ function renderStoryTab() {
           <input type="text" id="composerInput" placeholder="Type an action, say something in character, or use /roll +modifier..." onkeydown="if(event.key==='Enter') submitAction()">
           <button class="btn solid" onclick="submitAction()">Send</button>
         </div>
-        <div class="hint-bar">Try <code>/roll +5</code> to roll a d20 and add your modifier &middot; <code>/roll +3 adv</code> for advantage &middot; plain text is narrated as your action.</div>
+        <div class="hint-bar"><code>/roll +5</code> rolls a d20+5 &middot; <code>/roll 1d20+4 adv</code> for advantage &middot; <code>/roll 2d6+3</code> for damage or any other dice &middot; plain text is narrated as your action.</div>
         <div style="margin-top:10px;">
           ${gmControlsHTML}
         </div>
@@ -652,21 +690,28 @@ async function submitAction() {
   const me = ROSTER[MY_CHAR_ID];
   const authorName = me ? me.name : 'Player';
 
-  const rollMatch = text.match(/^\/roll\s*([+-]?\d+)?\s*(adv|dis)?/i);
+  // Matches "/roll +5", "/roll 1d20+4", "/roll 2d6+3 adv", "/roll d20", "/roll 1d4", etc.
+  const rollMatch = text.match(/^\/roll\s*(?:(\d*)d(\d+))?\s*([+-]\d+)?\s*(adv|dis)?/i);
   let entry;
   if (rollMatch) {
-    let mod = rollMatch[1] ? parseInt(rollMatch[1]) : 0;
-    const mode = (rollMatch[2] || '').toLowerCase();
-    let r1 = Math.floor(Math.random() * 20) + 1;
-    let roll = r1;
-    let detail = `d20(${r1})`;
-    if (mode === 'adv' || mode === 'dis') {
-      let r2 = Math.floor(Math.random() * 20) + 1;
+    const sides = rollMatch[2] ? parseInt(rollMatch[2]) : 20;
+    const count = rollMatch[2] ? (rollMatch[1] ? parseInt(rollMatch[1]) : 1) : 1;
+    const mod = rollMatch[3] ? parseInt(rollMatch[3]) : 0;
+    const mode = (rollMatch[4] || '').toLowerCase();
+
+    let rolls, roll, detail;
+    if (count === 1 && sides === 20 && (mode === 'adv' || mode === 'dis')) {
+      const r1 = Math.floor(Math.random() * 20) + 1;
+      const r2 = Math.floor(Math.random() * 20) + 1;
       roll = mode === 'adv' ? Math.max(r1, r2) : Math.min(r1, r2);
       detail = `d20(${r1},${r2} ${mode})`;
+    } else {
+      rolls = Array.from({ length: count }, () => Math.floor(Math.random() * sides) + 1);
+      roll = rolls.reduce((a, b) => a + b, 0);
+      detail = (count === 1 && sides === 20) ? `d20(${rolls[0]})` : `${count}d${sides}(${rolls.join('+')})`;
     }
     const total = roll + mod;
-    entry = { id: uid(6), author: authorName, type: 'roll', text: `rolls ${detail} ${mod >= 0 ? '+' : ''}${mod} = ${total}` };
+    entry = { id: uid(6), author: authorName, type: 'roll', text: `rolls ${detail}${mod !== 0 ? ' ' + fmtMod(mod) : ''} = ${total}` };
   } else {
     entry = { id: uid(6), author: authorName, type: 'action', text };
   }
@@ -728,7 +773,14 @@ ${party}
 Recent table log:
 ${recent}
 
-Continue the story. Narrate consequences of the most recent action(s)/roll(s) in 2-4 short paragraphs, stay consistent with everything established, and end by presenting clear options or an open question. Do not roll dice yourself or invent skill-check results — if a roll is needed, ask the player to use /roll. Never resolve combat or damage on your own initiative without the player(s) acting first. Keep it vivid but concise.`;
+Continue the story in 2-4 short paragraphs, stay consistent with everything established, and end by presenting clear options or an open question. Keep it vivid but concise.
+
+Roll resolution rules — follow these exactly:
+- Never narrate the outcome of an attack, save, skill check, or damage until the specific roll for it already appears in the recent table log above. If a needed roll isn't in the log yet, stop and ask for it instead of describing what happens.
+- Resolve one roll at a time. Ask for an attack or check roll first; only after its result appears in the log do you ask for a damage roll (only if the attack hit); only after the damage roll appears do you narrate the consequence (injury, death, effect). Never narrate a hit, miss, or damage result speculatively ahead of the actual roll.
+- If a turn involves multiple attacks or rolls, resolve each one completely — roll, then damage if applicable, then narration — before moving to the next.
+- Always phrase a requested roll using the exact command the player should type, formatted as inline code, e.g. "/roll 1d20+4" for an attack, "/roll 2d6+3" for damage, "/roll 1d20+4 adv" for advantage. Never say "roll a d20" or similar without giving the exact /roll command.
+- Do not roll dice yourself or invent results under any circumstance.`;
 
   await callGM(prompt, 'the GM was not asked to continue.');
 }
@@ -832,12 +884,13 @@ function renderHelpTab() {
       <ul>
         ${MODE === 'group' ? `<li>Everyone in this room shares the same <b>Ledger</b> (story log) and <b>Party</b> roster — anyone can open the room code on their own device.</li>` : `<li>This is your own solo story — only your character and the GM are here.</li>`}
         <li>Type plain text and hit Send to describe what your character says or does. It's narrated ${MODE === 'group' ? 'to the whole table' : 'into the story'}.</li>
-        <li>Dice are <b>only</b> rolled when you type <code>/roll</code>. Your skill modifiers are already saved on your sheet — just add the number, e.g. <code>/roll +5</code>.</li>
-        <li>For advantage or disadvantage: <code>/roll +5 adv</code> or <code>/roll +5 dis</code> — rolls two d20s and keeps the higher or lower.</li>
+        <li>Dice are <b>only</b> rolled when you type <code>/roll</code>. For a plain d20 check, just add the number, e.g. <code>/roll +5</code>. For any other dice — damage, healing, anything the GM asks for — use full notation like <code>/roll 2d6+3</code> or <code>/roll 1d4</code>.</li>
+        <li>For advantage or disadvantage on a d20 roll: <code>/roll +5 adv</code> or <code>/roll 1d20+5 dis</code> — rolls two d20s and keeps the higher or lower.</li>
         <li><b>Ask the GM to continue the story</b> sends the recent log and character/party status to the Game Master, who narrates what happens next.</li>
         <li>Your <b>Sheet</b> tab is where you track your own HP and inventory.</li>
         <li><b>Advance Session</b> in the header marks a new session in the log — useful for pacing a Short Arc or longer story.</li>
       </ul>
+      ${feedbackBoxHTML()}
     </div>
   `;
 }
