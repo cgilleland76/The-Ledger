@@ -212,8 +212,29 @@ function renderLanding() {
           <button class="btn wide" onclick="goToJoin()">Join with Code</button>
         </div>
       </div>
+      ${whatsNewHTML()}
     </div>
   `;
+}
+function whatsNewHTML() {
+  const items = (window.LEDGER_CHANGELOG || []).slice(0, 3);
+  if (!items.length) return '';
+  return `
+    <details class="whats-new">
+      <summary>What's New — ${escapeHtml(items[0].title)}</summary>
+      <div class="whats-new-body">
+        ${items.map(i => `
+          <div class="changelog-entry">
+            <div class="changelog-entry-title">
+              <span class="badge ${i.type === 'fix' ? 'rust' : ''}">${i.type === 'fix' ? 'Fix' : 'Feature'}</span>
+              ${escapeHtml(i.title)}
+              <span class="changelog-date">${escapeHtml(i.date)}</span>
+            </div>
+            <p class="changelog-entry-detail">${escapeHtml(i.detail)}</p>
+          </div>`).join('')}
+        <a class="link-btn" href="changelog.html">See the full changelog &amp; roadmap &rarr;</a>
+      </div>
+    </details>`;
 }
 function startNewCampaign(mode) { MODE = mode; VIEW = 'create'; render(); }
 function goToJoin() { VIEW = 'join'; render(); }
