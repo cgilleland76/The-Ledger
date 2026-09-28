@@ -40,6 +40,7 @@ alter table log_entries enable row level security;
 create policy "public read rooms" on rooms for select using (true);
 create policy "public insert rooms" on rooms for insert with check (true);
 create policy "public update rooms" on rooms for update using (true);
+create policy "public delete rooms" on rooms for delete using (true);
 
 create policy "public read characters" on characters for select using (true);
 create policy "public insert characters" on characters for insert with check (true);

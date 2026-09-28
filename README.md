@@ -39,6 +39,11 @@ window.LEDGER_CONFIG = {
 `config.js` is safe to commit — the anon key is meant to be public; Row Level
 Security is what actually controls access.
 
+`netlify/functions/gm.js` also has its own copy of `SUPABASE_URL` and
+`SUPABASE_ANON_KEY` (it uses them server-side to confirm a room code is real
+before spending API budget on it) — if you ever point this app at a different
+Supabase project, update both `config.js` and `gm.js`.
+
 ## 3. Get an Anthropic API key
 
 Create one at [console.anthropic.com](https://console.anthropic.com) if you
@@ -97,16 +102,31 @@ the upgrade if you want a real form.
 
 - **Solo mode:** creates a room with `mode: 'solo'`, skips the invite-code
   flow, and hides the Party tab — it's just you, your character, and the GM.
-- **Group mode:** creates a room with a shareable code; anyone who enters that
-  code builds their own character and joins the same shared log and roster.
-  Supabase realtime pushes updates to everyone instantly — no polling.
-- **Dice:** typing `/roll +5` (or `/roll +5 adv` / `/roll +5 dis`) rolls a d20
-  client-side and adds the modifier you typed. Anything else you type is
-  narrated as your character's action. The GM is explicitly instructed never
-  to invent roll results itself.
+- **Group mode:** creates a room with a shareable code (visible on the
+  character-setup and in-game screens); anyone who enters that code builds
+  their own character and joins the same shared log and roster. Supabase
+  realtime pushes updates to everyone instantly — no polling. Capped at 6
+  players per room and 20 rooms total; creating a room past the cap evicts
+  the oldest one. Use "Leave Table" to exit and start another.
+- **Character creation:** defaults to "Let the GM build it" — Claude fills in
+  ability scores, HP/AC, skills, and class/tone-appropriate starting gear;
+  flip to "I'll roll my own" for fully manual entry. Character tiles show all
+  six ability scores plus derived Passive Perception and Initiative.
+- **Dice:** typing `/roll` supports both a flat-modifier shorthand
+  (`/roll +5` = d20+5) and full dice notation for anything else
+  (`/roll 2d6+3` for damage, `/roll 1d4`); add `adv`/`dis` for advantage or
+  disadvantage on a d20 roll. Anything else you type is narrated as your
+  character's action. The GM is instructed to resolve one roll at a time —
+  asking for an attack, waiting for it to land in the log, then asking for
+  damage — and never to narrate an outcome ahead of the actual roll.
 - **The GM:** the "Ask the GM to continue the story" button sends the recent
   log plus character/party status to `/api/gm`, which forwards it to Claude
-  and appends the response back into the shared log.
+  and appends the response back into the shared log. The function requires a
+  valid, existing room code before calling Claude, so the endpoint can't be
+  used as a free relay by someone who just finds the URL.
+- **What's New:** a collapsible teaser on the landing page and a full
+  `changelog.html` page track shipped fixes/features and what's planned next
+  — see `public/changelog-data.js` to update it.
 
 ## Project structure
 

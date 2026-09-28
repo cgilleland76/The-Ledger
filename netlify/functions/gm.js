@@ -6,11 +6,44 @@
 //
 // Set ANTHROPIC_API_KEY in Netlify: Site configuration > Environment variables.
 
+// Same public values as public/config.js — safe to duplicate here since the
+// anon key is designed to be exposed and RLS controls actual access. This
+// lets the function verify a request is tied to a real, existing room before
+// spending API budget, so this endpoint can't be used as a free relay to the
+// Anthropic API by someone who just found the URL and has no room code.
+const SUPABASE_URL = "https://jmhgkbeqvbbxrztkvenb.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_sLJhcEDWSBYAORmiL85VpA_PkNak436";
+
+// Add any other domains this site is (or will be) served from.
+const ALLOWED_ORIGINS = [
+  "https://thedndledger.netlify.app",
+  "https://thedndledger.com",
+  "https://www.thedndledger.com",
+  "http://localhost:8888", // `netlify dev` default port
+];
+
+async function roomExists(code) {
+  if (!code || typeof code !== "string" || !/^[A-Z0-9]{3,10}$/i.test(code)) return false;
+  try {
+    const resp = await fetch(
+      `${SUPABASE_URL}/rest/v1/rooms?code=eq.${encodeURIComponent(code)}&select=code`,
+      { headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` } }
+    );
+    if (!resp.ok) return false;
+    const rows = await resp.json();
+    return Array.isArray(rows) && rows.length > 0;
+  } catch (e) {
+    return false;
+  }
+}
+
 exports.handler = async function (event) {
+  const origin = event.headers && (event.headers.origin || event.headers.Origin);
   const headers = {
-    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Origin": ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0],
     "Access-Control-Allow-Headers": "Content-Type",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
+    Vary: "Origin",
   };
 
   if (event.httpMethod === "OPTIONS") {
@@ -29,15 +62,20 @@ exports.handler = async function (event) {
     };
   }
 
-  let prompt;
+  let prompt, roomCode;
   try {
     const body = JSON.parse(event.body || "{}");
     prompt = body.prompt;
+    roomCode = body.roomCode;
     if (!prompt || typeof prompt !== "string") {
       return { statusCode: 400, headers, body: JSON.stringify({ error: "Missing 'prompt' string in request body." }) };
     }
   } catch (e) {
     return { statusCode: 400, headers, body: JSON.stringify({ error: "Invalid JSON body." }) };
+  }
+
+  if (!(await roomExists(roomCode))) {
+    return { statusCode: 403, headers, body: JSON.stringify({ error: "Unknown or missing room code." }) };
   }
 
   try {

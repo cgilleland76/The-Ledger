@@ -9,6 +9,18 @@ window.LEDGER_CHANGELOG = [
   {
     date: '2026-09-27',
     type: 'fix',
+    title: "Security and reliability pass",
+    detail: "Character names, campaign titles, notes, skills, and inventory items weren't escaped before being displayed, which could break the page or let a player's typed text run as code in other players' browsers — fixed everywhere. Also fixed the room-limit cleanup (it was silently failing to remove old rooms), a crash that could happen from leaving a table while a character was still being generated, and added a check so the GM can't be used by outsiders who don't have a real room code."
+  },
+  {
+    date: '2026-09-27',
+    type: 'fix',
+    title: "Fixed the same field-wiping bug on character creation and in-game screens",
+    detail: "The same issue as the campaign-creation fix below was also happening on Build Your Character (typing a name, race, class, ability score, or notes could get wiped by switching \"Let the GM build it\" / \"I'll roll my own\"), and in-game: your typed action, a new inventory item, or unsaved character notes could get silently cleared if the log updated while you were mid-typing — including from another player's turn. All of these now save as you type."
+  },
+  {
+    date: '2026-09-27',
+    type: 'fix',
     title: "Story details no longer disappear while creating a campaign",
     detail: "Typing a title or genre/tone and then picking a Length, Ruleset, or Story Seed option used to wipe out whatever you'd already typed. All fields now save as you type, so nothing gets lost."
   },
@@ -45,6 +57,14 @@ window.LEDGER_CHANGELOG = [
 ];
 
 window.LEDGER_ROADMAP = [
+  {
+    title: "Skill picker for /roll",
+    detail: "Instead of typing a modifier from memory, pick a skill or ability from your own character sheet and have the app insert the correct number for you — cuts down on typos and makes it obvious what a roll is actually for."
+  },
+  {
+    title: "Flag rolls with an unrecognized modifier",
+    detail: "If a /roll's modifier doesn't match anything on that character's saved sheet (e.g. someone types +100 when their skill is +3), tag it in the log so the table can see and question it, instead of it slipping by silently."
+  },
   {
     title: "Voice narration for the GM",
     detail: "Have the GM's messages read aloud, with a distinct voice for each NPC's dialogue. A no-cost, browser-based first version is already designed and ready to build."

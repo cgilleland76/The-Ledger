@@ -25,6 +25,9 @@ let realtimeChannel = null;
 let GM_PENDING = false;
 let GM_ABORT = null;
 let charGenMode = 'auto'; // 'auto' | 'manual'
+let composerDraft = '';
+let newItemDraft = '';
+let notesDraft = null; // null = show the saved value; string = an unsaved in-progress edit
 let CHARGEN_PENDING = false;
 let CHARGEN_ABORT = null;
 let CHARGEN_ERROR = '';
@@ -263,7 +266,7 @@ function renderCreate() {
 
       <div class="field">
         <label>${MODE === 'solo' ? 'Story Title' : 'Campaign Name'}</label>
-        <input type="text" id="cname" placeholder="e.g. The Last Tide, Ashwood Reach, Nine of Cups..." value="${createDraft.name}" oninput="setCreateName(this.value)">
+        <input type="text" id="cname" placeholder="e.g. The Last Tide, Ashwood Reach, Nine of Cups..." value="${escapeAttr(createDraft.name)}" oninput="setCreateName(this.value)">
       </div>
 
       <div class="field">
@@ -284,7 +287,7 @@ function renderCreate() {
 
       <div class="field">
         <label>Genre / Tone</label>
-        <input type="text" id="tone" placeholder="e.g. dark survival horror, swashbuckling heist, cozy village mystery..." value="${createDraft.tone}" oninput="setCreateTone(this.value)">
+        <input type="text" id="tone" placeholder="e.g. dark survival horror, swashbuckling heist, cozy village mystery..." value="${escapeAttr(createDraft.tone)}" oninput="setCreateTone(this.value)">
       </div>
 
       <div class="field">
@@ -293,7 +296,7 @@ function renderCreate() {
           <div class="radio-card ${createDraft.seedMode === 'blank' ? 'active' : ''}" onclick="setSeedMode('blank')"><b>Let the GM invent it</b><span>Fresh hook from your genre/tone</span></div>
           <div class="radio-card ${createDraft.seedMode === 'custom' ? 'active' : ''}" onclick="setSeedMode('custom')"><b>I'll write it</b><span>Bring your own premise</span></div>
         </div>
-        ${createDraft.seedMode === 'custom' ? `<textarea id="seed" placeholder="Describe the opening situation, setting, and hook..." oninput="setCreateSeed(this.value)">${createDraft.seed}</textarea>` : `<p class="helptext">Leave this — once you continue, the GM will generate an opening scene from the genre and tone above.</p>`}
+        ${createDraft.seedMode === 'custom' ? `<textarea id="seed" placeholder="Describe the opening situation, setting, and hook..." oninput="setCreateSeed(this.value)">${escapeAttr(createDraft.seed)}</textarea>` : `<p class="helptext">Leave this — once you continue, the GM will generate an opening scene from the genre and tone above.</p>`}
       </div>
 
       <button class="btn solid wide" onclick="submitCreate()">${MODE === 'solo' ? 'Create My Story' : 'Create Room'}</button>
@@ -307,29 +310,36 @@ function setCreateTone(v) { createDraft.tone = v; }
 function setCreateSeed(v) { createDraft.seed = v; }
 function setCreateRuleset(v) { createDraft.ruleset = v; }
 
+let CREATE_PENDING = false;
 async function submitCreate() {
-  createDraft.name = el('cname').value.trim() || (MODE === 'solo' ? 'Untitled Story' : 'Untitled Campaign');
-  createDraft.ruleset = el('ruleset').value;
-  createDraft.tone = el('tone').value.trim();
-  if (createDraft.seedMode === 'custom') createDraft.seed = el('seed').value.trim();
+  if (CREATE_PENDING) return; // guards against a double-click firing two inserts
+  CREATE_PENDING = true;
+  try {
+    createDraft.name = el('cname').value.trim() || (MODE === 'solo' ? 'Untitled Story' : 'Untitled Campaign');
+    createDraft.ruleset = el('ruleset').value;
+    createDraft.tone = el('tone').value.trim();
+    if (createDraft.seedMode === 'custom') createDraft.seed = el('seed').value.trim();
 
-  const code = roomCode();
-  META = {
-    name: createDraft.name,
-    length: createDraft.length,
-    ruleset: createDraft.ruleset,
-    tone: createDraft.tone,
-    seed: createDraft.seed,
-    seedMode: createDraft.seedMode,
-    session: 1,
-    created: Date.now(),
-    openingGenerated: false
-  };
-  ROOM = code;
-  await dbEvictOldestRoomIfAtCapacity();
-  await dbInsertRoom(code, MODE, META);
-  VIEW = 'charsetup';
-  render();
+    const code = roomCode();
+    META = {
+      name: createDraft.name,
+      length: createDraft.length,
+      ruleset: createDraft.ruleset,
+      tone: createDraft.tone,
+      seed: createDraft.seed,
+      seedMode: createDraft.seedMode,
+      session: 1,
+      created: Date.now(),
+      openingGenerated: false
+    };
+    ROOM = code;
+    await dbEvictOldestRoomIfAtCapacity();
+    await dbInsertRoom(code, MODE, META);
+    VIEW = 'charsetup';
+    render();
+  } finally {
+    CREATE_PENDING = false;
+  }
 }
 
 /* ---------------- JOIN (group mode only) ---------------- */
@@ -390,15 +400,15 @@ function renderCharSetup() {
     </div>
     <div class="panel" style="max-width:680px;margin:0 auto;">
       <div class="eyebrow">Build Your Character</div>
-      <h2>${META.name}</h2>
+      <h2>${escapeHtml(META.name)}</h2>
       <p class="helptext">${META.ruleset === 'loose' ? 'Loose narrative mode — modifiers are approximate, the GM will use judgment.' : 'Enter your skill modifiers as already-calculated numbers. <code style="color:var(--glow)">/roll +5</code> rolls a d20+5; <code style="color:var(--glow)">/roll 2d6+3</code> rolls any other dice, like damage.'}</p>
 
-      <div class="field"><label>Your Name (player)</label><input type="text" id="pName" value="${d.player}"></div>
-      <div class="field"><label>Character Name</label><input type="text" id="cCharName" value="${d.name}"></div>
+      <div class="field"><label>Your Name (player)</label><input type="text" id="pName" value="${escapeAttr(d.player)}" oninput="setDraftField('player', this.value)"></div>
+      <div class="field"><label>Character Name</label><input type="text" id="cCharName" value="${escapeAttr(d.name)}" oninput="setDraftField('name', this.value)"></div>
 
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
-        <div class="field"><label>Race / Species ${charGenMode === 'auto' ? '(optional — leave blank to let the GM choose)' : ''}</label><input type="text" id="cRace" value="${d.race}"></div>
-        <div class="field"><label>Class ${charGenMode === 'auto' ? '(optional — leave blank to let the GM choose)' : ''}</label><input type="text" id="cClass" value="${d.klass}"></div>
+        <div class="field"><label>Race / Species ${charGenMode === 'auto' ? '(optional — leave blank to let the GM choose)' : ''}</label><input type="text" id="cRace" value="${escapeAttr(d.race)}" oninput="setDraftField('race', this.value)"></div>
+        <div class="field"><label>Class ${charGenMode === 'auto' ? '(optional — leave blank to let the GM choose)' : ''}</label><input type="text" id="cClass" value="${escapeAttr(d.klass)}" oninput="setDraftField('klass', this.value)"></div>
       </div>
 
       <div class="field">
@@ -416,20 +426,20 @@ function renderCharSetup() {
       </div>
 
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;">
-        <div class="field"><label>Level</label><input type="text" id="cLevel" value="${d.level}"></div>
-        <div class="field"><label>Max HP</label><input type="text" id="cMaxHP" value="${d.maxhp}"></div>
-        <div class="field"><label>AC</label><input type="text" id="cAC" value="${d.ac}"></div>
+        <div class="field"><label>Level</label><input type="text" id="cLevel" value="${escapeAttr(d.level)}" oninput="setDraftField('level', this.value)"></div>
+        <div class="field"><label>Max HP</label><input type="text" id="cMaxHP" value="${escapeAttr(d.maxhp)}" oninput="setDraftField('maxhp', this.value)"></div>
+        <div class="field"><label>AC</label><input type="text" id="cAC" value="${escapeAttr(d.ac)}" oninput="setDraftField('ac', this.value)"></div>
       </div>
 
       <div class="field">
         <label>Ability Scores</label>
         <div class="ability-grid">
-          <div><label>STR</label><input type="text" id="cSTR" value="${d.str}"></div>
-          <div><label>DEX</label><input type="text" id="cDEX" value="${d.dex}"></div>
-          <div><label>CON</label><input type="text" id="cCON" value="${d.con}"></div>
-          <div><label>INT</label><input type="text" id="cINT" value="${d.int}"></div>
-          <div><label>WIS</label><input type="text" id="cWIS" value="${d.wis}"></div>
-          <div><label>CHA</label><input type="text" id="cCHA" value="${d.cha}"></div>
+          <div><label>STR</label><input type="text" id="cSTR" value="${escapeAttr(d.str)}" oninput="setDraftField('str', this.value)"></div>
+          <div><label>DEX</label><input type="text" id="cDEX" value="${escapeAttr(d.dex)}" oninput="setDraftField('dex', this.value)"></div>
+          <div><label>CON</label><input type="text" id="cCON" value="${escapeAttr(d.con)}" oninput="setDraftField('con', this.value)"></div>
+          <div><label>INT</label><input type="text" id="cINT" value="${escapeAttr(d.int)}" oninput="setDraftField('int', this.value)"></div>
+          <div><label>WIS</label><input type="text" id="cWIS" value="${escapeAttr(d.wis)}" oninput="setDraftField('wis', this.value)"></div>
+          <div><label>CHA</label><input type="text" id="cCHA" value="${escapeAttr(d.cha)}" oninput="setDraftField('cha', this.value)"></div>
         </div>
         <p class="helptext">Passive Perception and Initiative are calculated from these automatically.</p>
       </div>
@@ -446,7 +456,7 @@ function renderCharSetup() {
         <button class="add-row" onclick="addInvRow()">+ add item</button>
       </div>
 
-      <div class="field"><label>Notes / Backstory (optional)</label><textarea id="cNotes">${d.notes}</textarea></div>
+      <div class="field"><label>Notes / Backstory (optional)</label><textarea id="cNotes" oninput="setDraftField('notes', this.value)">${escapeAttr(d.notes)}</textarea></div>
 
       <div id="charErr" class="error-text"></div>
       <button class="btn solid wide" onclick="submitCharacter()">${MODE === 'solo' ? 'Begin' : 'Join the Table'}</button>
@@ -457,19 +467,20 @@ function renderCharSetup() {
 function renderSkillRows() {
   el('skillRows').innerHTML = draftChar.skills.map((s, i) => `
     <div class="skill-row">
-      <input type="text" placeholder="Skill name" value="${s.name}" oninput="setSkillName(${i}, this.value)">
-      <input type="number" placeholder="+0" value="${s.mod}" oninput="setSkillMod(${i}, this.value)">
+      <input type="text" placeholder="Skill name" value="${escapeAttr(s.name)}" oninput="setSkillName(${i}, this.value)">
+      <input type="number" placeholder="+0" value="${escapeAttr(s.mod)}" oninput="setSkillMod(${i}, this.value)">
       <button class="remove-x" onclick="removeSkillRow(${i})">&times;</button>
     </div>`).join('');
 }
 function addSkillRow() { draftChar.skills.push({ name: '', mod: 0 }); renderSkillRows(); }
 function removeSkillRow(i) { draftChar.skills.splice(i, 1); renderSkillRows(); }
+function setDraftField(field, val) { if (draftChar) draftChar[field] = val; }
 function setSkillName(i, val) { draftChar.skills[i].name = val; }
 function setSkillMod(i, val) { draftChar.skills[i].mod = parseInt(val || 0); }
 function renderInvRows() {
   el('invRows').innerHTML = draftChar.inventory.map((it, i) => `
     <div class="skill-row">
-      <input type="text" placeholder="Item" value="${it}" style="flex:1;" oninput="setInvItem(${i}, this.value)">
+      <input type="text" placeholder="Item" value="${escapeAttr(it)}" style="flex:1;" oninput="setInvItem(${i}, this.value)">
       <button class="remove-x" onclick="removeInvRow(${i})">&times;</button>
     </div>`).join('');
 }
@@ -535,59 +546,66 @@ Use sensible 5e-appropriate ability scores for the class (e.g. the standard arra
   } finally {
     CHARGEN_PENDING = false;
     CHARGEN_ABORT = null;
-    renderCharSetup();
+    if (VIEW === 'charsetup') renderCharSetup();
   }
 }
 
+let CHARSUBMIT_PENDING = false;
 async function submitCharacter() {
-  if (MODE === 'group') {
-    const existing = await dbGetCharacters(ROOM);
-    const alreadyMine = MY_CHAR_ID && existing.some(r => r.id === MY_CHAR_ID);
-    if (!alreadyMine && existing.length >= MAX_PLAYERS_PER_ROOM) {
-      el('charErr').innerText = `This table is full (max ${MAX_PLAYERS_PER_ROOM} players).`;
-      return;
+  if (CHARSUBMIT_PENDING) return; // guards against a double-click firing two inserts
+  CHARSUBMIT_PENDING = true;
+  try {
+    if (MODE === 'group') {
+      const existing = await dbGetCharacters(ROOM);
+      const alreadyMine = MY_CHAR_ID && existing.some(r => r.id === MY_CHAR_ID);
+      if (!alreadyMine && existing.length >= MAX_PLAYERS_PER_ROOM) {
+        el('charErr').innerText = `This table is full (max ${MAX_PLAYERS_PER_ROOM} players).`;
+        return;
+      }
     }
-  }
-  el('charErr').innerText = '';
-  draftChar.player = el('pName').value.trim() || 'Player';
-  draftChar.name = el('cCharName').value.trim() || 'Unnamed';
-  draftChar.race = el('cRace').value.trim();
-  draftChar.klass = el('cClass').value.trim();
-  draftChar.level = parseInt(el('cLevel').value) || 1;
-  draftChar.maxhp = parseInt(el('cMaxHP').value) || 10;
-  draftChar.hp = draftChar.maxhp;
-  draftChar.ac = parseInt(el('cAC').value) || 10;
-  draftChar.str = parseInt(el('cSTR').value) || 10;
-  draftChar.dex = parseInt(el('cDEX').value) || 10;
-  draftChar.con = parseInt(el('cCON').value) || 10;
-  draftChar.int = parseInt(el('cINT').value) || 10;
-  draftChar.wis = parseInt(el('cWIS').value) || 10;
-  draftChar.cha = parseInt(el('cCHA').value) || 10;
-  draftChar.notes = el('cNotes').value.trim();
-  draftChar.skills = draftChar.skills.filter(s => s.name.trim());
-  draftChar.inventory = draftChar.inventory.filter(i => i.trim());
+    el('charErr').innerText = '';
+    draftChar.player = el('pName').value.trim() || 'Player';
+    draftChar.name = el('cCharName').value.trim() || 'Unnamed';
+    draftChar.race = el('cRace').value.trim();
+    draftChar.klass = el('cClass').value.trim();
+    draftChar.level = parseInt(el('cLevel').value) || 1;
+    draftChar.maxhp = parseInt(el('cMaxHP').value) || 10;
+    draftChar.hp = draftChar.maxhp;
+    draftChar.ac = parseInt(el('cAC').value) || 10;
+    draftChar.str = parseInt(el('cSTR').value) || 10;
+    draftChar.dex = parseInt(el('cDEX').value) || 10;
+    draftChar.con = parseInt(el('cCON').value) || 10;
+    draftChar.int = parseInt(el('cINT').value) || 10;
+    draftChar.wis = parseInt(el('cWIS').value) || 10;
+    draftChar.cha = parseInt(el('cCHA').value) || 10;
+    draftChar.notes = el('cNotes').value.trim();
+    draftChar.skills = draftChar.skills.filter(s => s.name.trim());
+    draftChar.inventory = draftChar.inventory.filter(i => i.trim());
 
-  const charId = uid(10);
-  await dbUpsertCharacter(charId, ROOM, draftChar);
-  ROSTER[charId] = draftChar;
-  rememberCharacter(ROOM, charId);
-  MY_CHAR_ID = charId;
-  draftChar = null;
+    const charId = uid(10);
+    await dbUpsertCharacter(charId, ROOM, draftChar);
+    ROSTER[charId] = draftChar;
+    rememberCharacter(ROOM, charId);
+    MY_CHAR_ID = charId;
+    draftChar = null;
 
-  LOG = logFromRows(await dbGetLog(ROOM));
-  const joinEntry = { id: uid(6), author: 'The Ledger', type: 'system', text: `${ROSTER[MY_CHAR_ID].name} (${ROSTER[MY_CHAR_ID].race || '?'} ${ROSTER[MY_CHAR_ID].klass || '?'}) has joined the table.` };
-  await dbInsertLog(ROOM, joinEntry);
-  LOG.push({ ...joinEntry, ts: Date.now() });
+    LOG = logFromRows(await dbGetLog(ROOM));
+    const joinEntry = { id: uid(6), author: 'The Ledger', type: 'system', text: `${ROSTER[MY_CHAR_ID].name} (${ROSTER[MY_CHAR_ID].race || '?'} ${ROSTER[MY_CHAR_ID].klass || '?'}) has joined the table.` };
+    await dbInsertLog(ROOM, joinEntry);
+    LOG.push({ ...joinEntry, ts: Date.now() });
 
-  VIEW = 'game'; ACTIVE_TAB = 'story';
-  subscribeRealtime(ROOM);
-  render();
+    VIEW = 'game'; ACTIVE_TAB = 'story';
+    subscribeRealtime(ROOM);
+    render();
 
-  const room = await dbGetRoom(ROOM);
-  if (room && !room.meta.openingGenerated) {
-    META = { ...room.meta, openingGenerated: true };
-    await dbUpdateRoomMeta(ROOM, META);
-    generateOpening();
+    const room = await dbGetRoom(ROOM);
+    if (room && !room.meta.openingGenerated) {
+      META = { ...room.meta, openingGenerated: true };
+      await dbUpdateRoomMeta(ROOM, META);
+      generateOpening();
+    }
+  } finally {
+    CHARSUBMIT_PENDING = false;
   }
 }
 
@@ -599,6 +617,7 @@ function copyCode() {
 function leaveTable() {
   if (realtimeChannel) { supabase.removeChannel(realtimeChannel); realtimeChannel = null; }
   if (GM_ABORT) GM_ABORT.abort();
+  if (CHARGEN_ABORT) CHARGEN_ABORT.abort();
   ROOM = null; META = null; ROSTER = {}; LOG = []; MY_CHAR_ID = null; draftChar = null;
   MODE = 'group'; ACTIVE_TAB = 'story';
   VIEW = 'landing';
@@ -615,7 +634,7 @@ function renderGame() {
   el('app').innerHTML = `
     <div class="game-header">
       <div>
-        <h1>${META.name}</h1>
+        <h1>${escapeHtml(META.name)}</h1>
         ${MODE === 'group' ? `<span class="badge">Room <span class="room-code">${ROOM}</span></span>` : `<span class="badge">Solo Story</span>`}
         <span class="badge">${lengthLabel[META.length]}</span>
         <span class="badge">Session ${META.session}</span>
@@ -658,7 +677,7 @@ function renderStoryTab() {
       <div>
         <div class="log" id="logBox">${LOG.map(entryHTML).join('') || '<p class="thinking">The story hasn&#39;t begun yet...</p>'}</div>
         <div class="composer">
-          <input type="text" id="composerInput" placeholder="Type an action, say something in character, or use /roll +modifier..." onkeydown="if(event.key==='Enter') submitAction()">
+          <input type="text" id="composerInput" placeholder="Type an action, say something in character, or use /roll +modifier..." value="${escapeAttr(composerDraft)}" oninput="setComposerDraft(this.value)" onkeydown="if(event.key==='Enter') submitAction()">
           <button class="btn solid" onclick="submitAction()">Send</button>
         </div>
         <div class="hint-bar"><code>/roll +5</code> rolls a d20+5 &middot; <code>/roll 1d20+4 adv</code> for advantage &middot; <code>/roll 2d6+3</code> for damage or any other dice &middot; plain text is narrated as your action.</div>
@@ -681,7 +700,7 @@ function sheetMiniHTML() {
   const c = ROSTER[MY_CHAR_ID]; if (!c) return '';
   const pct = Math.max(0, Math.min(100, Math.round((c.hp / c.maxhp) * 100)));
   return `<div class="roster-card mine">
-    <div class="rname"><b>${c.name}</b><span class="rclass">Lv${c.level} ${c.race} ${c.klass}</span></div>
+    <div class="rname"><b>${escapeHtml(c.name)}</b><span class="rclass">Lv${c.level} ${escapeHtml(c.race)} ${escapeHtml(c.klass)}</span></div>
     <div class="hpbar"><div class="hpbar-fill ${pct < 30 ? 'low' : ''}" style="width:${pct}%"></div></div>
     <div class="hprow"><span>HP ${c.hp}/${c.maxhp}</span><span>AC ${c.ac}</span></div>
     ${abilityGridHTML(c)}
@@ -699,7 +718,7 @@ function renderRosterMini() {
   box.innerHTML = Object.entries(ROSTER).map(([id, c]) => {
     const pct = Math.max(0, Math.min(100, Math.round((c.hp / c.maxhp) * 100)));
     return `<div class="roster-card ${id === MY_CHAR_ID ? 'mine' : ''}">
-      <div class="rname"><b>${c.name}</b><span class="rclass">Lv${c.level} ${c.race} ${c.klass}</span></div>
+      <div class="rname"><b>${escapeHtml(c.name)}</b><span class="rclass">Lv${c.level} ${escapeHtml(c.race)} ${escapeHtml(c.klass)}</span></div>
       <div class="hpbar"><div class="hpbar-fill ${pct < 30 ? 'low' : ''}" style="width:${pct}%"></div></div>
       <div class="hprow"><span>HP ${c.hp}/${c.maxhp}</span><span>AC ${c.ac}</span></div>
       ${abilityGridHTML(c)}
@@ -712,6 +731,7 @@ async function submitAction() {
   const text = input.value.trim();
   if (!text) return;
   input.value = '';
+  composerDraft = '';
   const me = ROSTER[MY_CHAR_ID];
   const authorName = me ? me.name : 'Player';
 
@@ -749,7 +769,7 @@ async function fetchGM(prompt, signal) {
   const resp = await fetch('/api/gm', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt }),
+    body: JSON.stringify({ prompt, roomCode: ROOM }),
     signal,
   });
   const data = await resp.json();
@@ -827,12 +847,12 @@ function renderPartyTab() {
       ${Object.entries(ROSTER).map(([id, c]) => {
         const pct = Math.max(0, Math.min(100, Math.round((c.hp / c.maxhp) * 100)));
         return `<div class="roster-card ${id === MY_CHAR_ID ? 'mine' : ''}">
-          <div class="rname"><b>${c.name}</b><span class="rclass">${c.player}</span></div>
-          <div class="rclass">Lv${c.level} ${c.race} ${c.klass}</div>
+          <div class="rname"><b>${escapeHtml(c.name)}</b><span class="rclass">${escapeHtml(c.player)}</span></div>
+          <div class="rclass">Lv${c.level} ${escapeHtml(c.race)} ${escapeHtml(c.klass)}</div>
           <div class="hpbar"><div class="hpbar-fill ${pct < 30 ? 'low' : ''}" style="width:${pct}%"></div></div>
           <div class="hprow"><span>HP ${c.hp}/${c.maxhp}</span><span>AC ${c.ac}</span></div>
           ${abilityGridHTML(c)}
-          ${(c.inventory && c.inventory.length) ? `<div class="helptext" style="margin-top:8px;"><b style="color:var(--parchment-dim)">Carries:</b> ${c.inventory.join(', ')}</div>` : ''}
+          ${(c.inventory && c.inventory.length) ? `<div class="helptext" style="margin-top:8px;"><b style="color:var(--parchment-dim)">Carries:</b> ${c.inventory.map(escapeHtml).join(', ')}</div>` : ''}
         </div>`;
       }).join('')}
     </div>
@@ -845,8 +865,8 @@ function renderSheetTab() {
   if (!c) { el('tabBody').innerHTML = `<p class="thinking">No character found for this device.</p>`; return; }
   el('tabBody').innerHTML = `
     <div class="panel" style="max-width:640px;">
-      <h2>${c.name}</h2>
-      <p class="rclass">${c.player} &middot; Lv${c.level} ${c.race} ${c.klass}</p>
+      <h2>${escapeHtml(c.name)}</h2>
+      <p class="rclass">${escapeHtml(c.player)} &middot; Lv${c.level} ${escapeHtml(c.race)} ${escapeHtml(c.klass)}</p>
       <div class="sheet-grid">
         <div class="sheet-stat"><div class="label">HP</div><div class="val">${c.hp} / ${c.maxhp}</div></div>
         <div class="sheet-stat"><div class="label">AC</div><div class="val">${c.ac}</div></div>
@@ -861,17 +881,17 @@ function renderSheetTab() {
       </div>
 
       <h3 style="font-size:1rem;">Skills</h3>
-      ${(c.skills || []).map(s => `<div class="item-row"><span>${s.name}</span><span style="font-family:'IBM Plex Mono',monospace;color:var(--glow)">${s.mod >= 0 ? '+' : ''}${s.mod}</span></div>`).join('') || '<p class="helptext">None recorded.</p>'}
+      ${(c.skills || []).map(s => `<div class="item-row"><span>${escapeHtml(s.name)}</span><span style="font-family:'IBM Plex Mono',monospace;color:var(--glow)">${s.mod >= 0 ? '+' : ''}${escapeHtml(String(s.mod))}</span></div>`).join('') || '<p class="helptext">None recorded.</p>'}
 
       <h3 style="font-size:1rem;margin-top:20px;">Inventory</h3>
-      ${(c.inventory || []).map((it, i) => `<div class="item-row"><span>${it}</span><button class="small-x" onclick="removeItem(${i})">&times;</button></div>`).join('') || '<p class="helptext">Empty-handed.</p>'}
+      ${(c.inventory || []).map((it, i) => `<div class="item-row"><span>${escapeHtml(it)}</span><button class="small-x" onclick="removeItem(${i})">&times;</button></div>`).join('') || '<p class="helptext">Empty-handed.</p>'}
       <div class="skill-row" style="margin-top:10px;">
-        <input type="text" id="newItem" placeholder="Add item...">
+        <input type="text" id="newItem" placeholder="Add item..." value="${escapeAttr(newItemDraft)}" oninput="setNewItemDraft(this.value)">
         <button class="add-row" onclick="addItem()">Add</button>
       </div>
 
       <h3 style="font-size:1rem;margin-top:20px;">Notes</h3>
-      <textarea id="charNotes" style="width:100%;min-height:80px;background:var(--bg-deep);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:10px;">${c.notes || ''}</textarea>
+      <textarea id="charNotes" style="width:100%;min-height:80px;background:var(--bg-deep);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:10px;" oninput="setNotesDraft(this.value)">${escapeAttr(notesDraft !== null ? notesDraft : (c.notes || ''))}</textarea>
       <button class="btn" style="margin-top:10px;" onclick="saveNotes()">Save Notes</button>
     </div>
   `;
@@ -885,10 +905,14 @@ async function hpDelta(n) {
   LOG.push({ ...entry, ts: Date.now() });
   render();
 }
+function setComposerDraft(v) { composerDraft = v; }
+function setNewItemDraft(v) { newItemDraft = v; }
+function setNotesDraft(v) { notesDraft = v; }
 async function addItem() {
   const v = el('newItem').value.trim(); if (!v) return;
   ROSTER[MY_CHAR_ID].inventory = ROSTER[MY_CHAR_ID].inventory || [];
   ROSTER[MY_CHAR_ID].inventory.push(v);
+  newItemDraft = '';
   await persistRoster(); render();
 }
 async function removeItem(i) {
@@ -897,6 +921,7 @@ async function removeItem(i) {
 }
 async function saveNotes() {
   ROSTER[MY_CHAR_ID].notes = el('charNotes').value;
+  notesDraft = null;
   await persistRoster();
   const b = event.target; const old = b.innerText; b.innerText = 'Saved'; setTimeout(() => b.innerText = old, 1000);
 }
@@ -938,6 +963,10 @@ window.copyCode = copyCode;
 window.leaveTable = leaveTable;
 window.addSkillRow = addSkillRow;
 window.removeSkillRow = removeSkillRow;
+window.setDraftField = setDraftField;
+window.setComposerDraft = setComposerDraft;
+window.setNewItemDraft = setNewItemDraft;
+window.setNotesDraft = setNotesDraft;
 window.setSkillName = setSkillName;
 window.setSkillMod = setSkillMod;
 window.addInvRow = addInvRow;
