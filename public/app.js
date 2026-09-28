@@ -242,7 +242,7 @@ function renderCreate() {
 
       <div class="field">
         <label>${MODE === 'solo' ? 'Story Title' : 'Campaign Name'}</label>
-        <input type="text" id="cname" placeholder="e.g. The Last Tide, Ashwood Reach, Nine of Cups..." value="${createDraft.name}">
+        <input type="text" id="cname" placeholder="e.g. The Last Tide, Ashwood Reach, Nine of Cups..." value="${createDraft.name}" oninput="setCreateName(this.value)">
       </div>
 
       <div class="field">
@@ -254,7 +254,7 @@ function renderCreate() {
 
       <div class="field">
         <label>Ruleset</label>
-        <select id="ruleset">
+        <select id="ruleset" onchange="setCreateRuleset(this.value)">
           <option value="5e2014" ${createDraft.ruleset === '5e2014' ? 'selected' : ''}>5e (2014 rules, SRD 5.1)</option>
           <option value="5e2024" ${createDraft.ruleset === '5e2024' ? 'selected' : ''}>5e (2024 rules, SRD 5.2)</option>
           <option value="loose" ${createDraft.ruleset === 'loose' ? 'selected' : ''}>Loose narrative (light rules, GM's judgment)</option>
@@ -263,7 +263,7 @@ function renderCreate() {
 
       <div class="field">
         <label>Genre / Tone</label>
-        <input type="text" id="tone" placeholder="e.g. dark survival horror, swashbuckling heist, cozy village mystery..." value="${createDraft.tone}">
+        <input type="text" id="tone" placeholder="e.g. dark survival horror, swashbuckling heist, cozy village mystery..." value="${createDraft.tone}" oninput="setCreateTone(this.value)">
       </div>
 
       <div class="field">
@@ -272,7 +272,7 @@ function renderCreate() {
           <div class="radio-card ${createDraft.seedMode === 'blank' ? 'active' : ''}" onclick="setSeedMode('blank')"><b>Let the GM invent it</b><span>Fresh hook from your genre/tone</span></div>
           <div class="radio-card ${createDraft.seedMode === 'custom' ? 'active' : ''}" onclick="setSeedMode('custom')"><b>I'll write it</b><span>Bring your own premise</span></div>
         </div>
-        ${createDraft.seedMode === 'custom' ? `<textarea id="seed" placeholder="Describe the opening situation, setting, and hook...">${createDraft.seed}</textarea>` : `<p class="helptext">Leave this — once you continue, the GM will generate an opening scene from the genre and tone above.</p>`}
+        ${createDraft.seedMode === 'custom' ? `<textarea id="seed" placeholder="Describe the opening situation, setting, and hook..." oninput="setCreateSeed(this.value)">${createDraft.seed}</textarea>` : `<p class="helptext">Leave this — once you continue, the GM will generate an opening scene from the genre and tone above.</p>`}
       </div>
 
       <button class="btn solid wide" onclick="submitCreate()">${MODE === 'solo' ? 'Create My Story' : 'Create Room'}</button>
@@ -281,6 +281,10 @@ function renderCreate() {
 }
 function setLen(k) { createDraft.length = k; renderCreate(); }
 function setSeedMode(m) { createDraft.seedMode = m; renderCreate(); }
+function setCreateName(v) { createDraft.name = v; }
+function setCreateTone(v) { createDraft.tone = v; }
+function setCreateSeed(v) { createDraft.seed = v; }
+function setCreateRuleset(v) { createDraft.ruleset = v; }
 
 async function submitCreate() {
   createDraft.name = el('cname').value.trim() || (MODE === 'solo' ? 'Untitled Story' : 'Untitled Campaign');
@@ -903,6 +907,10 @@ window.goToJoin = goToJoin;
 window.goToLanding = goToLanding;
 window.setLen = setLen;
 window.setSeedMode = setSeedMode;
+window.setCreateName = setCreateName;
+window.setCreateTone = setCreateTone;
+window.setCreateSeed = setCreateSeed;
+window.setCreateRuleset = setCreateRuleset;
 window.submitCreate = submitCreate;
 window.submitJoin = submitJoin;
 window.copyCode = copyCode;
