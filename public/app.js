@@ -624,6 +624,7 @@ function copyCode() {
 }
 
 function leaveTable() {
+  closeDiceRoll();
   if (realtimeChannel) { supabase.removeChannel(realtimeChannel); realtimeChannel = null; }
   if (GM_ABORT) GM_ABORT.abort();
   if (CHARGEN_ABORT) CHARGEN_ABORT.abort();
@@ -684,12 +685,13 @@ function renderStoryTab() {
   body.innerHTML = `
     <div class="game-grid">
       <div>
-        <div class="log" id="logBox">${LOG.map(entryHTML).join('') || '<p class="thinking">The story hasn&#39;t begun yet...</p>'}</div>
+        <div class="log" id="logBox">${LOG.filter(e => !heldLogIds.has(e.id)).map(entryHTML).join('') || '<p class="thinking">The story hasn&#39;t begun yet...</p>'}</div>
         <div class="composer">
+          ${rollPickerHTML()}
           <input type="text" id="composerInput" placeholder="Type an action, say something in character, or use /roll +modifier..." value="${escapeAttr(composerDraft)}" oninput="setComposerDraft(this.value)" onkeydown="if(event.key==='Enter') submitAction()">
           <button class="btn solid" onclick="submitAction()">Send</button>
         </div>
-        <div class="hint-bar"><code>/roll +5</code> rolls a d20+5 &middot; <code>/roll 1d20+4 adv</code> for advantage &middot; <code>/roll 2d6+3</code> for damage or any other dice &middot; plain text is narrated as your action.</div>
+        <div class="hint-bar">Pick a skill from <b>Roll from sheet</b> to fill in your modifier &middot; <code>/roll +5</code> rolls a d20+5 &middot; add <code>adv</code> or <code>dis</code> for advantage &middot; <code>/roll 2d6+3</code> for damage or any other dice &middot; plain text is narrated as your action.</div>
         <div style="margin-top:10px;">
           ${gmControlsHTML}
         </div>
@@ -715,10 +717,186 @@ function sheetMiniHTML() {
     ${abilityGridHTML(c)}
   </div>`;
 }
+/* ---------------- Roll picker + unlisted-modifier flag ---------------- */
+const UNLISTED_FLAG = '⚠ unlisted modifier';
+
+// Every d20 modifier this character actually has on their sheet.
+function rollOptions(c) {
+  if (!c) return [];
+  const abilities = [['STR', 'Strength', c.str], ['DEX', 'Dexterity', c.dex], ['CON', 'Constitution', c.con],
+                     ['INT', 'Intelligence', c.int], ['WIS', 'Wisdom', c.wis], ['CHA', 'Charisma', c.cha]];
+  const opts = abilities.map(([abbr, name, score]) => ({ key: 'a:' + abbr, group: 'Ability checks', abbr, name, mod: abilityMod(score) }));
+  (c.skills || []).forEach((s, i) => {
+    if (s && s.name) opts.push({ key: 's:' + i, group: 'Skills', name: String(s.name), mod: Number(s.mod) || 0 });
+  });
+  opts.push({ key: 'i', group: 'Other', name: 'Initiative', mod: initiativeBonus(c) });
+  return opts;
+}
+function rollPickerHTML() {
+  const opts = rollOptions(ROSTER[MY_CHAR_ID]);
+  if (!opts.length) return '';
+  const groups = [...new Set(opts.map(o => o.group))];
+  return `<select class="roll-picker" id="rollPicker" onchange="pickRoll(this.value)" title="Fill in a roll using your character sheet">
+    <option value="">🎲 Roll from sheet…</option>
+    ${groups.map(g => `<optgroup label="${escapeAttr(g)}">${opts.filter(o => o.group === g).map(o =>
+      `<option value="${escapeAttr(o.key)}">${escapeHtml(o.name)} (${fmtMod(o.mod)})</option>`).join('')}</optgroup>`).join('')}
+  </select>`;
+}
+function pickRoll(key) {
+  const opt = rollOptions(ROSTER[MY_CHAR_ID]).find(o => o.key === key);
+  const picker = el('rollPicker');
+  if (picker) picker.value = '';
+  if (!opt) return;
+  composerDraft = `/roll ${fmtMod(opt.mod)} ${opt.name}`;
+  const input = el('composerInput');
+  if (input) { input.value = composerDraft; input.focus(); }
+}
+// A d20 roll is flagged when its bonus is higher than the sheet allows. If the roll names
+// a skill/ability, compare against that one; otherwise the bonus must match something on the sheet.
+function isUnlistedModifier(c, mod, label) {
+  if (!c) return false;
+  const opts = rollOptions(c);
+  const key = (label || '').trim().toLowerCase();
+  const named = key && opts.find(o => o.name.toLowerCase() === key || (o.abbr && o.abbr.toLowerCase() === key));
+  if (named) return mod > named.mod;
+  return mod > 0 && !opts.some(o => o.mod === mod);
+}
+/* ---------------- Dice-roll popup ---------------- */
+function diceAnimOn() {
+  try { return localStorage.getItem('ledger:diceAnim') !== 'off'; } catch (e) { return true; }
+}
+function setDiceAnim(on) {
+  try { localStorage.setItem('ledger:diceAnim', on ? 'on' : 'off'); } catch (e) {}
+  if (!on) closeDiceRoll();
+}
+
+let diceTimers = [];
+let diceReveal = null;            // callback that un-hides the held log entry
+const heldLogIds = new Set();     // roll entries hidden from the log until their dice settle
+function revealHeldRoll() {
+  const f = diceReveal; diceReveal = null;
+  if (f) f();
+}
+function closeDiceRoll() {
+  diceTimers.forEach(t => { clearTimeout(t); clearInterval(t); });
+  diceTimers = [];
+  const o = el('diceOverlay');
+  if (o) o.remove();
+  revealHeldRoll();               // never leave a roll hidden if the popup is dismissed early
+}
+
+// Static markup only (no user text), so innerHTML is safe here.
+function dieShapeSVG(sides) {
+  const style = 'class="die-shape"';
+  let shape;
+  if (sides === 4) shape = `<polygon ${style} points="50,6 94,90 6,90"/>`;
+  else if (sides === 6) shape = `<rect ${style} x="8" y="8" width="84" height="84" rx="16"/>`;
+  else if (sides === 8) shape = `<polygon ${style} points="50,4 94,50 50,96 6,50"/><polygon class="die-inner" points="50,4 50,96 6,50"/>`;
+  else if (sides === 12) shape = `<polygon ${style} points="50,4 95,38 78,92 22,92 5,38"/>`;
+  else if (sides === 20) shape = `<polygon ${style} points="50,4 93,27 93,73 50,96 7,73 7,27"/><polygon class="die-inner" points="50,4 93,73 7,73"/>`;
+  else shape = `<polygon ${style} points="50,4 93,27 93,73 50,96 7,73 7,27"/>`;
+  return `<svg viewBox="0 0 100 100" aria-hidden="true">${shape}</svg>`;
+}
+
+// dice: [{ v, dropped }] — dropped dice (the loser of advantage/disadvantage) are dimmed.
+// Returns true if a popup was shown. onReveal runs once the dice settle (or the popup is closed).
+function showDiceRoll({ sides, dice, mod, total, flagged, title, onReveal }) {
+  if (!diceAnimOn() || !dice.length) return false;
+  closeDiceRoll();
+  diceReveal = onReveal || null;
+  const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const rollMs = reduce ? 0 : 1000;
+  const MAX_SHOWN = 12;
+  const shown = dice.slice(0, MAX_SHOWN);
+
+  const overlay = document.createElement('div');
+  overlay.id = 'diceOverlay';
+  overlay.className = 'dice-overlay';
+  overlay.setAttribute('role', 'status');
+  overlay.title = 'Click to dismiss';
+  overlay.onclick = closeDiceRoll;
+
+  const card = document.createElement('div');
+  card.className = 'dice-card';
+  const heading = document.createElement('div');
+  heading.className = 'dice-title';
+  heading.textContent = title;           // may contain a player-typed label — textContent keeps it inert
+  const row = document.createElement('div');
+  row.className = 'dice-row';
+
+  const nums = [], dieEls = [];
+  shown.forEach(() => {
+    const die = document.createElement('div');
+    die.className = 'die s' + sides + (reduce ? '' : ' rolling');
+    die.innerHTML = dieShapeSVG(sides);
+    const num = document.createElement('span');
+    num.className = 'die-num';
+    num.textContent = reduce ? '' : String(1 + Math.floor(Math.random() * sides));
+    die.appendChild(num);
+    row.appendChild(die);
+    nums.push(num); dieEls.push(die);
+  });
+  if (dice.length > MAX_SHOWN) {
+    const more = document.createElement('div');
+    more.className = 'dice-more';
+    more.textContent = `+${dice.length - MAX_SHOWN} more`;
+    row.appendChild(more);
+  }
+
+  const sum = document.createElement('div');
+  sum.className = 'dice-sum';
+  const expr = document.createElement('div');
+  expr.className = 'dice-expr';
+  const tot = document.createElement('div');
+  tot.className = 'dice-total';
+  sum.append(expr, tot);
+  if (flagged) {
+    const flag = document.createElement('div');
+    flag.className = 'dice-flag';
+    flag.textContent = UNLISTED_FLAG;
+    sum.appendChild(flag);
+  }
+
+  card.append(heading, row, sum);
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+
+  const settle = i => {
+    const d = shown[i];
+    nums[i].textContent = String(d.v);
+    dieEls[i].classList.remove('rolling');
+    dieEls[i].classList.add('settled');
+    if (d.dropped) dieEls[i].classList.add('dropped');
+    else if (sides === 20 && d.v === 20) dieEls[i].classList.add('crit');
+    else if (sides === 20 && d.v === 1) dieEls[i].classList.add('fumble');
+  };
+  const finish = () => {
+    const kept = dice.filter(d => !d.dropped).map(d => d.v);
+    expr.textContent = (kept.length <= MAX_SHOWN ? kept.join(' + ') : `${kept.length} dice`) + (mod !== 0 ? ` ${fmtMod(mod)}` : '');
+    tot.textContent = String(total);
+    sum.classList.add('show');
+    overlay.setAttribute('aria-label', `Rolled ${total}`);
+    revealHeldRoll();
+    diceTimers.push(setTimeout(closeDiceRoll, flagged ? 2800 : 2200));
+  };
+
+  if (reduce) { shown.forEach((_, i) => settle(i)); finish(); return true; }
+
+  diceTimers.push(setInterval(() => {
+    nums.forEach((n, i) => { if (dieEls[i].classList.contains('rolling')) n.textContent = String(1 + Math.floor(Math.random() * sides)); });
+  }, 70));
+  shown.forEach((_, i) => diceTimers.push(setTimeout(() => settle(i), rollMs + i * 120)));
+  diceTimers.push(setTimeout(finish, rollMs + (shown.length - 1) * 120 + 300));
+  return true;
+}
+
 function entryHTML(e) {
   const cls = e.type === 'gm' ? 'gm' : e.type === 'roll' ? 'roll' : e.type === 'system' ? 'system' : 'action';
   const dot = e.type === 'gm' ? '<span class="glow-dot"></span>' : '';
-  return `<div class="entry ${cls}"><div class="who">${dot}${e.author}</div><div class="text">${escapeHtml(e.text)}</div></div>`;
+  const flagged = e.type === 'roll' && (e.text || '').includes(UNLISTED_FLAG);
+  const body = escapeHtml(flagged ? e.text.replace(UNLISTED_FLAG, '').trim() : e.text);
+  const flag = flagged ? ` <span class="roll-flag" title="This bonus isn't on that character's sheet">${UNLISTED_FLAG}</span>` : '';
+  return `<div class="entry ${cls}"><div class="who">${dot}${escapeHtml(e.author)}</div><div class="text">${body}${flag}</div></div>`;
 }
 function escapeHtml(s) { return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>'); }
 
@@ -744,30 +922,54 @@ async function submitAction() {
   const me = ROSTER[MY_CHAR_ID];
   const authorName = me ? me.name : 'Player';
 
-  // Matches "/roll +5", "/roll 1d20+4", "/roll 2d6+3 adv", "/roll d20", "/roll 1d4", etc.
-  const rollMatch = text.match(/^\/roll\s*(?:(\d*)d(\d+))?\s*([+-]\d+)?\s*(adv|dis)?/i);
-  let entry;
+  // Matches "/roll +5", "/roll 1d20+4", "/roll 2d6+3 adv", "/roll d20", "/roll 1d4", and an
+  // optional label after the dice, e.g. "/roll +7 Stealth" or "/roll +7 adv Stealth".
+  const rollMatch = text.match(/^\/roll(?=\s|$)\s*(?:(\d*)d(\d+))?\s*([+-]\d+)?\s*(.*)$/i);
+  let entry, diceArgs = null;
   if (rollMatch) {
-    const sides = rollMatch[2] ? parseInt(rollMatch[2]) : 20;
-    const count = rollMatch[2] ? (rollMatch[1] ? parseInt(rollMatch[1]) : 1) : 1;
+    // Capped so something like "/roll 999999999d6" can't freeze the tab.
+    const sides = rollMatch[2] ? Math.min(Math.max(parseInt(rollMatch[2]), 2), 1000) : 20;
+    const count = rollMatch[2] ? Math.min(rollMatch[1] ? parseInt(rollMatch[1]) : 1, 100) : 1;
     const mod = rollMatch[3] ? parseInt(rollMatch[3]) : 0;
-    const mode = (rollMatch[4] || '').toLowerCase();
+    const rest = rollMatch[4] || '';
+    const modeMatch = rest.match(/\b(adv|dis)\b/i);
+    const mode = modeMatch ? modeMatch[1].toLowerCase() : '';
+    const label = rest.replace(/\b(adv|dis)\b/ig, '').replace(/\s+/g, ' ').trim().slice(0, 40);
 
-    let rolls, roll, detail;
+    let rolls, roll, detail, dice;
     if (count === 1 && sides === 20 && (mode === 'adv' || mode === 'dis')) {
       const r1 = Math.floor(Math.random() * 20) + 1;
       const r2 = Math.floor(Math.random() * 20) + 1;
       roll = mode === 'adv' ? Math.max(r1, r2) : Math.min(r1, r2);
       detail = `d20(${r1},${r2} ${mode})`;
+      const keepFirst = mode === 'adv' ? r1 >= r2 : r1 <= r2;
+      dice = [{ v: r1, dropped: !keepFirst }, { v: r2, dropped: keepFirst }];
     } else {
       rolls = Array.from({ length: count }, () => Math.floor(Math.random() * sides) + 1);
       roll = rolls.reduce((a, b) => a + b, 0);
       detail = (count === 1 && sides === 20) ? `d20(${rolls[0]})` : `${count}d${sides}(${rolls.join('+')})`;
+      dice = rolls.map(v => ({ v, dropped: false }));
     }
     const total = roll + mod;
-    entry = { id: uid(6), author: authorName, type: 'roll', text: `rolls ${detail}${mod !== 0 ? ' ' + fmtMod(mod) : ''} = ${total}` };
+    const flagged = count === 1 && sides === 20 && isUnlistedModifier(me, mod, label);
+    diceArgs = {
+      sides, dice, mod, total, flagged,
+      title: (label || (count === 1 && sides === 20 ? 'd20' : `${count}d${sides}`)) +
+             (mode && count === 1 && sides === 20 ? ` · ${mode === 'adv' ? 'advantage' : 'disadvantage'}` : ''),
+    };
+    entry = { id: uid(6), author: authorName, type: 'roll',
+      text: `rolls ${detail}${mod !== 0 ? ' ' + fmtMod(mod) : ''} = ${total}${label ? ' (' + label + ')' : ''}${flagged ? ' ' + UNLISTED_FLAG : ''}` };
   } else {
     entry = { id: uid(6), author: authorName, type: 'action', text };
+  }
+  if (diceArgs) {
+    // Start the popup right away and keep the result out of the log until the dice settle.
+    heldLogIds.add(entry.id);
+    const shown = showDiceRoll({
+      ...diceArgs,
+      onReveal: () => { heldLogIds.delete(entry.id); if (VIEW === 'game') render(); },
+    });
+    if (!shown) heldLogIds.delete(entry.id);
   }
   await dbInsertLog(ROOM, entry);
   LOG.push({ ...entry, ts: Date.now() });
@@ -943,6 +1145,8 @@ function renderHelpTab() {
       <ul>
         ${MODE === 'group' ? `<li>Everyone in this room shares the same <b>Ledger</b> (story log) and <b>Party</b> roster — anyone can open the room code on their own device.</li>` : `<li>This is your own solo story — only your character and the GM are here.</li>`}
         <li>Type plain text and hit Send to describe what your character says or does. It's narrated ${MODE === 'group' ? 'to the whole table' : 'into the story'}.</li>
+        <li>The <b>Roll from sheet</b> menu next to the message box lists your ability checks, skills, and initiative — pick one and it fills in the right modifier and label for you. If a d20 roll uses a bonus higher than your sheet allows, the log tags it <b>⚠ unlisted modifier</b> so the table can see it (legit situational bonuses like Bless will trigger it too — just a heads-up, nothing is blocked).</li>
+        <li><label style="cursor:pointer;"><input type="checkbox" ${diceAnimOn() ? 'checked' : ''} onchange="setDiceAnim(this.checked)"> Show the dice-rolling popup when you roll (click it to dismiss early)</label></li>
         <li>Dice are <b>only</b> rolled when you type <code>/roll</code>. For a plain d20 check, just add the number, e.g. <code>/roll +5</code>. For any other dice — damage, healing, anything the GM asks for — use full notation like <code>/roll 2d6+3</code> or <code>/roll 1d4</code>.</li>
         <li>For advantage or disadvantage on a d20 roll: <code>/roll +5 adv</code> or <code>/roll 1d20+5 dis</code> — rolls two d20s and keeps the higher or lower.</li>
         <li><b>Ask the GM to continue the story</b> sends the recent log and character/party status to the Game Master, who narrates what happens next.</li>
@@ -988,6 +1192,8 @@ window.cancelCharGen = cancelCharGen;
 window.setTab = setTab;
 window.advanceSession = advanceSession;
 window.submitAction = submitAction;
+window.pickRoll = pickRoll;
+window.setDiceAnim = setDiceAnim;
 window.askGM = askGM;
 window.cancelGM = cancelGM;
 window.hpDelta = hpDelta;

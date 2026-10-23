@@ -7,6 +7,18 @@
 
 window.LEDGER_CHANGELOG = [
   {
+    date: '2026-10-23',
+    type: 'feature',
+    title: "Dice-rolling popup",
+    detail: "Rolling now pops up tumbling dice that settle on your result — shaped to the die (d20, d6, d4, d8, d12), with a gold glow for a natural 20, red for a natural 1, and the discarded die dimmed when you roll with advantage or disadvantage. The result appears in the story log as the dice land, so it never spoils the roll. Click the popup to dismiss it early, or turn it off in Field Notes. Also capped /roll at 100 dice so a typo like 999999999d6 can't freeze the page."
+  },
+  {
+    date: '2026-10-23',
+    type: 'feature',
+    title: "Roll from your character sheet, and flagged rolls",
+    detail: "A new \"Roll from sheet\" menu next to the message box lists your ability checks, skills, and initiative — pick one and the right modifier and label are filled in for you (add adv or dis to roll with advantage or disadvantage). If a d20 roll uses a bonus higher than your sheet allows (say, +100 on a +3 skill), the log now tags it \"unlisted modifier\" so the whole table can see it. Damage rolls are never flagged. Also fixed one more spot where a character name wasn't escaped in the story log."
+  },
+  {
     date: '2026-09-27',
     type: 'fix',
     title: "Security and reliability pass",
@@ -57,14 +69,6 @@ window.LEDGER_CHANGELOG = [
 ];
 
 window.LEDGER_ROADMAP = [
-  {
-    title: "Skill picker for /roll",
-    detail: "Instead of typing a modifier from memory, pick a skill or ability from your own character sheet and have the app insert the correct number for you — cuts down on typos and makes it obvious what a roll is actually for."
-  },
-  {
-    title: "Flag rolls with an unrecognized modifier",
-    detail: "If a /roll's modifier doesn't match anything on that character's saved sheet (e.g. someone types +100 when their skill is +3), tag it in the log so the table can see and question it, instead of it slipping by silently."
-  },
   {
     title: "Voice narration for the GM",
     detail: "Have the GM's messages read aloud, with a distinct voice for each NPC's dialogue. A no-cost, browser-based first version is already designed and ready to build."

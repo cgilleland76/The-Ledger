@@ -136,6 +136,45 @@ input, textarea, select{ font-family:'IBM Plex Sans', sans-serif; }
 .composer{ margin-top:12px; display:flex; gap:8px; }
 .composer input{ flex:1; background:var(--bg-deep); border:1px solid var(--border); color:var(--text); padding:12px 14px; border-radius:4px; font-size:0.95rem; }
 .composer input:focus{ outline:2px solid var(--glow-dim); }
+.roll-picker{ max-width:150px; background:var(--bg-deep); border:1px solid var(--border); color:var(--text); padding:0 8px; border-radius:4px; font-size:0.8rem; }
+.roll-picker:focus{ outline:2px solid var(--glow-dim); }
+/* ---------- Dice-roll popup ---------- */
+.dice-overlay{ position:fixed; inset:0; z-index:100; display:flex; align-items:center; justify-content:center; background:rgba(10,14,16,0.72); cursor:pointer; animation:dice-fade .18s ease-out; }
+.dice-card{ background:var(--panel); border:1px solid var(--glow-dim); border-radius:10px; padding:24px 34px 22px; text-align:center; max-width:92vw; box-shadow:0 10px 40px rgba(0,0,0,0.6), 0 0 30px rgba(127,217,196,0.12); }
+.dice-title{ font-family:'Spectral SC', serif; letter-spacing:0.12em; text-transform:uppercase; color:var(--glow); font-size:0.8rem; margin-bottom:16px; word-break:break-word; }
+.dice-row{ display:flex; gap:14px; justify-content:center; align-items:center; flex-wrap:wrap; min-height:92px; max-width:560px; }
+.die{ position:relative; width:84px; height:84px; }
+.die svg{ width:100%; height:100%; overflow:visible; }
+.die-shape{ fill:rgba(127,217,196,0.13); stroke:var(--glow); stroke-width:3; stroke-linejoin:round; }
+.die-inner{ fill:none; stroke:var(--glow-dim); stroke-width:2; stroke-linejoin:round; }
+.die-num{ position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-family:'IBM Plex Mono', monospace; font-weight:600; font-size:1.7rem; color:var(--parchment); }
+.die.s4 .die-num{ padding-top:18px; }
+.die.rolling{ animation:dice-tumble .55s linear infinite; }
+.die.settled{ animation:dice-pop .35s ease-out; }
+.die.crit{ filter:drop-shadow(0 0 12px rgba(242,212,121,0.85)); }
+.die.crit .die-shape{ stroke:#f2d479; }
+.die.crit .die-num{ color:#f2d479; }
+.die.fumble .die-shape{ stroke:var(--danger); }
+.die.fumble .die-num{ color:var(--rust-bright); }
+.die.dropped{ opacity:0.35; filter:grayscale(1); }
+.dice-more{ color:var(--text-dim); font-size:0.85rem; }
+.dice-sum{ margin-top:16px; opacity:0; transform:translateY(6px); transition:opacity .25s ease, transform .25s ease; }
+.dice-sum.show{ opacity:1; transform:none; }
+.dice-expr{ color:var(--text-dim); font-family:'IBM Plex Mono', monospace; font-size:0.9rem; }
+.dice-total{ font-family:'Spectral', serif; font-size:2.6rem; line-height:1.1; color:var(--parchment); }
+.dice-flag{ color:var(--rust-bright); font-size:0.78rem; margin-top:4px; }
+@keyframes dice-tumble{
+  0%{ transform:translateY(0) rotate(0deg); }
+  25%{ transform:translateY(-22px) rotate(110deg) scale(1.06); }
+  50%{ transform:translateY(0) rotate(220deg); }
+  75%{ transform:translateY(-12px) rotate(300deg); }
+  100%{ transform:translateY(0) rotate(360deg); }
+}
+@keyframes dice-pop{ 0%{ transform:scale(1.35) rotate(-8deg); } 60%{ transform:scale(0.94); } 100%{ transform:scale(1); } }
+@keyframes dice-fade{ from{ opacity:0; } to{ opacity:1; } }
+@media (prefers-reduced-motion: reduce){ .die.rolling, .die.settled, .dice-overlay{ animation:none; } }
+
+.roll-flag{ color:var(--rust-bright); font-family:'IBM Plex Sans', sans-serif; font-size:0.74rem; white-space:nowrap; }
 .hint-bar{ font-size:0.76rem; color:var(--text-dim); margin-top:6px; }
 .hint-bar code{ background:var(--bg-deep); border:1px solid var(--border); padding:1px 6px; border-radius:3px; color:var(--glow); font-family:'IBM Plex Mono', monospace; }
 

@@ -117,6 +117,17 @@ The footer, the Field Notes feedback box, and `changelog.html` also show a "Buy 
   ability scores, HP/AC, skills, and class/tone-appropriate starting gear;
   flip to "I'll roll my own" for fully manual entry. Character tiles show all
   six ability scores plus derived Passive Perception and Initiative.
+- **Roll from sheet:** a menu beside the message box lists the character's
+  ability checks, skills, and initiative; picking one fills in
+  `/roll +N <label>`. A d20 roll whose bonus is higher than the sheet allows
+  is tagged "⚠ unlisted modifier" in the log (visible to everyone, nothing is
+  blocked — rolls are still computed client-side, so this deters rather than
+  prevents cheating).
+- **Dice popup:** every roll shows a short tumbling-dice animation (SVG + CSS,
+  no libraries) that settles on the result; the log entry is held back until
+  the dice land. It respects `prefers-reduced-motion`, can be dismissed with a
+  click, and each player can switch it off in Field Notes (stored in
+  `localStorage`). `/roll` is capped at 100 dice / d1000.
 - **Dice:** typing `/roll` supports both a flat-modifier shorthand
   (`/roll +5` = d20+5) and full dice notation for anything else
   (`/roll 2d6+3` for damage, `/roll 1d4`); add `adv`/`dis` for advantage or
