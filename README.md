@@ -98,6 +98,11 @@ name when mid-game. Change the address with `CONTACT_EMAIL` in `public/config.js
 `mailto:` needs a mail client on the visitor's device; a Netlify Function or Supabase `feedback` table would be
 the upgrade if you want a real form.
 
+## Support link
+
+The footer, the Field Notes feedback box, and `changelog.html` also show a "Buy me a coffee ☕" link when
+`SUPPORT_URL` is set in `public/config.js`. Leave it blank to hide it everywhere it appears.
+
 ## How it works
 
 - **Solo mode:** creates a room with `mode: 'solo'`, skips the invite-code

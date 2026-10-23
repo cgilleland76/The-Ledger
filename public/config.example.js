@@ -11,4 +11,6 @@ window.LEDGER_CONFIG = {
   SUPABASE_ANON_KEY: "YOUR-ANON-KEY-HERE",
   // Where the Feedback button / footer / Help box send email. Leave blank to hide them.
   CONTACT_EMAIL: "you@example.com",
+  // Optional "support the project" link (e.g. Buy Me a Coffee). Leave blank to hide it.
+  SUPPORT_URL: "",
 };

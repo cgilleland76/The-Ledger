@@ -139,7 +139,7 @@ function recallCharacter(code) {
 function render() {
   renderView();
   const app = el('app');
-  if (app && CONTACT_EMAIL) app.insertAdjacentHTML('beforeend', feedbackFooterHTML());
+  if (app && (CONTACT_EMAIL || SUPPORT_URL)) app.insertAdjacentHTML('beforeend', feedbackFooterHTML());
   renderFeedbackFab();
 }
 function renderView() {
@@ -151,8 +151,9 @@ function renderView() {
   if (VIEW === 'game') return renderGame();
 }
 
-/* ---------------- Feedback / contact ---------------- */
+/* ---------------- Feedback / contact / support ---------------- */
 const CONTACT_EMAIL = (cfg.CONTACT_EMAIL || '').trim();
+const SUPPORT_URL = (cfg.SUPPORT_URL || '').trim();
 const escapeAttr = s => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 function feedbackMailto() {
@@ -176,11 +177,19 @@ function renderFeedbackFab() {
   fab.href = feedbackMailto();
 }
 function feedbackFooterHTML() {
-  return `<div class="footer-contact">Found a bug or have a suggestion? <a href="${escapeAttr(feedbackMailto())}">Email ${escapeAttr(CONTACT_EMAIL)}</a></div>`;
+  const parts = [];
+  if (CONTACT_EMAIL) parts.push(`Found a bug or have a suggestion? <a href="${escapeAttr(feedbackMailto())}">Email ${escapeAttr(CONTACT_EMAIL)}</a>`);
+  if (SUPPORT_URL) parts.push(`Enjoying The Ledger? <a href="${escapeAttr(SUPPORT_URL)}" target="_blank" rel="noopener">Buy me a coffee ☕</a>`);
+  if (!parts.length) return '';
+  return `<div class="footer-contact">${parts.join(' &middot; ')}</div>`;
 }
 function feedbackBoxHTML() {
-  if (!CONTACT_EMAIL) return '';
-  return `<div class="feedback-box"><h3>Feedback</h3><p class="helptext">Something broken, confusing, or missing? Send a note — it pre-fills which screen and room you were on.</p><a class="btn" href="${escapeAttr(feedbackMailto())}">Email feedback</a></div>`;
+  if (!CONTACT_EMAIL && !SUPPORT_URL) return '';
+  return `<div class="feedback-box">
+    <h3>Feedback</h3>
+    ${CONTACT_EMAIL ? `<p class="helptext">Something broken, confusing, or missing? Send a note — it pre-fills which screen and room you were on.</p><a class="btn" href="${escapeAttr(feedbackMailto())}">Email feedback</a>` : ''}
+    ${SUPPORT_URL ? `<p class="helptext" style="margin-top:${CONTACT_EMAIL ? '16px' : '0'};">Enjoying the game? Consider supporting the project.</p><a class="btn rust" href="${escapeAttr(SUPPORT_URL)}" target="_blank" rel="noopener">Buy me a coffee ☕</a>` : ''}
+  </div>`;
 }
 
 /* ---------------- LANDING ---------------- */
