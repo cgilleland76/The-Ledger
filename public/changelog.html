@@ -33,13 +33,20 @@ function escapeAttr(s) { return String(s).replace(/&/g, '&amp;').replace(/"/g, '
 
 const cfg = (window.LEDGER_CONFIG || {});
 const SUPPORT_URL = (cfg.SUPPORT_URL || '').trim();
-const CONTACT_EMAIL = (cfg.CONTACT_EMAIL || '').trim();
-if (SUPPORT_URL || CONTACT_EMAIL) {
+let CONTACT_EMAIL = (cfg.CONTACT_EMAIL || '').trim();
+function renderSupportFooter() {
+  if (!(SUPPORT_URL || CONTACT_EMAIL)) return;
   const parts = [];
   if (CONTACT_EMAIL) parts.push(`Found a bug or have a suggestion? <a href="mailto:${escapeAttr(CONTACT_EMAIL)}">Email ${escapeAttr(CONTACT_EMAIL)}</a>`);
   if (SUPPORT_URL) parts.push(`Enjoying The Ledger? <a href="${escapeAttr(SUPPORT_URL)}" target="_blank" rel="noopener">Buy me a coffee ☕</a>`);
-  document.getElementById('supportFooter').outerHTML = `<div class="footer-contact" style="margin-top:36px;">${parts.join(' &middot; ')}</div>`;
+  document.getElementById('supportFooter').outerHTML = `<div class="footer-contact" id="supportFooter" style="margin-top:36px;">${parts.join(' &middot; ')}</div>`;
 }
+renderSupportFooter();
+// The support email comes from the SUPPORT_EMAIL Netlify variable; config.js is the fallback.
+fetch('/api/site-config').then(r => r.ok ? r.json() : null).then(d => {
+  const email = d && String(d.supportEmail || '').trim();
+  if (email && email !== CONTACT_EMAIL) { CONTACT_EMAIL = email; renderSupportFooter(); }
+}).catch(() => {});
 
 document.getElementById('roadmapList').innerHTML = (window.LEDGER_ROADMAP || []).map(item => `
   <div class="changelog-entry">

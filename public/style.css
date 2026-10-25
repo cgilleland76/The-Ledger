@@ -139,6 +139,7 @@ input, textarea, select{ font-family:'IBM Plex Sans', sans-serif; }
 .portrait-empty{ display:flex; align-items:center; justify-content:center; text-align:center; padding:12px; background:var(--bg-deep); border-style:dashed; border-color:var(--border); color:var(--text-dim); font-size:0.8rem; }
 .portrait-side{ flex:1; min-width:0; }
 .portrait-side label{ display:block; font-size:0.72rem; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.03em; margin-bottom:6px; }
+.portrait-side input[type=text]{ width:100%; background:var(--bg-deep); border:1px solid var(--border); color:var(--text); border-radius:4px; padding:7px 10px; font-size:0.9rem; }
 .portrait-side textarea{ width:100%; min-height:84px; resize:vertical; margin-bottom:10px; background:var(--bg-deep); border:1px solid var(--border); color:var(--text); border-radius:4px; padding:10px; font-size:0.9rem; line-height:1.5; }
 .rhead{ display:flex; gap:10px; align-items:center; margin-bottom:2px; }
 .rhead-main{ flex:1; min-width:0; }

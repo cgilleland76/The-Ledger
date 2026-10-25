@@ -29,6 +29,8 @@ let composerDraft = '';
 let newItemDraft = '';
 let notesDraft = null; // null = show the saved value; string = an unsaved in-progress edit
 let appearanceDraft = null; // same idea, for the Sheet tab's Appearance box
+let genderDraft = null;
+let ageDraft = null;
 let portraitPendingSince = 0; // when this browser last asked for a portrait (0 = not waiting)
 let portraitBaseline = '';    // the character's portrait_updated_at at that moment
 let portraitPoll = null;
@@ -165,9 +167,25 @@ function renderView() {
 }
 
 /* ---------------- Feedback / contact / support ---------------- */
-const CONTACT_EMAIL = (cfg.CONTACT_EMAIL || '').trim();
+let CONTACT_EMAIL = (cfg.CONTACT_EMAIL || '').trim(); // config.js value is the fallback; the SUPPORT_EMAIL Netlify variable wins (see loadSiteConfig)
 const SUPPORT_URL = (cfg.SUPPORT_URL || '').trim();
 const escapeAttr = s => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+// The support email lives in a Netlify environment variable; ask the site-config function for it.
+// Any failure (offline, local file preview) just keeps the config.js address.
+async function loadSiteConfig() {
+  try {
+    const resp = await fetch('/api/site-config');
+    if (!resp.ok) return;
+    const email = String((await resp.json()).supportEmail || '').trim();
+    if (!email || email === CONTACT_EMAIL) return;
+    CONTACT_EMAIL = email;
+    const app = el('app');
+    if (app) { app.querySelectorAll('.footer-contact').forEach(n => n.remove()); app.insertAdjacentHTML('beforeend', feedbackFooterHTML()); }
+    renderFeedbackFab();
+    if (VIEW === 'game' && ACTIVE_TAB === 'help') renderHelpTab();
+  } catch (e) { /* keep the fallback */ }
+}
 
 function feedbackMailto() {
   const screens = { landing: 'Home', modepick: 'Mode select', create: 'Create campaign', join: 'Join with code', charsetup: 'Character setup', game: 'In game (' + ACTIVE_TAB + ' tab)' };
@@ -402,7 +420,7 @@ function blankChar() {
   return {
     player: '', name: '', race: '', klass: '', level: 1, hp: 10, maxhp: 10, ac: 10,
     str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10,
-    skills: [{ name: '', mod: 0 }], inventory: [''], spells: [], notes: '', appearance: ''
+    skills: [{ name: '', mod: 0 }], inventory: [''], spells: [], notes: '', appearance: '', gender: '', age: ''
   };
 }
 function abilityMod(score) { return Math.floor(((score ?? 10) - 10) / 2); }
@@ -427,6 +445,10 @@ function renderCharSetup() {
 
       <div class="field"><label>Your Name (player)</label><input type="text" id="pName" value="${escapeAttr(d.player)}" oninput="setDraftField('player', this.value)"></div>
       <div class="field"><label>Character Name</label><input type="text" id="cCharName" value="${escapeAttr(d.name)}" oninput="setDraftField('name', this.value)"></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+        <div class="field"><label>Gender (optional)</label><input type="text" id="cGender" maxlength="30" placeholder="e.g. female, male, nonbinary" value="${escapeAttr(d.gender || '')}" oninput="setDraftField('gender', this.value)"></div>
+        <div class="field"><label>Age (optional)</label><input type="text" id="cAge" maxlength="20" placeholder="e.g. 34, or ancient" value="${escapeAttr(d.age || '')}" oninput="setDraftField('age', this.value)"></div>
+      </div>
       <div class="field"><label>Appearance (optional — used to paint your portrait)</label><textarea id="cAppearance" maxlength="500" placeholder="e.g. Tall and wiry, silver hair, a scar over one eye, patched green cloak" oninput="setDraftField('appearance', this.value)">${escapeAttr(d.appearance || '')}</textarea></div>
 
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
@@ -530,15 +552,19 @@ async function generateCharacter() {
   const raceHint = (el('cRace')?.value || '').trim();
   const classHint = (el('cClass')?.value || '').trim();
   const appearanceHint = (el('cAppearance')?.value || '').trim().slice(0, 500);
+  const genderHint = (el('cGender')?.value || '').trim().slice(0, 30);
+  const ageHint = (el('cAge')?.value || '').trim().slice(0, 20);
   renderCharSetup();
 
   const prompt = `Generate a complete tabletop RPG character sheet for a new level 1 character in a ${MODE === 'solo' ? 'solo story' : 'campaign'} titled "${META.name}". Ruleset: ${META.ruleset}. Genre/tone: ${META.tone || 'unspecified — pick something fitting'}.
 ${raceHint ? `The player wants a ${raceHint} character.` : 'Choose a race/species that fits the tone.'}
 ${classHint ? `The player wants to play a ${classHint}.` : 'Choose a class that fits the tone.'}
+${genderHint ? `The character's gender is: ${genderHint}.` : ''}
+${ageHint ? `The character's age is: ${ageHint}.` : ''}
 ${appearanceHint ? `The player describes their look as: ${appearanceHint}` : ''}
 
 Respond with ONLY a single JSON object, no markdown code fences, no commentary, matching exactly this shape:
-{"race":"string","klass":"string","str":10,"dex":10,"con":10,"int":10,"wis":10,"cha":10,"maxhp":10,"ac":10,"skills":[{"name":"string","mod":0}],"inventory":["string"],"notes":"one or two sentence backstory hook","appearance":"one or two sentences describing how the character looks"}
+{"race":"string","klass":"string","str":10,"dex":10,"con":10,"int":10,"wis":10,"cha":10,"maxhp":10,"ac":10,"skills":[{"name":"string","mod":0}],"inventory":["string"],"notes":"one or two sentence backstory hook","appearance":"one or two sentences describing how the character looks","gender":"string","age":"string, e.g. 34"}
 
 Use sensible 5e-appropriate ability scores for the class (e.g. the standard array 15/14/13/12/10/8 assigned to fit the class), a reasonable starting HP and AC for a level 1 character, 3-5 class-appropriate skills with realistic modifiers, and 4-8 pieces of starting gear specifically appropriate to that class and the campaign's tone — not generic fantasy-adventurer gear unless the tone calls for it.`;
 
@@ -562,6 +588,8 @@ Use sensible 5e-appropriate ability scores for the class (e.g. the standard arra
       inventory: Array.isArray(parsed.inventory) && parsed.inventory.length ? parsed.inventory : draftChar.inventory,
       notes: parsed.notes || draftChar.notes,
       appearance: (draftChar.appearance || '').trim() ? draftChar.appearance : String(parsed.appearance || '').slice(0, 500),
+      gender: (draftChar.gender || '').trim() ? draftChar.gender : String(parsed.gender || '').slice(0, 30),
+      age: (draftChar.age || '').trim() ? draftChar.age : String(parsed.age ?? '').slice(0, 20),
       __generated: true,
     };
   } catch (e) {
@@ -606,6 +634,8 @@ async function submitCharacter() {
     draftChar.cha = parseInt(el('cCHA').value) || 10;
     draftChar.notes = el('cNotes').value.trim();
     draftChar.appearance = el('cAppearance').value.trim().slice(0, 500);
+    draftChar.gender = el('cGender').value.trim().slice(0, 30);
+    draftChar.age = el('cAge').value.trim().slice(0, 20);
     draftChar.skills = draftChar.skills.filter(s => s.name.trim());
     draftChar.inventory = draftChar.inventory.filter(i => i.trim());
 
@@ -643,7 +673,7 @@ function copyCode() {
 
 function leaveTable() {
   closeDiceRoll();
-  stopPortraitPoll(); portraitPendingSince = 0; appearanceDraft = null;
+  stopPortraitPoll(); portraitPendingSince = 0; appearanceDraft = null; genderDraft = null; ageDraft = null;
   if (realtimeChannel) { supabase.removeChannel(realtimeChannel); realtimeChannel = null; }
   if (GM_ABORT) GM_ABORT.abort();
   if (CHARGEN_ABORT) CHARGEN_ABORT.abort();
@@ -1173,6 +1203,10 @@ function portraitBoxHTML(c) {
   return `<div class="portrait-box">
     ${img || '<div class="portrait-empty">No portrait yet</div>'}
     <div class="portrait-side">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:8px;">
+        <div><label for="charGender">Gender</label><input type="text" id="charGender" maxlength="30" value="${escapeAttr(genderDraft !== null ? genderDraft : (c.gender || ''))}" oninput="setPortraitDraft('gender', this.value)"></div>
+        <div><label for="charAge">Age</label><input type="text" id="charAge" maxlength="20" value="${escapeAttr(ageDraft !== null ? ageDraft : (c.age || ''))}" oninput="setPortraitDraft('age', this.value)"></div>
+      </div>
       <label for="charAppearance">Appearance</label>
       <textarea id="charAppearance" maxlength="500" placeholder="Describe how your character looks — hair, build, clothing, scars…" oninput="setAppearanceDraft(this.value)">${escapeAttr(appearanceDraft !== null ? appearanceDraft : (c.appearance || ''))}</textarea>
       ${action}
@@ -1180,6 +1214,7 @@ function portraitBoxHTML(c) {
   </div>`;
 }
 function setAppearanceDraft(v) { appearanceDraft = v; }
+function setPortraitDraft(field, v) { if (field === 'gender') genderDraft = v; else ageDraft = v; }
 
 function stopPortraitPoll() { if (portraitPoll) { clearInterval(portraitPoll); portraitPoll = null; } }
 // Backup for the realtime update: re-check the roster every few seconds while waiting.
@@ -1201,6 +1236,8 @@ async function generatePortrait() {
   if (!c || portraitState(c) === 'pending') return;
   const box = el('charAppearance');
   if (box) { c.appearance = box.value.trim().slice(0, 500); appearanceDraft = null; }
+  if (el('charGender')) { c.gender = el('charGender').value.trim().slice(0, 30); genderDraft = null; }
+  if (el('charAge')) { c.age = el('charAge').value.trim().slice(0, 20); ageDraft = null; }
   await persistRoster();
   portraitPendingSince = Date.now();
   portraitBaseline = c.portraitAt || '';
@@ -1355,8 +1392,9 @@ window.removeItem = removeItem;
 window.saveNotes = saveNotes;
 window.generatePortrait = generatePortrait;
 window.setAppearanceDraft = setAppearanceDraft;
+window.setPortraitDraft = setPortraitDraft;
 
 /* ---------------- Boot ---------------- */
-if (checkConfigured()) render();
+if (checkConfigured()) { render(); loadSiteConfig(); }
 
 })();
