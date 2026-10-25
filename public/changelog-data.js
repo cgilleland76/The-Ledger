@@ -9,6 +9,12 @@ window.LEDGER_CHANGELOG = [
   {
     date: "2026-10-25",
     type: "feature",
+    title: "A new look: an old tome on an oak desk",
+    detail: "The Ledger has been redesigned from top to bottom. Every screen is now a page in an aged book — parchment pages with ink text, gold-leaf trim, wax-red buttons and a lit-by-candle desk behind them — with new fonts, a book emblem, framed character portraits, and dice that match. Nothing about how the game plays has changed, and it works on phones too."
+  },
+  {
+    date: "2026-10-25",
+    type: "feature",
     title: "Character portraits",
     detail: "Describe how your character looks (there are new optional Gender, Age and Appearance boxes, and \"Let the GM build it\" fills them in for you) and press Generate on your Sheet tab. A painted portrait appears on your sheet and on your tile in the story and party views, in a style matched to your campaign's tone. Each player generates only their own, you can regenerate once a minute, and each table gets 10 portraits in total."
   },

@@ -227,13 +227,11 @@ function feedbackBoxHTML() {
 function renderLanding() {
   el('app').innerHTML = `
     <div class="landing">
-      <svg class="lantern" viewBox="0 0 64 64" fill="none">
-        <ellipse cx="32" cy="46" rx="14" ry="6" fill="#7fd9c4" opacity="0.15"/>
-        <path d="M20 20 L44 20 L40 44 L24 44 Z" stroke="#7fd9c4" stroke-width="2" fill="rgba(127,217,196,0.12)"/>
-        <circle cx="32" cy="30" r="6" fill="#7fd9c4"/>
-        <line x1="32" y1="8" x2="32" y2="20" stroke="#7fd9c4" stroke-width="2"/>
-        <line x1="24" y1="44" x2="20" y2="54" stroke="#7fd9c4" stroke-width="2"/>
-        <line x1="40" y1="44" x2="44" y2="54" stroke="#7fd9c4" stroke-width="2"/>
+      <svg class="lantern" viewBox="0 0 64 64" fill="none" aria-hidden="true">
+        <path d="M32 24 C24 20 14 20 7 23 L7 49 C14 46 24 46 32 50 C40 46 50 46 57 49 L57 23 C50 20 40 20 32 24 Z" fill="rgba(217,180,90,0.14)" stroke="#d9b45a" stroke-width="2" stroke-linejoin="round"/>
+        <line x1="32" y1="24" x2="32" y2="50" stroke="#d9b45a" stroke-width="2"/>
+        <path d="M12 29 C18 27 25 27 28 29 M12 35 C18 33 25 33 28 35 M12 41 C18 39 25 39 28 41 M36 29 C39 27 46 27 52 29 M36 35 C39 33 46 33 52 35 M36 41 C39 39 46 39 52 41" stroke="#d9b45a" stroke-width="1.2" opacity="0.6" stroke-linecap="round"/>
+        <path d="M32 4 L34.4 11 L41.5 11.4 L36 15.8 L38 22.5 L32 18.6 L26 22.5 L28 15.8 L22.5 11.4 L29.6 11 Z" fill="#d9b45a"/>
       </svg>
       <div class="eyebrow">Remote Tabletop</div>
       <h1>The Ledger</h1>
@@ -741,7 +739,7 @@ function renderStoryTab() {
           <button class="btn solid" onclick="submitAction()">Send</button>
         </div>
         <div class="hint-bar">Pick a skill from <b>Roll from sheet</b> to fill in your modifier &middot; <code>/roll +5</code> rolls a d20+5 &middot; add <code>adv</code> or <code>dis</code> for advantage &middot; <code>/roll 2d6+3</code> for damage or any other dice &middot; plain text is narrated as your action.</div>
-        <div style="margin-top:10px;">
+        <div class="desk-row" style="margin-top:12px;">
           ${gmControlsHTML}
         </div>
       </div>
@@ -1282,7 +1280,7 @@ function renderSheetTab() {
       </div>
 
       <h3 style="font-size:1rem;">Skills</h3>
-      ${(c.skills || []).map(s => `<div class="item-row"><span>${escapeHtml(s.name)}</span><span style="font-family:'IBM Plex Mono',monospace;color:var(--glow)">${s.mod >= 0 ? '+' : ''}${escapeHtml(String(s.mod))}</span></div>`).join('') || '<p class="helptext">None recorded.</p>'}
+      ${(c.skills || []).map(s => `<div class="item-row"><span>${escapeHtml(s.name)}</span><span style="font-family:var(--font-display);font-weight:600;color:var(--glow)">${s.mod >= 0 ? '+' : ''}${escapeHtml(String(s.mod))}</span></div>`).join('') || '<p class="helptext">None recorded.</p>'}
 
       <h3 style="font-size:1rem;margin-top:20px;">Inventory</h3>
       ${(c.inventory || []).map((it, i) => `<div class="item-row"><span>${escapeHtml(it)}</span><button class="small-x" onclick="removeItem(${i})">&times;</button></div>`).join('') || '<p class="helptext">Empty-handed.</p>'}
