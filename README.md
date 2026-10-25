@@ -50,6 +50,10 @@ Create one at [console.anthropic.com](https://console.anthropic.com) if you
 don't have one already. You'll add this as a Netlify environment variable in
 step 5 — **never** put it in any file inside `public/`.
 
+For character portraits you also need an OpenAI API key (platform.openai.com;
+image models can require organization verification). Set a monthly spending
+limit on it — every portrait costs a few cents.
+
 ## 4. Push to GitHub
 
 ```bash
@@ -70,6 +74,8 @@ gh repo create the-ledger --private --source=. --push
 3. Before the first deploy finishes, go to **Site configuration → Environment
    variables** and add:
    - `ANTHROPIC_API_KEY` = your key from step 3
+   - `OPENAI_API_KEY` = your OpenAI key (portraits only; without it the rest of the app works and Generate says portraits aren't enabled)
+   - optional: `OPENAI_IMAGE_MODEL` (default `gpt-image-2.5-flare`) and `PORTRAIT_MAX_PER_ROOM` (default 10)
 4. Deploy. Netlify will build both the static site and the
    `netlify/functions/gm.js` function automatically.
 
@@ -118,7 +124,9 @@ The footer, the Field Notes feedback box, and `changelog.html` also show a "Buy 
   flip to "I'll roll my own" for fully manual entry. Character tiles show all
   six ability scores plus derived Passive Perception and Initiative.
 - **Roll from sheet:** a menu beside the message box lists the character's
-  ability checks, skills, and initiative; picking one fills in
+  ability checks, skills, weapon attacks (ability mod + proficiency bonus from
+  level), and initiative. The same list is sent to the GM as "Sheet
+  modifiers", and the GM is told to request only those bonuses. Picking one fills in
   `/roll +N <label>`. A d20 roll whose bonus is higher than the sheet allows
   is tagged "⚠ unlisted modifier" in the log (visible to everyone, nothing is
   blocked — rolls are still computed client-side, so this deters rather than
@@ -137,9 +145,22 @@ The footer, the Field Notes feedback box, and `changelog.html` also show a "Buy 
   damage — and never to narrate an outcome ahead of the actual roll.
 - **The GM:** the "Ask the GM to continue the story" button sends the recent
   log plus character/party status to `/api/gm`, which forwards it to Claude
-  and appends the response back into the shared log. The function requires a
+  and appends the response back into the shared log. GM messages are rendered
+  with a small safe markdown subset (headings, quotes, lists, bold/italic,
+  inline code) — the text is HTML-escaped first, so only fixed tags can appear. The function requires a
   valid, existing room code before calling Claude, so the endpoint can't be
   used as a free relay by someone who just finds the URL.
+- **Portraits:** each player can describe their character (the optional Appearance
+  box, also filled in by the "Let the GM build it" option) and press Generate on
+  their Sheet tab. `netlify/functions/portrait-background.js` (a background
+  function, so it can run longer than a normal one) has Claude turn the details
+  plus the campaign tone into an image prompt, asks OpenAI for the picture,
+  stores it in the public `portraits` Supabase Storage bucket, and reports progress on the
+  character row (`portrait_status`), which everyone's browser already watches
+  through realtime (with a 5-second poll as backup). Limits: 10 per room, one per
+  minute per character. Portrait URLs are only displayed if they point into our own bucket.
+  Existing projects must run the "Character portraits" section at the end of
+  `supabase/schema.sql` once.
 - **What's New:** a collapsible teaser on the landing page and a full
   `changelog.html` page track shipped fixes/features and what's planned next
   — see `public/changelog-data.js` to update it.
@@ -154,7 +175,9 @@ tabletop-hub/
 │   └── schema.sql            # run once in Supabase's SQL editor
 ├── netlify/
 │   └── functions/
-│       └── gm.js             # server-side Claude proxy
+│       ├── gm.js             # server-side Claude proxy
+│       ├── portrait-background.js  # portrait generation (OpenAI images)
+│       └── lib/shared.js     # Supabase constants + helpers shared by the functions
 └── public/
     ├── index.html
     ├── style.css

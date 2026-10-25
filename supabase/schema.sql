@@ -53,3 +53,27 @@ create policy "public insert log" on log_entries for insert with check (true);
 alter publication supabase_realtime add table rooms;
 alter publication supabase_realtime add table characters;
 alter publication supabase_realtime add table log_entries;
+
+-- ---------------------------------------------------------------------------
+-- Character portraits (added after the original schema)
+-- Existing projects: run just this section once in the SQL editor.
+-- ---------------------------------------------------------------------------
+
+-- The portrait function reports progress on the character row, which the app
+-- already watches through realtime.
+alter table characters add column if not exists portrait_url text;
+alter table characters add column if not exists portrait_status text;        -- 'pending' | 'ready' | 'error:<message>'
+alter table characters add column if not exists portrait_updated_at timestamptz;
+
+-- Counts generated portraits per room (the function caps it).
+alter table rooms add column if not exists image_count integer not null default 0;
+
+-- Public bucket for the generated images, limited to small image files.
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('portraits', 'portraits', true, 2097152, array['image/webp', 'image/png', 'image/jpeg'])
+on conflict (id) do nothing;
+
+-- The function uploads with the public anon key, in keeping with the rest of this
+-- app's open design; the bucket's size and type limits are the guard rails.
+create policy "public upload portraits" on storage.objects
+  for insert with check (bucket_id = 'portraits');

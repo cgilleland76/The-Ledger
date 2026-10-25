@@ -132,6 +132,28 @@ input, textarea, select{ font-family:'IBM Plex Sans', sans-serif; }
 .entry.roll .who{ color:var(--rust-bright); }
 .entry.roll .text{ font-family:'IBM Plex Mono', monospace; }
 .entry.system .who{ color:var(--text-dim); }
+/* ---------- Portraits ---------- */
+.portrait-box{ display:flex; gap:18px; align-items:flex-start; margin:14px 0 18px; }
+.portrait, .portrait-empty{ flex:0 0 168px; width:168px; height:168px; border-radius:8px; border:1px solid var(--glow-dim); }
+.portrait{ object-fit:cover; background:var(--bg-deep); box-shadow:0 4px 18px rgba(0,0,0,0.45); }
+.portrait-empty{ display:flex; align-items:center; justify-content:center; text-align:center; padding:12px; background:var(--bg-deep); border-style:dashed; border-color:var(--border); color:var(--text-dim); font-size:0.8rem; }
+.portrait-side{ flex:1; min-width:0; }
+.portrait-side label{ display:block; font-size:0.72rem; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.03em; margin-bottom:6px; }
+.portrait-side textarea{ width:100%; min-height:84px; resize:vertical; margin-bottom:10px; background:var(--bg-deep); border:1px solid var(--border); color:var(--text); border-radius:4px; padding:10px; font-size:0.9rem; line-height:1.5; }
+.rhead{ display:flex; gap:10px; align-items:center; margin-bottom:2px; }
+.rhead-main{ flex:1; min-width:0; }
+.portrait-sm{ flex:0 0 44px; width:44px; height:44px; border-radius:50%; object-fit:cover; border:1px solid var(--glow-dim); background:var(--bg-deep); }
+@media (max-width: 560px){ .portrait-box{ flex-direction:column; } .portrait, .portrait-empty{ width:100%; max-width:240px; height:auto; aspect-ratio:1; flex-basis:auto; } }
+
+.md p{ margin:0 0 10px; }
+.md > :last-child{ margin-bottom:0; }
+.md .md-h{ font-family:'Spectral', serif; font-size:1rem; color:var(--parchment); margin:12px 0 6px; letter-spacing:0.01em; }
+.md blockquote{ margin:10px 0; padding:4px 0 4px 14px; border-left:3px solid var(--glow-dim); color:var(--parchment-dim); }
+.md hr{ border:none; border-top:1px dashed var(--border); margin:12px 0; }
+.md ul, .md ol{ margin:6px 0 10px; padding-left:22px; }
+.md li{ margin-bottom:3px; }
+.md code{ background:var(--bg-deep); border:1px solid var(--border); padding:1px 6px; border-radius:3px; color:var(--glow); font-family:'IBM Plex Mono', monospace; font-size:0.86em; }
+.md strong{ color:var(--parchment); }
 .glow-dot{ width:6px; height:6px; border-radius:50%; background:var(--glow); box-shadow:0 0 6px var(--glow); display:inline-block; }
 .composer{ margin-top:12px; display:flex; gap:8px; }
 .composer input{ flex:1; background:var(--bg-deep); border:1px solid var(--border); color:var(--text); padding:12px 14px; border-radius:4px; font-size:0.95rem; }

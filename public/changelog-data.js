@@ -7,6 +7,18 @@
 
 window.LEDGER_CHANGELOG = [
   {
+    date: "2026-10-25",
+    type: "feature",
+    title: "Character portraits",
+    detail: "Describe how your character looks (there is a new optional Appearance box, and \"Let the GM build it\" fills it in for you) and press Generate on your Sheet tab. A painted portrait appears on your sheet and on your tile in the story and party views, in a style matched to your campaign's tone. Each player generates only their own, you can regenerate once a minute, and each table gets 10 portraits in total."
+  },
+  {
+    date: '2026-10-24',
+    type: 'fix',
+    title: "GM messages are formatted, and the GM uses your real modifiers",
+    detail: "GM messages used to show raw formatting symbols (**stars**, backticks, > quote marks); they now render properly with headings, quotes, lists, bold, and italics. The GM was also guessing at your bonuses — it once asked for +5 when your sheet said +3 — because it never saw your ability scores or skills. It now gets every modifier from your sheet and is told to ask only for those. Weapon attacks (ability modifier + proficiency bonus) were added to the Roll from sheet menu, so legitimate attack rolls aren't flagged."
+  },
+  {
     date: '2026-10-23',
     type: 'feature',
     title: "Dice-rolling popup",
@@ -70,16 +82,24 @@ window.LEDGER_CHANGELOG = [
 
 window.LEDGER_ROADMAP = [
   {
+    title: "Resource tracking as the story progresses",
+    detail: "Keep track of limited resources as they get used — spell slots, potions, ammo, rations, torches, gold — so your sheet reflects what the story has actually cost you. The GM will propose the change and you confirm it, so nothing on your sheet changes by surprise."
+  },
+  {
+    title: "Loot goes into your inventory",
+    detail: "When the GM describes your character picking something up, the game offers to add it to your inventory with one click, instead of you retyping it on the Sheet tab."
+  },
+  {
+    title: "Scene images for the GM's descriptions",
+    detail: "Paint the scene the GM is describing and set it as the table background."
+  },
+  {
     title: "Voice narration for the GM",
     detail: "Have the GM's messages read aloud, with a distinct voice for each NPC's dialogue. A no-cost, browser-based first version is already designed and ready to build."
   },
   {
     title: "Optional real accounts for private tables",
     detail: "Right now anyone with a room code can read/write that room. An opt-in account system would let a table lock things down further."
-  },
-  {
-    title: "Character portraits",
-    detail: "Add an image to your character sheet."
   },
   {
     title: "Session recaps",

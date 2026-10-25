@@ -28,12 +28,19 @@ let charGenMode = 'auto'; // 'auto' | 'manual'
 let composerDraft = '';
 let newItemDraft = '';
 let notesDraft = null; // null = show the saved value; string = an unsaved in-progress edit
+let appearanceDraft = null; // same idea, for the Sheet tab's Appearance box
+let portraitPendingSince = 0; // when this browser last asked for a portrait (0 = not waiting)
+let portraitBaseline = '';    // the character's portrait_updated_at at that moment
+let portraitPoll = null;
 let CHARGEN_PENDING = false;
 let CHARGEN_ABORT = null;
 let CHARGEN_ERROR = '';
 
 const el = id => document.getElementById(id);
-const uid = (n = 8) => Array.from({ length: n }, () => "abcdefghjkmnpqrstuvwxyz23456789"[Math.floor(Math.random() * 32)]).join('');
+// Alphabet skips look-alikes (i, l, o, 0, 1). Index by its real length — it has 31 characters, and
+// picking from 32 slots used to produce an empty character about 1 time in 32 (short codes/IDs).
+const ID_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789";
+const uid = (n = 8) => Array.from({ length: n }, () => ID_ALPHABET[Math.floor(Math.random() * ID_ALPHABET.length)]).join('');
 const roomCode = () => uid(5).toUpperCase();
 
 function checkConfigured() {
@@ -84,8 +91,14 @@ async function dbGetCharacters(code) {
   if (error) { console.error(error); return []; }
   return data;
 }
+// Portrait info lives in dedicated columns (the portrait function writes them), so it must
+// never be copied back into the character's data blob.
+function stripPortraitFields(data) {
+  const { portrait, portraitStatus, portraitAt, ...clean } = data || {};
+  return clean;
+}
 async function dbUpsertCharacter(id, roomCode, data) {
-  const { error } = await supabase.from('characters').upsert({ id, room_code: roomCode, data });
+  const { error } = await supabase.from('characters').upsert({ id, room_code: roomCode, data: stripPortraitFields(data) });
   if (error) console.error(error);
 }
 async function dbGetLog(code) {
@@ -102,7 +115,7 @@ async function dbInsertLog(code, entry) {
 
 function rosterFromRows(rows) {
   const out = {};
-  rows.forEach(r => { out[r.id] = r.data; });
+  rows.forEach(r => { out[r.id] = { ...r.data, portrait: r.portrait_url || null, portraitStatus: r.portrait_status || '', portraitAt: r.portrait_updated_at || '' }; });
   return out;
 }
 function logFromRows(rows) {
@@ -389,7 +402,7 @@ function blankChar() {
   return {
     player: '', name: '', race: '', klass: '', level: 1, hp: 10, maxhp: 10, ac: 10,
     str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10,
-    skills: [{ name: '', mod: 0 }], inventory: [''], spells: [], notes: ''
+    skills: [{ name: '', mod: 0 }], inventory: [''], spells: [], notes: '', appearance: ''
   };
 }
 function abilityMod(score) { return Math.floor(((score ?? 10) - 10) / 2); }
@@ -414,6 +427,7 @@ function renderCharSetup() {
 
       <div class="field"><label>Your Name (player)</label><input type="text" id="pName" value="${escapeAttr(d.player)}" oninput="setDraftField('player', this.value)"></div>
       <div class="field"><label>Character Name</label><input type="text" id="cCharName" value="${escapeAttr(d.name)}" oninput="setDraftField('name', this.value)"></div>
+      <div class="field"><label>Appearance (optional — used to paint your portrait)</label><textarea id="cAppearance" maxlength="500" placeholder="e.g. Tall and wiry, silver hair, a scar over one eye, patched green cloak" oninput="setDraftField('appearance', this.value)">${escapeAttr(d.appearance || '')}</textarea></div>
 
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
         <div class="field"><label>Race / Species ${charGenMode === 'auto' ? '(optional — leave blank to let the GM choose)' : ''}</label><input type="text" id="cRace" value="${escapeAttr(d.race)}" oninput="setDraftField('race', this.value)"></div>
@@ -515,14 +529,16 @@ async function generateCharacter() {
   CHARGEN_ABORT = new AbortController();
   const raceHint = (el('cRace')?.value || '').trim();
   const classHint = (el('cClass')?.value || '').trim();
+  const appearanceHint = (el('cAppearance')?.value || '').trim().slice(0, 500);
   renderCharSetup();
 
   const prompt = `Generate a complete tabletop RPG character sheet for a new level 1 character in a ${MODE === 'solo' ? 'solo story' : 'campaign'} titled "${META.name}". Ruleset: ${META.ruleset}. Genre/tone: ${META.tone || 'unspecified — pick something fitting'}.
 ${raceHint ? `The player wants a ${raceHint} character.` : 'Choose a race/species that fits the tone.'}
 ${classHint ? `The player wants to play a ${classHint}.` : 'Choose a class that fits the tone.'}
+${appearanceHint ? `The player describes their look as: ${appearanceHint}` : ''}
 
 Respond with ONLY a single JSON object, no markdown code fences, no commentary, matching exactly this shape:
-{"race":"string","klass":"string","str":10,"dex":10,"con":10,"int":10,"wis":10,"cha":10,"maxhp":10,"ac":10,"skills":[{"name":"string","mod":0}],"inventory":["string"],"notes":"one or two sentence backstory hook"}
+{"race":"string","klass":"string","str":10,"dex":10,"con":10,"int":10,"wis":10,"cha":10,"maxhp":10,"ac":10,"skills":[{"name":"string","mod":0}],"inventory":["string"],"notes":"one or two sentence backstory hook","appearance":"one or two sentences describing how the character looks"}
 
 Use sensible 5e-appropriate ability scores for the class (e.g. the standard array 15/14/13/12/10/8 assigned to fit the class), a reasonable starting HP and AC for a level 1 character, 3-5 class-appropriate skills with realistic modifiers, and 4-8 pieces of starting gear specifically appropriate to that class and the campaign's tone — not generic fantasy-adventurer gear unless the tone calls for it.`;
 
@@ -545,6 +561,7 @@ Use sensible 5e-appropriate ability scores for the class (e.g. the standard arra
       skills: Array.isArray(parsed.skills) && parsed.skills.length ? parsed.skills : draftChar.skills,
       inventory: Array.isArray(parsed.inventory) && parsed.inventory.length ? parsed.inventory : draftChar.inventory,
       notes: parsed.notes || draftChar.notes,
+      appearance: (draftChar.appearance || '').trim() ? draftChar.appearance : String(parsed.appearance || '').slice(0, 500),
       __generated: true,
     };
   } catch (e) {
@@ -588,6 +605,7 @@ async function submitCharacter() {
     draftChar.wis = parseInt(el('cWIS').value) || 10;
     draftChar.cha = parseInt(el('cCHA').value) || 10;
     draftChar.notes = el('cNotes').value.trim();
+    draftChar.appearance = el('cAppearance').value.trim().slice(0, 500);
     draftChar.skills = draftChar.skills.filter(s => s.name.trim());
     draftChar.inventory = draftChar.inventory.filter(i => i.trim());
 
@@ -625,6 +643,7 @@ function copyCode() {
 
 function leaveTable() {
   closeDiceRoll();
+  stopPortraitPoll(); portraitPendingSince = 0; appearanceDraft = null;
   if (realtimeChannel) { supabase.removeChannel(realtimeChannel); realtimeChannel = null; }
   if (GM_ABORT) GM_ABORT.abort();
   if (CHARGEN_ABORT) CHARGEN_ABORT.abort();
@@ -711,7 +730,7 @@ function sheetMiniHTML() {
   const c = ROSTER[MY_CHAR_ID]; if (!c) return '';
   const pct = Math.max(0, Math.min(100, Math.round((c.hp / c.maxhp) * 100)));
   return `<div class="roster-card mine">
-    <div class="rname"><b>${escapeHtml(c.name)}</b><span class="rclass">Lv${c.level} ${escapeHtml(c.race)} ${escapeHtml(c.klass)}</span></div>
+    ${portraitHeader(c, `<div class="rname"><b>${escapeHtml(c.name)}</b><span class="rclass">Lv${c.level} ${escapeHtml(c.race)} ${escapeHtml(c.klass)}</span></div>`)}
     <div class="hpbar"><div class="hpbar-fill ${pct < 30 ? 'low' : ''}" style="width:${pct}%"></div></div>
     <div class="hprow"><span>HP ${c.hp}/${c.maxhp}</span><span>AC ${c.ac}</span></div>
     ${abilityGridHTML(c)}
@@ -729,6 +748,10 @@ function rollOptions(c) {
   (c.skills || []).forEach((s, i) => {
     if (s && s.name) opts.push({ key: 's:' + i, group: 'Skills', name: String(s.name), mod: Number(s.mod) || 0 });
   });
+  // Weapon attacks: ability modifier + proficiency bonus (2 at levels 1-4, +1 every 4 levels).
+  const prof = 2 + Math.floor(((parseInt(c.level) || 1) - 1) / 4);
+  opts.push({ key: 'atk:STR', group: 'Attacks', name: 'Attack (STR)', mod: abilityMod(c.str) + prof });
+  opts.push({ key: 'atk:DEX', group: 'Attacks', name: 'Attack (DEX)', mod: abilityMod(c.dex) + prof });
   opts.push({ key: 'i', group: 'Other', name: 'Initiative', mod: initiativeBonus(c) });
   return opts;
 }
@@ -890,11 +913,46 @@ function showDiceRoll({ sides, dice, mod, total, flagged, title, onReveal }) {
   return true;
 }
 
+/* ---------------- Markdown for GM messages ---------------- */
+// Safe subset: headings, blockquotes, lists, hr, **bold**, *italic*, `code`.
+// Input is HTML-escaped FIRST, so only the fixed tags below can ever appear.
+function mdInline(s) {
+  const codes = [];
+  s = s.replace(/`([^`\n]+)`/g, (_, c) => { codes.push(c); return `\u0000${codes.length - 1}\u0000`; });
+  s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+       .replace(/(^|[^*\w])\*(?!\s)([^*\n]*[^*\s])\*(?![*\w])/g, '$1<em>$2</em>')
+       .replace(/(^|[\s(])_(?!\s)([^_\n]*[^_\s])_(?=[\s).,!?:;]|$)/g, '$1<em>$2</em>');
+  return s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code>${codes[+i]}</code>`);
+}
+function renderMarkdown(text) {
+  const lines = String(text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').split('\n');
+  const out = [];
+  let para = [], list = null, quote = [];
+  const flushPara = () => { if (para.length) { out.push(`<p>${mdInline(para.join('<br>'))}</p>`); para = []; } };
+  const flushList = () => { if (list) { out.push(`<${list.tag}>${list.items.map(i => `<li>${mdInline(i)}</li>`).join('')}</${list.tag}>`); list = null; } };
+  const flushQuote = () => { if (quote.length) { out.push(`<blockquote>${mdInline(quote.join('<br>'))}</blockquote>`); quote = []; } };
+  const flushAll = () => { flushPara(); flushList(); flushQuote(); };
+  for (const raw of lines) {
+    const line = raw.trimEnd();
+    let m;
+    if (!line.trim()) { flushAll(); continue; }
+    if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) { flushAll(); out.push('<hr>'); continue; }
+    if ((m = line.match(/^\s*(#{1,6})\s+(.*)$/))) { flushAll(); out.push(`<h4 class="md-h">${mdInline(m[2])}</h4>`); continue; }
+    if ((m = line.match(/^\s*&gt;\s?(.*)$/))) { flushPara(); flushList(); quote.push(m[1]); continue; }
+    if ((m = line.match(/^\s*([-*•])\s+(.*)$/))) { flushPara(); flushQuote(); if (!list || list.tag !== 'ul') { flushList(); list = { tag: 'ul', items: [] }; } list.items.push(m[2]); continue; }
+    if ((m = line.match(/^\s*\d+[.)]\s+(.*)$/))) { flushPara(); flushQuote(); if (!list || list.tag !== 'ol') { flushList(); list = { tag: 'ol', items: [] }; } list.items.push(m[1]); continue; }
+    flushList(); flushQuote(); para.push(line.trim());
+  }
+  flushAll();
+  return out.join('');
+}
+
 function entryHTML(e) {
   const cls = e.type === 'gm' ? 'gm' : e.type === 'roll' ? 'roll' : e.type === 'system' ? 'system' : 'action';
   const dot = e.type === 'gm' ? '<span class="glow-dot"></span>' : '';
   const flagged = e.type === 'roll' && (e.text || '').includes(UNLISTED_FLAG);
-  const body = escapeHtml(flagged ? e.text.replace(UNLISTED_FLAG, '').trim() : e.text);
+  const body = e.type === 'gm' ? `<div class="md">${renderMarkdown(e.text)}</div>`
+    : escapeHtml(flagged ? e.text.replace(UNLISTED_FLAG, '').trim() : e.text);
   const flag = flagged ? ` <span class="roll-flag" title="This bonus isn't on that character's sheet">${UNLISTED_FLAG}</span>` : '';
   return `<div class="entry ${cls}"><div class="who">${dot}${escapeHtml(e.author)}</div><div class="text">${body}${flag}</div></div>`;
 }
@@ -905,7 +963,7 @@ function renderRosterMini() {
   box.innerHTML = Object.entries(ROSTER).map(([id, c]) => {
     const pct = Math.max(0, Math.min(100, Math.round((c.hp / c.maxhp) * 100)));
     return `<div class="roster-card ${id === MY_CHAR_ID ? 'mine' : ''}">
-      <div class="rname"><b>${escapeHtml(c.name)}</b><span class="rclass">Lv${c.level} ${escapeHtml(c.race)} ${escapeHtml(c.klass)}</span></div>
+      ${portraitHeader(c, `<div class="rname"><b>${escapeHtml(c.name)}</b><span class="rclass">Lv${c.level} ${escapeHtml(c.race)} ${escapeHtml(c.klass)}</span></div>`)}
       <div class="hpbar"><div class="hpbar-fill ${pct < 30 ? 'low' : ''}" style="width:${pct}%"></div></div>
       <div class="hprow"><span>HP ${c.hp}/${c.maxhp}</span><span>AC ${c.ac}</span></div>
       ${abilityGridHTML(c)}
@@ -1019,7 +1077,8 @@ function cancelGM() {
 async function askGM() {
   if (GM_PENDING) return;
   const recent = LOG.slice(-30).map(e => `${e.author} (${e.type}): ${e.text}`).join('\n');
-  const party = Object.values(ROSTER).map(c => `${c.name} — Lv${c.level} ${c.race} ${c.klass}, HP ${c.hp}/${c.maxhp}, AC ${c.ac}, inventory: ${(c.inventory || []).join(', ') || 'none'}`).join('\n');
+  const party = Object.values(ROSTER).map(c => `${c.name} — Lv${c.level} ${c.race} ${c.klass}, HP ${c.hp}/${c.maxhp}, AC ${c.ac}, inventory: ${(c.inventory || []).join(', ') || 'none'}
+  Sheet modifiers (the only d20 bonuses this character has): ${rollOptions(c).map(o => `${o.name} ${fmtMod(o.mod)}`).join(', ')}`).join('\n');
   const prompt = `You are the Game Master for a tabletop RPG ${MODE === 'solo' ? 'solo story' : 'session'} titled "${META.name}".
 Ruleset: ${META.ruleset}. Tone/genre: ${META.tone || 'unspecified — infer something fitting'}. Length: ${lengthLabel[META.length]}.
 ${META.seed ? 'Opening premise the GM previously established: ' + META.seed : ''}
@@ -1035,7 +1094,8 @@ Roll resolution rules — follow these exactly:
 - Never narrate the outcome of an attack, save, skill check, or damage until the specific roll for it already appears in the recent table log above. If a needed roll isn't in the log yet, stop and ask for it instead of describing what happens.
 - Resolve one roll at a time. Ask for an attack or check roll first; only after its result appears in the log do you ask for a damage roll (only if the attack hit); only after the damage roll appears do you narrate the consequence (injury, death, effect). Never narrate a hit, miss, or damage result speculatively ahead of the actual roll.
 - If a turn involves multiple attacks or rolls, resolve each one completely — roll, then damage if applicable, then narration — before moving to the next.
-- Always phrase a requested roll using the exact command the player should type, formatted as inline code, e.g. "/roll 1d20+4" for an attack, "/roll 2d6+3" for damage, "/roll 1d20+4 adv" for advantage. Never say "roll a d20" or similar without giving the exact /roll command.
+- Always phrase a requested roll using the exact command the player should type, formatted as inline code, e.g. "/roll +5 Attack (DEX)" for an attack, "/roll 2d6+3" for damage, "/roll +5 adv Attack (DEX)" for advantage. Never say "roll a d20" or similar without giving the exact /roll command.
+- For any d20 check or save, the bonus in your /roll command must be one of that character's Sheet modifiers listed above, and the command should name it, e.g. "/roll +3 Dexterity" or "/roll +7 Stealth". Never add a proficiency bonus, expertise, or any other bonus that isn't on the sheet. If the right skill or tool isn't listed, use the matching ability's modifier as-is (and say that's what you're using). Weapon attack rolls use the listed "Attack (STR)" or "Attack (DEX)" modifier, e.g. "/roll +5 Attack (DEX)". Damage rolls use dice notation for the weapon or spell, e.g. "/roll 1d8+3".
 - Do not roll dice yourself or invent results under any circumstance.`;
 
   await callGM(prompt, 'the GM was not asked to continue.');
@@ -1058,8 +1118,8 @@ function renderPartyTab() {
       ${Object.entries(ROSTER).map(([id, c]) => {
         const pct = Math.max(0, Math.min(100, Math.round((c.hp / c.maxhp) * 100)));
         return `<div class="roster-card ${id === MY_CHAR_ID ? 'mine' : ''}">
-          <div class="rname"><b>${escapeHtml(c.name)}</b><span class="rclass">${escapeHtml(c.player)}</span></div>
-          <div class="rclass">Lv${c.level} ${escapeHtml(c.race)} ${escapeHtml(c.klass)}</div>
+          ${portraitHeader(c, `<div class="rname"><b>${escapeHtml(c.name)}</b><span class="rclass">${escapeHtml(c.player)}</span></div>
+          <div class="rclass">Lv${c.level} ${escapeHtml(c.race)} ${escapeHtml(c.klass)}</div>`)}
           <div class="hpbar"><div class="hpbar-fill ${pct < 30 ? 'low' : ''}" style="width:${pct}%"></div></div>
           <div class="hprow"><span>HP ${c.hp}/${c.maxhp}</span><span>AC ${c.ac}</span></div>
           ${abilityGridHTML(c)}
@@ -1070,6 +1130,98 @@ function renderPartyTab() {
   `;
 }
 
+/* ---------------- PORTRAITS ---------------- */
+// Pictures come from our own Supabase Storage bucket only — anyone can write a portrait URL into
+// the database, so anything else (tracking pixels, other sites) is ignored rather than loaded.
+const PORTRAIT_URL_PREFIX = (cfg.SUPABASE_URL || '').replace(/\/$/, '') + '/storage/v1/object/public/portraits/';
+function safePortraitUrl(u) {
+  return typeof u === 'string' && cfg.SUPABASE_URL && u.startsWith(PORTRAIT_URL_PREFIX) && !/[\s"'<>]/.test(u) ? u : '';
+}
+function portraitImg(c, cls) {
+  const u = safePortraitUrl(c && c.portrait);
+  return u ? `<img class="${cls}" src="${escapeAttr(u)}" alt="Portrait of ${escapeAttr(c.name)}" loading="lazy">` : '';
+}
+function portraitHeader(c, innerHTML) {
+  const img = portraitImg(c, 'portrait-sm');
+  return img ? `<div class="rhead">${img}<div class="rhead-main">${innerHTML}</div></div>` : innerHTML;
+}
+
+const PORTRAIT_STALE_MS = 4 * 60 * 1000;
+// 'none' | 'ready' | 'pending' | 'error'
+function portraitState(c) {
+  const localWaiting = portraitPendingSince && Date.now() - portraitPendingSince < PORTRAIT_STALE_MS;
+  if (localWaiting && (c.portraitStatus === 'pending' || (c.portraitAt || '') === portraitBaseline)) return 'pending';
+  portraitPendingSince = 0; // the database has moved past our request (or we stopped waiting)
+  const status = c.portraitStatus || '';
+  if (status === 'pending') {
+    const at = c.portraitAt ? Date.parse(c.portraitAt) : 0;
+    return at && Math.abs(Date.now() - at) < PORTRAIT_STALE_MS ? 'pending' : 'error';
+  }
+  if (status.startsWith('error:')) return 'error';
+  return safePortraitUrl(c.portrait) ? 'ready' : 'none';
+}
+function portraitErrorText(c) {
+  const status = c.portraitStatus || '';
+  return status.startsWith('error:') ? status.slice(6) : 'That took too long. Try again.';
+}
+function portraitBoxHTML(c) {
+  const state = portraitState(c);
+  const img = portraitImg(c, 'portrait');
+  const action = state === 'pending'
+    ? `<div class="gm-pending"><span class="thinking">Painting your portrait<span class="thinking-dots"><span>.</span><span>.</span><span>.</span></span></span></div><p class="helptext">Usually under a minute — keep playing, it will appear here.</p>`
+    : `<button class="btn" onclick="generatePortrait()">${img ? 'Regenerate portrait' : 'Generate portrait'}</button>${state === 'error' ? `<div class="error-text" style="margin-top:8px;">${escapeHtml(portraitErrorText(c))}</div>` : ''}`;
+  return `<div class="portrait-box">
+    ${img || '<div class="portrait-empty">No portrait yet</div>'}
+    <div class="portrait-side">
+      <label for="charAppearance">Appearance</label>
+      <textarea id="charAppearance" maxlength="500" placeholder="Describe how your character looks — hair, build, clothing, scars…" oninput="setAppearanceDraft(this.value)">${escapeAttr(appearanceDraft !== null ? appearanceDraft : (c.appearance || ''))}</textarea>
+      ${action}
+    </div>
+  </div>`;
+}
+function setAppearanceDraft(v) { appearanceDraft = v; }
+
+function stopPortraitPoll() { if (portraitPoll) { clearInterval(portraitPoll); portraitPoll = null; } }
+// Backup for the realtime update: re-check the roster every few seconds while waiting.
+function startPortraitPoll() {
+  stopPortraitPoll();
+  portraitPoll = setInterval(async () => {
+    if (!ROOM || !MY_CHAR_ID) return stopPortraitPoll();
+    const before = ROSTER[MY_CHAR_ID] ? portraitState(ROSTER[MY_CHAR_ID]) + '|' + ROSTER[MY_CHAR_ID].portrait : '';
+    ROSTER = rosterFromRows(await dbGetCharacters(ROOM));
+    const c = ROSTER[MY_CHAR_ID];
+    const after = c ? portraitState(c) + '|' + c.portrait : '';
+    if (!c || portraitState(c) !== 'pending') stopPortraitPoll();
+    if (before !== after && VIEW === 'game') render();
+  }, 5000);
+}
+
+async function generatePortrait() {
+  const c = ROSTER[MY_CHAR_ID];
+  if (!c || portraitState(c) === 'pending') return;
+  const box = el('charAppearance');
+  if (box) { c.appearance = box.value.trim().slice(0, 500); appearanceDraft = null; }
+  await persistRoster();
+  portraitPendingSince = Date.now();
+  portraitBaseline = c.portraitAt || '';
+  render();
+  try {
+    const resp = await fetch('/.netlify/functions/portrait-background', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ roomCode: ROOM, characterId: MY_CHAR_ID }),
+    });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    startPortraitPoll();
+  } catch (e) {
+    console.error(e);
+    portraitPendingSince = 0;
+    const mine = ROSTER[MY_CHAR_ID];
+    if (mine) mine.portraitStatus = 'error:Could not reach the portrait service. Try again.';
+    if (VIEW === 'game') render();
+  }
+}
+
 /* ---------------- SHEET TAB ---------------- */
 function renderSheetTab() {
   const c = ROSTER[MY_CHAR_ID];
@@ -1078,6 +1230,7 @@ function renderSheetTab() {
     <div class="panel" style="max-width:640px;">
       <h2>${escapeHtml(c.name)}</h2>
       <p class="rclass">${escapeHtml(c.player)} &middot; Lv${c.level} ${escapeHtml(c.race)} ${escapeHtml(c.klass)}</p>
+      ${portraitBoxHTML(c)}
       <div class="sheet-grid">
         <div class="sheet-stat"><div class="label">HP</div><div class="val">${c.hp} / ${c.maxhp}</div></div>
         <div class="sheet-stat"><div class="label">AC</div><div class="val">${c.ac}</div></div>
@@ -1145,12 +1298,12 @@ function renderHelpTab() {
       <ul>
         ${MODE === 'group' ? `<li>Everyone in this room shares the same <b>Ledger</b> (story log) and <b>Party</b> roster — anyone can open the room code on their own device.</li>` : `<li>This is your own solo story — only your character and the GM are here.</li>`}
         <li>Type plain text and hit Send to describe what your character says or does. It's narrated ${MODE === 'group' ? 'to the whole table' : 'into the story'}.</li>
-        <li>The <b>Roll from sheet</b> menu next to the message box lists your ability checks, skills, and initiative — pick one and it fills in the right modifier and label for you. If a d20 roll uses a bonus higher than your sheet allows, the log tags it <b>⚠ unlisted modifier</b> so the table can see it (legit situational bonuses like Bless will trigger it too — just a heads-up, nothing is blocked).</li>
+        <li>The <b>Roll from sheet</b> menu next to the message box lists your ability checks, skills, weapon attacks, and initiative — pick one and it fills in the right modifier and label for you. If a d20 roll uses a bonus higher than your sheet allows, the log tags it <b>⚠ unlisted modifier</b> so the table can see it (legit situational bonuses like Bless will trigger it too — just a heads-up, nothing is blocked).</li>
         <li><label style="cursor:pointer;"><input type="checkbox" ${diceAnimOn() ? 'checked' : ''} onchange="setDiceAnim(this.checked)"> Show the dice-rolling popup when you roll (click it to dismiss early)</label></li>
         <li>Dice are <b>only</b> rolled when you type <code>/roll</code>. For a plain d20 check, just add the number, e.g. <code>/roll +5</code>. For any other dice — damage, healing, anything the GM asks for — use full notation like <code>/roll 2d6+3</code> or <code>/roll 1d4</code>.</li>
         <li>For advantage or disadvantage on a d20 roll: <code>/roll +5 adv</code> or <code>/roll 1d20+5 dis</code> — rolls two d20s and keeps the higher or lower.</li>
         <li><b>Ask the GM to continue the story</b> sends the recent log and character/party status to the Game Master, who narrates what happens next.</li>
-        <li>Your <b>Sheet</b> tab is where you track your own HP and inventory.</li>
+        <li>Your <b>Sheet</b> tab is where you track your own HP and inventory, and where you can describe your character and paint a <b>portrait</b> (one at a time, a few per table).</li>
         <li><b>Advance Session</b> in the header marks a new session in the log — useful for pacing a Short Arc or longer story.</li>
       </ul>
       ${feedbackBoxHTML()}
@@ -1200,6 +1353,8 @@ window.hpDelta = hpDelta;
 window.addItem = addItem;
 window.removeItem = removeItem;
 window.saveNotes = saveNotes;
+window.generatePortrait = generatePortrait;
+window.setAppearanceDraft = setAppearanceDraft;
 
 /* ---------------- Boot ---------------- */
 if (checkConfigured()) render();
