@@ -154,7 +154,7 @@ function recallCharacter(code) {
 function render() {
   renderView();
   const app = el('app');
-  if (app && (CONTACT_EMAIL || SUPPORT_URL)) app.insertAdjacentHTML('beforeend', feedbackFooterHTML());
+  if (app) app.insertAdjacentHTML('beforeend', feedbackFooterHTML());
   renderFeedbackFab();
 }
 function renderView() {
@@ -211,7 +211,7 @@ function feedbackFooterHTML() {
   const parts = [];
   if (CONTACT_EMAIL) parts.push(`Found a bug or have a suggestion? <a href="${escapeAttr(feedbackMailto())}">Email ${escapeAttr(CONTACT_EMAIL)}</a>`);
   if (SUPPORT_URL) parts.push(`Enjoying The Ledger? <a href="${escapeAttr(SUPPORT_URL)}" target="_blank" rel="noopener">Buy me a coffee ☕</a>`);
-  if (!parts.length) return '';
+  parts.push(`<a href="changelog.html#credits">Credits &amp; licenses</a>`);
   return `<div class="footer-contact">${parts.join(' &middot; ')}</div>`;
 }
 function feedbackBoxHTML() {
@@ -808,6 +808,7 @@ function isUnlistedModifier(c, mod, label) {
   if (!c) return false;
   const opts = rollOptions(c);
   const key = (label || '').trim().toLowerCase();
+  if (/^foe\b/.test(key)) return false; // rolls made on a foe's behalf use the monster's numbers, not the sheet
   const named = key && opts.find(o => o.name.toLowerCase() === key || (o.abbr && o.abbr.toLowerCase() === key));
   if (named) return mod > named.mod;
   return mod > 0 && !opts.some(o => o.mod === mod);
@@ -1062,11 +1063,13 @@ async function submitAction() {
   render();
 }
 
-async function fetchGM(prompt, signal) {
+// kind 'story' = a Game Master story turn: the server adds its GM playbook and looks up stat blocks
+// for any monsters named in `lore` (the recent log text).
+async function fetchGM(prompt, signal, kind, lore) {
   const resp = await fetch('/api/gm', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt, roomCode: ROOM }),
+    body: JSON.stringify({ prompt, roomCode: ROOM, kind, lore }),
     signal,
   });
   const data = await resp.json();
@@ -1080,7 +1083,7 @@ async function callGM(prompt, fallbackEntry) {
   if (VIEW === 'game') render();
   let entry;
   try {
-    const text = await fetchGM(prompt, GM_ABORT.signal);
+    const text = await fetchGM(prompt, GM_ABORT.signal, 'story', LOG.slice(-8).map(e => e.text).join('\n'));
     entry = { id: uid(6), author: 'Game Master', type: 'gm', text: text || '(The GM pauses, gathering thoughts... try again in a moment.)' };
   } catch (e) {
     if (e.name === 'AbortError') {
@@ -1124,6 +1127,7 @@ Roll resolution rules — follow these exactly:
 - If a turn involves multiple attacks or rolls, resolve each one completely — roll, then damage if applicable, then narration — before moving to the next.
 - Always phrase a requested roll using the exact command the player should type, formatted as inline code, e.g. "/roll +5 Attack (DEX)" for an attack, "/roll 2d6+3" for damage, "/roll +5 adv Attack (DEX)" for advantage. Never say "roll a d20" or similar without giving the exact /roll command.
 - For any d20 check or save, the bonus in your /roll command must be one of that character's Sheet modifiers listed above, and the command should name it, e.g. "/roll +3 Dexterity" or "/roll +7 Stealth". Never add a proficiency bonus, expertise, or any other bonus that isn't on the sheet. If the right skill or tool isn't listed, use the matching ability's modifier as-is (and say that's what you're using). Weapon attack rolls use the listed "Attack (STR)" or "Attack (DEX)" modifier, e.g. "/roll +5 Attack (DEX)". Damage rolls use dice notation for the weapon or spell, e.g. "/roll 1d8+3".
+- The one exception is a foe's roll: when you ask a player to roll for a monster, use the bonus from its stat block and start the label with "Foe:", e.g. "/roll +4 Foe: goblin scimitar" (then "/roll 1d6+2 Foe: goblin damage" only if it hit).
 - Do not roll dice yourself or invent results under any circumstance.`;
 
   await callGM(prompt, 'the GM was not asked to continue.');
@@ -1334,6 +1338,7 @@ function renderHelpTab() {
         ${MODE === 'group' ? `<li>Everyone in this room shares the same <b>Ledger</b> (story log) and <b>Party</b> roster — anyone can open the room code on their own device.</li>` : `<li>This is your own solo story — only your character and the GM are here.</li>`}
         <li>Type plain text and hit Send to describe what your character says or does. It's narrated ${MODE === 'group' ? 'to the whole table' : 'into the story'}.</li>
         <li>The <b>Roll from sheet</b> menu next to the message box lists your ability checks, skills, weapon attacks, and initiative — pick one and it fills in the right modifier and label for you. If a d20 roll uses a bonus higher than your sheet allows, the log tags it <b>⚠ unlisted modifier</b> so the table can see it (legit situational bonuses like Bless will trigger it too — just a heads-up, nothing is blocked).</li>
+        <li>In a fight, the GM may ask you to roll for a monster — those rolls are labelled <code>Foe:</code> and use the monster's numbers, not your sheet. The GM keeps a <b>Foes</b> line with each monster's hit points at the end of its messages.</li>
         <li><label style="cursor:pointer;"><input type="checkbox" ${diceAnimOn() ? 'checked' : ''} onchange="setDiceAnim(this.checked)"> Show the dice-rolling popup when you roll (click it to dismiss early)</label></li>
         <li>Dice are <b>only</b> rolled when you type <code>/roll</code>. For a plain d20 check, just add the number, e.g. <code>/roll +5</code>. For any other dice — damage, healing, anything the GM asks for — use full notation like <code>/roll 2d6+3</code> or <code>/roll 1d4</code>.</li>
         <li>For advantage or disadvantage on a d20 roll: <code>/roll +5 adv</code> or <code>/roll 1d20+5 dis</code> — rolls two d20s and keeps the higher or lower.</li>

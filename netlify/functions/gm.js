@@ -7,6 +7,7 @@
 // Set ANTHROPIC_API_KEY in Netlify: Site configuration > Environment variables.
 
 const { ALLOWED_ORIGINS, roomExists } = require("./lib/shared");
+const { PLAYBOOK, statBlocksFor } = require("./lib/gm-knowledge");
 
 exports.handler = async function (event) {
   const origin = event.headers && (event.headers.origin || event.headers.Origin);
@@ -33,11 +34,13 @@ exports.handler = async function (event) {
     };
   }
 
-  let prompt, roomCode;
+  let prompt, roomCode, kind, lore;
   try {
     const body = JSON.parse(event.body || "{}");
     prompt = body.prompt;
     roomCode = body.roomCode;
+    kind = body.kind === "story" ? "story" : "";
+    lore = typeof body.lore === "string" ? body.lore.slice(-6000) : "";
     if (!prompt || typeof prompt !== "string") {
       return { statusCode: 400, headers, body: JSON.stringify({ error: "Missing 'prompt' string in request body." }) };
     }
@@ -49,6 +52,21 @@ exports.handler = async function (event) {
     return { statusCode: 403, headers, body: JSON.stringify({ error: "Unknown or missing room code." }) };
   }
 
+  // Story turns get the GM playbook (cached between calls) and stat blocks for any SRD
+  // monsters named in the recent log. Other uses of this endpoint (character generation) don't.
+  const payload = { model: "claude-sonnet-4-6", max_tokens: 1000, messages: [{ role: "user", content: prompt }] };
+  if (kind === "story") {
+    payload.max_tokens = 1200;
+    payload.system = [{ type: "text", text: PLAYBOOK, cache_control: { type: "ephemeral" } }];
+    const blocks = statBlocksFor(lore);
+    if (blocks) {
+      payload.messages = [{
+        role: "user",
+        content: `${prompt}\n\nReference stat blocks for creatures in the current scene (SRD 5.1) — use these numbers exactly, and keep them private:\n${blocks}`,
+      }];
+    }
+  }
+
   try {
     const resp = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -57,11 +75,7 @@ exports.handler = async function (event) {
         "x-api-key": apiKey,
         "anthropic-version": "2023-06-01",
       },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-6",
-        max_tokens: 1000,
-        messages: [{ role: "user", content: prompt }],
-      }),
+      body: JSON.stringify(payload),
     });
 
     if (!resp.ok) {
