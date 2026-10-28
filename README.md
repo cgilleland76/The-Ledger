@@ -165,8 +165,9 @@ The footer, the Field Notes feedback box, and `changelog.html` also show a "Buy 
   system prompt — a table-running playbook, combat and encounter-sizing rules, a creature/item creation
   guide with challenge-rating math, a conditions cheat sheet, and a bestiary index. The function also
   scans the last few log entries for monster names and appends the matching stat blocks from
-  `lib/srd-monsters.json` (all 317 SRD 5.1 monsters, extracted from the SRD text). Monster attack rolls
-  are made by the targeted player and labelled `Foe:`, which the unlisted-modifier flag ignores.
+  `lib/srd-monsters.json` (all 317 SRD 5.1 monsters, extracted from the SRD text). Monster attacks are
+  rolled by the game: the GM writes a `[[foe-attack: name | attack | +bonus | dice | target]]` line, and the
+  browser that asked the GM rolls it against the target's AC and logs the result.
   The SRD 5.1 is licensed under CC BY 4.0; the credit is in `changelog.html#credits` and the site footer.
 - **What's New:** a collapsible teaser on the landing page and a full
   `changelog.html` page track shipped fixes/features and what's planned next

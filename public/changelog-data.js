@@ -10,7 +10,7 @@ window.LEDGER_CHANGELOG = [
     date: "2026-10-26",
     type: "feature",
     title: "The GM runs real fights",
-    detail: "The Game Master now has a playbook for running the table: fair difficulty, telegraphed danger, smarter monsters, and encounters sized to your level. It also gets the real stat block for any monster in the scene (all 317 creatures from the open SRD 5.1), so armor, hit points, attacks and special abilities are the real numbers instead of guesses. Fights end each GM message with a Foes line tracking monster hit points, and when a monster attacks, the GM asks you to roll it with a \"Foe:\" label. The GM can also invent original creatures and treasure, built to the same challenge-rating math. See the credits at the bottom of the changelog page."
+    detail: "The Game Master now has a playbook for running the table: fair difficulty, telegraphed danger, smarter monsters, and encounters sized to your level. It also gets the real stat block for any monster in the scene (all 317 creatures from the open SRD 5.1), so armor, hit points, attacks and special abilities are the real numbers instead of guesses. Fights end each GM message with a Foes line tracking monster hit points, and the game itself rolls each monster attack and its damage against your armor class, posting the result in the log. The GM can also invent original creatures and treasure, built to the same challenge-rating math. See the credits at the bottom of the changelog page."
   },
   {
     date: "2026-10-25",

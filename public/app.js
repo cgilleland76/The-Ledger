@@ -808,7 +808,6 @@ function isUnlistedModifier(c, mod, label) {
   if (!c) return false;
   const opts = rollOptions(c);
   const key = (label || '').trim().toLowerCase();
-  if (/^foe\b/.test(key)) return false; // rolls made on a foe's behalf use the monster's numbers, not the sheet
   const named = key && opts.find(o => o.name.toLowerCase() === key || (o.abbr && o.abbr.toLowerCase() === key));
   if (named) return mod > named.mod;
   return mod > 0 && !opts.some(o => o.mod === mod);
@@ -1096,13 +1095,68 @@ async function callGM(prompt, fallbackEntry) {
     GM_PENDING = false;
     GM_ABORT = null;
   }
-  await dbInsertLog(ROOM, entry);
-  LOG.push({ ...entry, ts: Date.now() });
+  const { clean, attacks } = entry.type === 'gm' ? extractFoeAttacks(entry.text) : { clean: entry.text, attacks: [] };
+  // A message that was nothing but attack directives has no story text of its own to log.
+  if (clean || !attacks.length) {
+    entry.text = clean || entry.text;
+    await dbInsertLog(ROOM, entry);
+    LOG.push({ ...entry, ts: Date.now() });
+  }
+  for (const a of attacks) {
+    const result = resolveFoeAttack(a);
+    await dbInsertLog(ROOM, result);
+    LOG.push({ ...result, ts: Date.now() });
+  }
   if (VIEW === 'game') render();
 }
 
 function cancelGM() {
   if (GM_ABORT) GM_ABORT.abort();
+}
+
+/* ---------------- Foe attacks ---------------- */
+// The GM can't roll dice, so it writes a directive line for each monster attack and the game rolls it:
+//   [[foe-attack: Goblin B | scimitar | +4 | 1d6+2 | Telilin]]
+// Only the browser that asked the GM resolves them; everyone else just sees the results in the log.
+const FOE_DIRECTIVE = /\[\[\s*foe-attack:([^\]]*)\]\]/gi;
+function extractFoeAttacks(text) {
+  const attacks = [];
+  const clean = String(text).replace(FOE_DIRECTIVE, (_, body) => {
+    const p = body.split('|').map(s => s.trim());
+    if (p.length >= 5 && attacks.length < 4) attacks.push({ who: p[0].slice(0, 40), atk: p[1].slice(0, 40), bonus: p[2], dmg: p[3], target: p[4] });
+    return '';
+  }).replace(/\n{3,}/g, '\n\n').trim();
+  return { clean, attacks };
+}
+function findTarget(name) {
+  const chars = Object.values(ROSTER);
+  const n = String(name || '').trim().toLowerCase();
+  return chars.find(c => c.name.toLowerCase() === n)
+    || chars.find(c => n && (c.name.toLowerCase().includes(n) || n.includes(c.name.toLowerCase())))
+    || (chars.length === 1 ? chars[0] : null);
+}
+const dieRoll = sides => Math.floor(Math.random() * sides) + 1;
+function resolveFoeAttack(a) {
+  const target = findTarget(a.target);
+  const bonus = Math.max(-10, Math.min(30, parseInt(String(a.bonus).replace(/\s/g, '')) || 0));
+  const dm = String(a.dmg).replace(/\s/g, '').match(/^(\d*)d(\d+)([+-]\d+)?$/i);
+  const fail = text => ({ id: uid(6), author: 'The Ledger', type: 'system', text });
+  if (!target) return fail(`${a.who} attacks, but the game couldn't tell who it was aimed at.`);
+  if (!dm) return fail(`${a.who} attacks ${target.name}, but its damage dice (${a.dmg}) couldn't be read.`);
+  const count = Math.min(Math.max(parseInt(dm[1] || '1'), 1), 20);
+  const sides = Math.min(Math.max(parseInt(dm[2]), 2), 20);
+  const dmgMod = dm[3] ? parseInt(dm[3]) : 0;
+  const natural = dieRoll(20);
+  const total = natural + bonus;
+  const crit = natural === 20;
+  const hit = crit || (natural !== 1 && total >= (parseInt(target.ac) || 10));
+  let text = `${a.atk ? a.atk + ' → ' : ''}${target.name}: d20(${natural}) ${fmtMod(bonus)} = ${total} vs AC ${target.ac} — ${crit ? 'CRITICAL HIT' : hit ? 'HIT' : 'miss'}`;
+  if (hit) {
+    const rolls = Array.from({ length: count * (crit ? 2 : 1) }, () => dieRoll(sides));
+    const dmgTotal = Math.max(0, rolls.reduce((x, y) => x + y, 0) + dmgMod);
+    text += `: ${dmgTotal} damage (${rolls.length}d${sides}(${rolls.join('+')})${dmgMod ? fmtMod(dmgMod) : ''}) — ${target.name}, take it off your HP`;
+  }
+  return { id: uid(6), author: a.who, type: 'roll', text };
 }
 
 async function askGM() {
@@ -1127,7 +1181,7 @@ Roll resolution rules — follow these exactly:
 - If a turn involves multiple attacks or rolls, resolve each one completely — roll, then damage if applicable, then narration — before moving to the next.
 - Always phrase a requested roll using the exact command the player should type, formatted as inline code, e.g. "/roll +5 Attack (DEX)" for an attack, "/roll 2d6+3" for damage, "/roll +5 adv Attack (DEX)" for advantage. Never say "roll a d20" or similar without giving the exact /roll command.
 - For any d20 check or save, the bonus in your /roll command must be one of that character's Sheet modifiers listed above, and the command should name it, e.g. "/roll +3 Dexterity" or "/roll +7 Stealth". Never add a proficiency bonus, expertise, or any other bonus that isn't on the sheet. If the right skill or tool isn't listed, use the matching ability's modifier as-is (and say that's what you're using). Weapon attack rolls use the listed "Attack (STR)" or "Attack (DEX)" modifier, e.g. "/roll +5 Attack (DEX)". Damage rolls use dice notation for the weapon or spell, e.g. "/roll 1d8+3".
-- The one exception is a foe's roll: when you ask a player to roll for a monster, use the bonus from its stat block and start the label with "Foe:", e.g. "/roll +4 Foe: goblin scimitar" (then "/roll 1d6+2 Foe: goblin damage" only if it hit).
+- Players never roll for monsters. For each attack a foe makes, write it in the fiction and put this directive on its own line: [[foe-attack: Goblin B | scimitar | +4 | 1d6+2 | Telilin]] (attacker | attack name | to-hit bonus from its stat block | damage dice | the target's exact character name). The game rolls the attack against the target's AC and the damage if it hits, and posts the result to the log; use one directive per attack (max 4). Then stop: don't say whether it hit and don't state the AC. Narrate the outcome next turn, once the result is in the log.
 - Do not roll dice yourself or invent results under any circumstance.`;
 
   await callGM(prompt, 'the GM was not asked to continue.');
@@ -1338,7 +1392,7 @@ function renderHelpTab() {
         ${MODE === 'group' ? `<li>Everyone in this room shares the same <b>Ledger</b> (story log) and <b>Party</b> roster — anyone can open the room code on their own device.</li>` : `<li>This is your own solo story — only your character and the GM are here.</li>`}
         <li>Type plain text and hit Send to describe what your character says or does. It's narrated ${MODE === 'group' ? 'to the whole table' : 'into the story'}.</li>
         <li>The <b>Roll from sheet</b> menu next to the message box lists your ability checks, skills, weapon attacks, and initiative — pick one and it fills in the right modifier and label for you. If a d20 roll uses a bonus higher than your sheet allows, the log tags it <b>⚠ unlisted modifier</b> so the table can see it (legit situational bonuses like Bless will trigger it too — just a heads-up, nothing is blocked).</li>
-        <li>In a fight, the GM may ask you to roll for a monster — those rolls are labelled <code>Foe:</code> and use the monster's numbers, not your sheet. The GM keeps a <b>Foes</b> line with each monster's hit points at the end of its messages.</li>
+        <li>In a fight, the game rolls monster attacks and damage for you and posts the result in the log (adjust your HP when you're hit). The GM keeps a <b>Foes</b> line with each monster's hit points at the end of its messages.</li>
         <li><label style="cursor:pointer;"><input type="checkbox" ${diceAnimOn() ? 'checked' : ''} onchange="setDiceAnim(this.checked)"> Show the dice-rolling popup when you roll (click it to dismiss early)</label></li>
         <li>Dice are <b>only</b> rolled when you type <code>/roll</code>. For a plain d20 check, just add the number, e.g. <code>/roll +5</code>. For any other dice — damage, healing, anything the GM asks for — use full notation like <code>/roll 2d6+3</code> or <code>/roll 1d4</code>.</li>
         <li>For advantage or disadvantage on a d20 roll: <code>/roll +5 adv</code> or <code>/roll 1d20+5 dis</code> — rolls two d20s and keeps the higher or lower.</li>
