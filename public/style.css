@@ -362,3 +362,12 @@ input, textarea, select{ font-family:var(--font-body); font-size:1rem; }
   .composer input{ order:-1; flex:1 1 100%; }
   .roll-picker{ flex:1 1 0; max-width:none; padding:10px 8px; }
 }
+
+/* click-to-roll buttons and option icons inside the GM's newest message */
+.roll-chip{ font-family:var(--font-code); font-size:0.82em; background:var(--oxblood); color:var(--cream); border:1px solid #4f1812; border-radius:3px; padding:1px 8px; cursor:pointer; box-shadow:inset 0 1px 0 rgba(255,220,180,0.25); }
+.roll-chip:hover{ background:var(--oxblood-hi); }
+.roll-chip.used{ background:var(--paper-lo); color:var(--ink-dim); border-color:var(--rule); box-shadow:none; cursor:default; opacity:0.75; }
+.md li.md-opt{ list-style:none; margin-left:-18px; padding-left:1.7em; text-indent:-1.7em; }
+.opt-ico{ background:none; border:1px solid transparent; border-radius:4px; padding:0 3px; font-size:1.05em; line-height:1.2; cursor:pointer; vertical-align:baseline; transition:transform .12s, background .12s, border-color .12s; }
+.opt-ico:hover{ background:rgba(123,40,32,0.1); border-color:var(--gold-dim); transform:scale(1.15); }
+.opt-ico.used{ opacity:0.45; cursor:default; }

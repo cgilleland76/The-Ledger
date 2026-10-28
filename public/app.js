@@ -944,21 +944,61 @@ function showDiceRoll({ sides, dice, mod, total, flagged, title, onReveal }) {
 /* ---------------- Markdown for GM messages ---------------- */
 // Safe subset: headings, blockquotes, lists, hr, **bold**, *italic*, `code`.
 // Input is HTML-escaped FIRST, so only the fixed tags below can ever appear.
-function mdInline(s) {
+// ctx (optional) = { entryId, active }: when active, `/roll ...` code becomes a click-to-roll button.
+function mdInline(s, ctx) {
   const codes = [];
   s = s.replace(/`([^`\n]+)`/g, (_, c) => { codes.push(c); return `\u0000${codes.length - 1}\u0000`; });
   s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
        .replace(/(^|[^*\w])\*(?!\s)([^*\n]*[^*\s])\*(?![*\w])/g, '$1<em>$2</em>')
        .replace(/(^|[\s(])_(?!\s)([^_\n]*[^_\s])_(?=[\s).,!?:;]|$)/g, '$1<em>$2</em>');
-  return s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code>${codes[+i]}</code>`);
+  return s.replace(/\u0000(\d+)\u0000/g, (_, i) => {
+    const code = codes[+i];
+    if (ctx && ctx.active && /^\/roll(\s|$)/i.test(code) && code.length <= 70) {
+      const key = ctx.entryId + '|roll|' + code;
+      const attr = code.replace(/"/g, '&quot;');
+      return isChipUsed(key)
+        ? `<span class="roll-chip used" title="Already rolled">🎲 ${code} ✓</span>`
+        : `<button type="button" class="roll-chip" title="Click to roll this" data-key="${key.replace(/"/g, '&quot;')}" data-cmd="${attr}" onclick="runChip(this)">🎲 ${code}</button>`;
+    }
+    return `<code>${code}</code>`;
+  });
 }
-function renderMarkdown(text) {
+
+// "Used" chips/options are remembered per room so reloading the page can't be used to roll twice.
+const EMOJI_START = /^(\p{Extended_Pictographic}(?:\uFE0F|\u200D\p{Extended_Pictographic}|\p{Emoji_Modifier})*)\s*(.*)$/u;
+function usedKey() { return 'ledger:used:' + ROOM; }
+function usedSet() { try { return new Set(JSON.parse(localStorage.getItem(usedKey()) || '[]')); } catch (e) { return new Set(); } }
+function isChipUsed(key) { return usedSet().has(key); }
+function markChipUsed(key) {
+  const s = usedSet(); s.add(key);
+  try { localStorage.setItem(usedKey(), JSON.stringify([...s].slice(-200))); } catch (e) {}
+}
+// The action an option stands for: its bold title if it has one, else the text before a dash.
+function optionAction(rest) {
+  const bold = rest.match(/\*\*(.+?)\*\*/);
+  let t = bold ? bold[1] : rest.split(/\s[—–-]\s/)[0];
+  return t.replace(/[*`_]/g, '').trim().slice(0, 160);
+}
+function optionItemHTML(item, ctx) {
+  const m = ctx && ctx.active ? item.match(EMOJI_START) : null;
+  if (!m) return `<li>${mdInline(item, ctx)}</li>`;
+  const action = optionAction(m[2]);
+  if (!action) return `<li>${mdInline(item, ctx)}</li>`;
+  const key = ctx.entryId + '|opt';
+  const used = isChipUsed(key);
+  const attr = action.replace(/"/g, '&quot;');
+  const icon = used
+    ? `<span class="opt-ico used">${m[1]}</span>`
+    : `<button type="button" class="opt-ico" title="Choose this action" data-key="${key}" data-act="${attr}" onclick="pickOption(this)">${m[1]}</button>`;
+  return `<li class="md-opt">${icon} ${mdInline(m[2], ctx)}</li>`;
+}
+function renderMarkdown(text, ctx) {
   const lines = String(text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').split('\n');
   const out = [];
   let para = [], list = null, quote = [];
-  const flushPara = () => { if (para.length) { out.push(`<p>${mdInline(para.join('<br>'))}</p>`); para = []; } };
-  const flushList = () => { if (list) { out.push(`<${list.tag}>${list.items.map(i => `<li>${mdInline(i)}</li>`).join('')}</${list.tag}>`); list = null; } };
-  const flushQuote = () => { if (quote.length) { out.push(`<blockquote>${mdInline(quote.join('<br>'))}</blockquote>`); quote = []; } };
+  const flushPara = () => { if (para.length) { out.push(`<p>${mdInline(para.join('<br>'), ctx)}</p>`); para = []; } };
+  const flushList = () => { if (list) { out.push(`<${list.tag}>${list.items.map(i => optionItemHTML(i, ctx)).join('')}</${list.tag}>`); list = null; } };
+  const flushQuote = () => { if (quote.length) { out.push(`<blockquote>${mdInline(quote.join('<br>'), ctx)}</blockquote>`); quote = []; } };
   const flushAll = () => { flushPara(); flushList(); flushQuote(); };
   for (const raw of lines) {
     const line = raw.trimEnd();
@@ -979,7 +1019,11 @@ function entryHTML(e) {
   const cls = e.type === 'gm' ? 'gm' : e.type === 'roll' ? 'roll' : e.type === 'system' ? 'system' : 'action';
   const dot = e.type === 'gm' ? '<span class="glow-dot"></span>' : '';
   const flagged = e.type === 'roll' && (e.text || '').includes(UNLISTED_FLAG);
-  const body = e.type === 'gm' ? `<div class="md">${renderMarkdown(e.text)}</div>`
+  // Only the newest GM message offers clickable options and rolls, and only to someone with a character.
+  let lastGm = null;
+  for (let i = LOG.length - 1; i >= 0; i--) { if (LOG[i].type === 'gm') { lastGm = LOG[i]; break; } }
+  const ctx = { entryId: e.id, active: !!lastGm && lastGm.id === e.id && !!ROSTER[MY_CHAR_ID] };
+  const body = e.type === 'gm' ? `<div class="md">${renderMarkdown(e.text, ctx)}</div>`
     : escapeHtml(flagged ? e.text.replace(UNLISTED_FLAG, '').trim() : e.text);
   const flag = flagged ? ` <span class="roll-flag" title="This bonus isn't on that character's sheet">${UNLISTED_FLAG}</span>` : '';
   return `<div class="entry ${cls}"><div class="who">${dot}${escapeHtml(e.author)}</div><div class="text">${body}${flag}</div></div>`;
@@ -999,12 +1043,13 @@ function renderRosterMini() {
   }).join('');
 }
 
-async function submitAction() {
+// Called with no argument from the message box, or with the text to send from a clicked option/roll chip.
+async function submitAction(override) {
+  const fromChip = typeof override === 'string';
   const input = el('composerInput');
-  const text = input.value.trim();
+  const text = (fromChip ? override : (input ? input.value : '')).trim();
   if (!text) return;
-  input.value = '';
-  composerDraft = '';
+  if (!fromChip) { input.value = ''; composerDraft = ''; }
   const me = ROSTER[MY_CHAR_ID];
   const authorName = me ? me.name : 'Player';
 
@@ -1060,6 +1105,19 @@ async function submitAction() {
   await dbInsertLog(ROOM, entry);
   LOG.push({ ...entry, ts: Date.now() });
   render();
+}
+
+function runChip(btn) {
+  const key = btn.dataset.key;
+  if (!key || isChipUsed(key)) return;
+  markChipUsed(key);
+  submitAction(btn.dataset.cmd);
+}
+function pickOption(btn) {
+  const key = btn.dataset.key;
+  if (!key || isChipUsed(key)) return;
+  markChipUsed(key);
+  submitAction(btn.dataset.act);
 }
 
 // kind 'story' = a Game Master story turn: the server adds its GM playbook and looks up stat blocks
@@ -1392,6 +1450,7 @@ function renderHelpTab() {
       <ul>
         ${MODE === 'group' ? `<li>Everyone in this room shares the same <b>Ledger</b> (story log) and <b>Party</b> roster — anyone can open the room code on their own device.</li>` : `<li>This is your own solo story — only your character and the GM are here.</li>`}
         <li>Type plain text and hit Send to describe what your character says or does. It's narrated ${MODE === 'group' ? 'to the whole table' : 'into the story'}.</li>
+        <li>In the GM's newest message, click the emoji beside an option to choose it, and click a <b>🎲 /roll</b> button to make that roll. Each can be used once.</li>
         <li>The <b>Roll from sheet</b> menu next to the message box lists your ability checks, skills, weapon attacks, and initiative — pick one and it fills in the right modifier and label for you. If a d20 roll uses a bonus higher than your sheet allows, the log tags it <b>⚠ unlisted modifier</b> so the table can see it (legit situational bonuses like Bless will trigger it too — just a heads-up, nothing is blocked).</li>
         <li>In a fight, the game rolls monster attacks and damage for you and posts the result in the log (adjust your HP when you're hit). The GM keeps a <b>Foes</b> line with each monster's hit points at the end of its messages.</li>
         <li><label style="cursor:pointer;"><input type="checkbox" ${diceAnimOn() ? 'checked' : ''} onchange="setDiceAnim(this.checked)"> Show the dice-rolling popup when you roll (click it to dismiss early)</label></li>
@@ -1451,6 +1510,8 @@ window.saveNotes = saveNotes;
 window.generatePortrait = generatePortrait;
 window.setAppearanceDraft = setAppearanceDraft;
 window.setPortraitDraft = setPortraitDraft;
+window.runChip = runChip;
+window.pickOption = pickOption;
 
 /* ---------------- Boot ---------------- */
 if (checkConfigured()) { render(); loadSiteConfig(); }

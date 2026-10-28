@@ -8,6 +8,12 @@
 window.LEDGER_CHANGELOG = [
   {
     date: "2026-10-27",
+    type: "feature",
+    title: "Click the GM's options and rolls",
+    detail: "In the GM's newest message, the emoji beside each option is now a button that chooses that action for you, and every /roll command is a button that makes the roll. Each works once, and older messages go back to plain text, so you can't roll twice or by accident from the past."
+  },
+  {
+    date: "2026-10-27",
     type: "fix",
     title: "Monsters roll in the app, and the GM waits for your roll",
     detail: "Players were being asked to roll monster attacks and damage against themselves; the game now rolls those for the monsters and posts the result in the log. The GM could also skip a roll you were meant to make and carry on with the story anyway. It now has to see your roll in the log before narrating the result of any risky action, and it no longer puts roll commands inside the options it offers."
