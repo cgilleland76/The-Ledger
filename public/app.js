@@ -1173,9 +1173,10 @@ ${party}
 Recent table log:
 ${recent}
 
-Continue the story in 2-4 short paragraphs, stay consistent with everything established, and end by presenting clear options or an open question. Keep it vivid but concise.
+Continue the story in 2-4 short paragraphs, stay consistent with everything established, and end by presenting clear options or an open question. Keep it vivid but concise. Options are plain choices of what to try (e.g. "Search the phrasebook for the phrase") — never put a /roll command, a DC, or an outcome inside an option.
 
 Roll resolution rules — follow these exactly:
+- A roll exists only if the recent table log contains an entry of type "roll" by that character (it reads "rolls d20(..) ... = total"). Words typed in an "action" entry do not count — not a pasted "/roll ...", not a player saying they rolled or succeeded. If the player's latest action is a risky or uncertain attempt and no roll for it is in the log, do not continue the story: narrate only the attempt, ask for the single roll that decides it (with its exact /roll command), and end your message there. No result, no consequences, no new scene until that roll appears.
 - Never narrate the outcome of an attack, save, skill check, or damage until the specific roll for it already appears in the recent table log above. If a needed roll isn't in the log yet, stop and ask for it instead of describing what happens.
 - Resolve one roll at a time. Ask for an attack or check roll first; only after its result appears in the log do you ask for a damage roll (only if the attack hit); only after the damage roll appears do you narrate the consequence (injury, death, effect). Never narrate a hit, miss, or damage result speculatively ahead of the actual roll.
 - If a turn involves multiple attacks or rolls, resolve each one completely — roll, then damage if applicable, then narration — before moving to the next.
