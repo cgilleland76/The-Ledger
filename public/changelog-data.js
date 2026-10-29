@@ -8,9 +8,21 @@
 window.LEDGER_CHANGELOG = [
   {
     date: "2026-10-28",
+    type: "feature",
+    title: "Pause a solo story and pick it up later",
+    detail: "Every solo story now shows its story code, and Pause Story saves your place. Choose Join or Resume with Code and enter the code, on this device or another, to carry on right where you left off."
+  },
+  {
+    date: "2026-10-28",
+    type: "feature",
+    title: "Your HP updates itself",
+    detail: "When a monster's attack hits you, the damage now comes off your HP automatically, and the GM can heal you (potions, spells, rests) with the game rolling the amount and raising your HP up to your maximum. The result shows your HP before and after in the log."
+  },
+  {
+    date: "2026-10-28",
     type: "fix",
     title: "Re-rolling a check no longer helps",
-    detail: "You could roll the same check over and over and the GM would use the best-looking result. The game now marks every repeat roll of the same kind since the GM last spoke as void, and the GM resolves the check with your first roll."
+    detail: "You could roll the same check over and over and the GM would use the best-looking result. The game now marks every repeat roll of the same kind as “rolled in error” in the log, and the GM ignores it and resolves the check with your first roll. Also fixed: an ally's attack on an enemy (like your scout's longbow) was being rolled against your own character. The game now rolls it against the enemy's armor instead."
   },
   {
     date: "2026-10-27",

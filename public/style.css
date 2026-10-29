@@ -371,3 +371,10 @@ input, textarea, select{ font-family:var(--font-body); font-size:1rem; }
 .opt-ico{ background:none; border:1px solid transparent; border-radius:4px; padding:0 3px; font-size:1.05em; line-height:1.2; cursor:pointer; vertical-align:baseline; transition:transform .12s, background .12s, border-color .12s; }
 .opt-ico:hover{ background:rgba(123,40,32,0.1); border-color:var(--gold-dim); transform:scale(1.15); }
 .opt-ico.used{ opacity:0.45; cursor:default; }
+
+.entry.void .text{ opacity:.6; }
+.entry.void .void-text{ text-decoration:line-through; }
+.roll-void{ display:inline-block; margin-left:6px; padding:1px 8px; border:1px solid var(--oxblood); border-radius:999px; color:var(--oxblood); font-family:Cinzel,serif; font-size:.68rem; letter-spacing:.04em; text-transform:uppercase; white-space:nowrap; }
+
+.paused-note{ display:flex; gap:16px; align-items:center; justify-content:space-between; flex-wrap:wrap; max-width:720px; margin:22px auto 0; padding:14px 18px; background:var(--paper); color:var(--ink); border:1px solid var(--gold); border-radius:6px; text-align:left; }
+.paused-note .room-code{ font-family:Cinzel,serif; font-weight:700; letter-spacing:.12em; color:var(--oxblood); }

@@ -45,6 +45,15 @@ const ID_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789";
 const uid = (n = 8) => Array.from({ length: n }, () => ID_ALPHABET[Math.floor(Math.random() * ID_ALPHABET.length)]).join('');
 const roomCode = () => uid(5).toUpperCase();
 
+// Opening the site with ?tester=1 tags every story this browser creates as a test (?tester=0 turns it off),
+// so the owner's own test rooms can be told apart from real players' stories when counting.
+try {
+  const t = new URLSearchParams(location.search).get('tester');
+  if (t === '1') localStorage.setItem('ledger:tester', '1');
+  else if (t === '0') localStorage.removeItem('ledger:tester');
+} catch (e) {}
+function isTester() { try { return localStorage.getItem('ledger:tester') === '1'; } catch (e) { return false; } }
+
 function checkConfigured() {
   if (!supabase) {
     el('app').innerHTML = `
@@ -249,10 +258,12 @@ function renderLanding() {
         </div>
         <div class="choice-card">
           <h3>Enter the Hollow</h3>
-          <p>Already have a room code from a friend? Join their table and build your character.</p>
-          <button class="btn wide" onclick="goToJoin()">Join with Code</button>
+          <p>Got a room code from a friend, or the code from a solo story you paused? Enter it to join the table or pick your story back up.</p>
+          <button class="btn wide" onclick="goToJoin()">Join or Resume with Code</button>
         </div>
       </div>
+      ${isTester() ? '<p class="helptext" style="text-align:center;">Tester mode is on: stories you create in this browser are tagged as tests.</p>' : ''}
+      ${pausedNote()}
       ${whatsNewHTML()}
     </div>
   `;
@@ -277,7 +288,7 @@ function whatsNewHTML() {
       </div>
     </details>`;
 }
-function startNewCampaign(mode) { MODE = mode; VIEW = 'create'; render(); }
+function startNewCampaign(mode) { pausedStory = null; MODE = mode; VIEW = 'create'; render(); }
 function goToJoin() { VIEW = 'join'; render(); }
 function goToLanding() { VIEW = 'landing'; render(); }
 
@@ -368,7 +379,8 @@ async function submitCreate() {
       seedMode: createDraft.seedMode,
       session: 1,
       created: Date.now(),
-      openingGenerated: false
+      openingGenerated: false,
+      ...(isTester() ? { tester: true } : {})
     };
     ROOM = code;
     await dbEvictOldestRoomIfAtCapacity();
@@ -385,10 +397,10 @@ function renderJoin() {
   el('app').innerHTML = `
     <div class="top-nav"><button class="link-btn" onclick="goToLanding()">&larr; Back</button></div>
     <div class="panel" style="max-width:480px;margin:0 auto;">
-      <div class="eyebrow">Join Campaign</div>
+      <div class="eyebrow">Join or Resume</div>
       <h2>Enter the Hollow</h2>
       <div class="field">
-        <label>Room Code</label>
+        <label>Room Code (a friend's, or the story code from a solo story you paused)</label>
         <input type="text" id="joinCode" placeholder="e.g. F3K9M" style="text-transform:uppercase;letter-spacing:0.1em;">
       </div>
       <div id="joinErr" class="error-text"></div>
@@ -396,21 +408,37 @@ function renderJoin() {
     </div>
   `;
 }
-async function submitJoin() {
-  const code = el('joinCode').value.trim().toUpperCase();
-  if (!code) return;
+// Opens an existing room by code: a friend's table, or a solo story you paused. Returns an error message, or '' on success.
+async function enterRoom(code) {
   const room = await dbGetRoom(code);
-  if (!room) { el('joinErr').innerText = "No campaign found with that code — double-check it with whoever created the room."; return; }
+  if (!room) return "No campaign found with that code — double-check it with whoever created the room, or use the code shown when you paused.";
   ROOM = code; META = room.meta; MODE = room.mode || 'group';
   ROSTER = rosterFromRows(await dbGetCharacters(code));
   LOG = logFromRows(await dbGetLog(code));
-  const mine = recallCharacter(code);
+  let mine = recallCharacter(code);
+  // A solo story has exactly one character, so resuming from a new device (no saved link) picks it back up.
+  if (!(mine && ROSTER[mine.characterId]) && MODE === 'solo' && Object.keys(ROSTER).length === 1) {
+    mine = { characterId: Object.keys(ROSTER)[0] };
+    rememberCharacter(code, mine.characterId);
+  }
+  pausedStory = null;
   if (mine && ROSTER[mine.characterId]) {
     MY_CHAR_ID = mine.characterId;
     VIEW = 'game'; subscribeRealtime(code); render();
   } else {
     VIEW = 'charsetup'; render();
   }
+  return '';
+}
+async function submitJoin() {
+  const code = el('joinCode').value.trim().toUpperCase();
+  if (!code) return;
+  const err = await enterRoom(code);
+  if (err) el('joinErr').innerText = err;
+}
+async function resumeStory(code) {
+  const err = await enterRoom(code);
+  if (err && pausedStory) { pausedStory.error = err; render(); }
 }
 
 /* ---------------- CHARACTER SETUP ---------------- */
@@ -430,10 +458,10 @@ function renderCharSetup() {
   const d = draftChar;
   el('app').innerHTML = `
     <div class="top-nav">
-      <span class="badge">${MODE === 'solo' ? 'Solo Story' : 'Room <span class="room-code">' + ROOM + '</span>'}</span>
+      ${codeBadge()}
       <div style="display:flex;gap:14px;align-items:center;">
-        ${MODE === 'group' ? `<button class="link-btn" onclick="copyCode()">Copy invite code</button>` : ''}
-        <button class="link-btn" onclick="leaveTable()">Leave</button>
+        <button class="link-btn" onclick="copyCode()">${MODE === 'solo' ? 'Copy story code' : 'Copy invite code'}</button>
+        <button class="link-btn" onclick="${MODE === 'solo' ? 'pauseStory()' : 'leaveTable()'}">${MODE === 'solo' ? 'Pause' : 'Leave'}</button>
       </div>
     </div>
     <div class="panel" style="max-width:680px;margin:0 auto;">
@@ -669,6 +697,26 @@ function copyCode() {
   const b = event.target; const old = b.innerText; b.innerText = 'Copied!'; setTimeout(() => b.innerText = old, 1200);
 }
 
+// The story code is the room code: it is what lets you (or a friend) come back to the same room later.
+function codeBadge() {
+  return MODE === 'solo'
+    ? `<span class="badge">Solo Story</span> <span class="badge">Story code <span class="room-code">${ROOM}</span></span>`
+    : `<span class="badge">Room <span class="room-code">${ROOM}</span></span>`;
+}
+let pausedStory = null;   // { code, name, error? } shown on the landing page right after pausing
+function pauseStory() {
+  pausedStory = { code: ROOM, name: META.name };
+  try { navigator.clipboard?.writeText(ROOM); } catch (e) {}
+  leaveTable();
+}
+function pausedNote() {
+  if (!pausedStory) return '';
+  return `<div class="paused-note">
+    <div><b>${escapeHtml(pausedStory.name)}</b> is paused and saved. To pick it up later, on any device, choose <i>Join or Resume with Code</i> and enter <span class="room-code">${escapeHtml(pausedStory.code)}</span>. Keep that code somewhere safe.${pausedStory.error ? `<div class="error-text">${escapeHtml(pausedStory.error)}</div>` : ''}</div>
+    <button class="btn solid" onclick="resumeStory('${escapeAttr(pausedStory.code)}')">Resume now</button>
+  </div>`;
+}
+
 function leaveTable() {
   closeDiceRoll();
   stopPortraitPoll(); portraitPendingSince = 0; appearanceDraft = null; genderDraft = null; ageDraft = null;
@@ -692,14 +740,14 @@ function renderGame() {
     <div class="game-header">
       <div>
         <h1>${escapeHtml(META.name)}</h1>
-        ${MODE === 'group' ? `<span class="badge">Room <span class="room-code">${ROOM}</span></span>` : `<span class="badge">Solo Story</span>`}
+        ${codeBadge()}
         <span class="badge">${lengthLabel[META.length]}</span>
         <span class="badge">Session ${META.session}</span>
       </div>
       <div style="display:flex;gap:8px;">
-        ${MODE === 'group' ? `<button class="btn" onclick="copyCode()">Copy Invite Code</button>` : ''}
+        <button class="btn" onclick="copyCode()">${MODE === 'solo' ? 'Copy Story Code' : 'Copy Invite Code'}</button>
         <button class="btn rust" onclick="advanceSession()">Advance Session</button>
-        <button class="btn" onclick="leaveTable()">Leave Table</button>
+        ${MODE === 'solo' ? '<button class="btn" onclick="pauseStory()" title="Save your place and come back later with your story code">Pause Story</button>' : '<button class="btn" onclick="leaveTable()">Leave Table</button>'}
       </div>
     </div>
     <div class="tabs">
@@ -1019,6 +1067,7 @@ function entryHTML(e) {
   const cls = e.type === 'gm' ? 'gm' : e.type === 'roll' ? 'roll' : e.type === 'system' ? 'system' : 'action';
   const dot = e.type === 'gm' ? '<span class="glow-dot"></span>' : '';
   const flagged = e.type === 'roll' && (e.text || '').includes(UNLISTED_FLAG);
+  const voided = e.type === 'roll' && rerollIds().has(e.id);
   // Only the newest GM message offers clickable options and rolls, and only to someone with a character.
   let lastGm = null;
   for (let i = LOG.length - 1; i >= 0; i--) { if (LOG[i].type === 'gm') { lastGm = LOG[i]; break; } }
@@ -1026,7 +1075,7 @@ function entryHTML(e) {
   const body = e.type === 'gm' ? `<div class="md">${renderMarkdown(e.text, ctx)}</div>`
     : escapeHtml(flagged ? e.text.replace(UNLISTED_FLAG, '').trim() : e.text);
   const flag = flagged ? ` <span class="roll-flag" title="This bonus isn't on that character's sheet">${UNLISTED_FLAG}</span>` : '';
-  return `<div class="entry ${cls}"><div class="who">${dot}${escapeHtml(e.author)}</div><div class="text">${body}${flag}</div></div>`;
+  return `<div class="entry ${cls}${voided ? ' void' : ''}"><div class="who">${dot}${escapeHtml(e.author)}</div><div class="text">${voided ? '<s class="void-text">' + body + '</s>' : body}${flag}${voided ? ' <span class="roll-void" title="Only your first roll of each kind counts">rolled in error — ignored</span>' : ''}</div></div>`;
 }
 function escapeHtml(s) { return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>'); }
 
@@ -1153,17 +1202,19 @@ async function callGM(prompt, fallbackEntry) {
     GM_PENDING = false;
     GM_ABORT = null;
   }
-  const { clean, attacks } = entry.type === 'gm' ? extractFoeAttacks(entry.text) : { clean: entry.text, attacks: [] };
+  const { clean, attacks, heals } = entry.type === 'gm' ? extractFoeAttacks(entry.text) : { clean: entry.text, attacks: [], heals: [] };
   // A message that was nothing but attack directives has no story text of its own to log.
-  if (clean || !attacks.length) {
+  if (clean || !(attacks.length || heals.length)) {
     entry.text = clean || entry.text;
     await dbInsertLog(ROOM, entry);
     LOG.push({ ...entry, ts: Date.now() });
   }
-  for (const a of attacks) {
-    const result = resolveFoeAttack(a);
+  // Damage and healing change the sheet itself: save every character whose HP moved.
+  for (const r of [...attacks.map(resolveFoeAttack), ...heals.map(resolveHeal)]) {
+    const { hpChar, ...result } = r;
     await dbInsertLog(ROOM, result);
     LOG.push({ ...result, ts: Date.now() });
+    if (hpChar && ROSTER[hpChar]) await dbUpsertCharacter(hpChar, ROOM, ROSTER[hpChar]);
   }
   if (VIEW === 'game') render();
 }
@@ -1177,61 +1228,113 @@ function cancelGM() {
 //   [[foe-attack: Goblin B | scimitar | +4 | 1d6+2 | Telilin]]
 // Only the browser that asked the GM resolves them; everyone else just sees the results in the log.
 const FOE_DIRECTIVE = /\[\[\s*foe-attack:([^\]]*)\]\]/gi;
+const HEAL_DIRECTIVE = /\[\[\s*heal:([^\]]*)\]\]/gi;
 function extractFoeAttacks(text) {
   const attacks = [];
+  const heals = [];
   const clean = String(text).replace(FOE_DIRECTIVE, (_, body) => {
     const p = body.split('|').map(s => s.trim());
-    if (p.length >= 5 && attacks.length < 4) attacks.push({ who: p[0].slice(0, 40), atk: p[1].slice(0, 40), bonus: p[2], dmg: p[3], target: p[4] });
+    if (p.length >= 5 && attacks.length < 4) attacks.push({ who: p[0].slice(0, 40), atk: p[1].slice(0, 40), bonus: p[2], dmg: p[3], target: p[4], ac: p[5] });
+    return '';
+  }).replace(HEAL_DIRECTIVE, (_, body) => {
+    const p = body.split('|').map(s => s.trim());
+    if (p.length >= 2 && heals.length < 4) heals.push({ target: p[0], amount: p[1], src: (p[2] || 'Healing').slice(0, 40) });
     return '';
   }).replace(/\n{3,}/g, '\n\n').trim();
-  return { clean, attacks };
+  return { clean, attacks, heals };
 }
 function findTarget(name) {
   const chars = Object.values(ROSTER);
   const n = String(name || '').trim().toLowerCase();
   return chars.find(c => c.name.toLowerCase() === n)
     || chars.find(c => n && (c.name.toLowerCase().includes(n) || n.includes(c.name.toLowerCase())))
-    || (chars.length === 1 ? chars[0] : null);
+    || (!n && chars.length === 1 ? chars[0] : null);
 }
 const dieRoll = sides => Math.floor(Math.random() * sides) + 1;
+// "1d8+2" or a flat "5" -> a spec, else null. Dice counts and sides are capped.
+function parseDice(expr) {
+  const s = String(expr).replace(/\s/g, '');
+  if (/^\d{1,3}$/.test(s)) return { flat: parseInt(s) };
+  const m = s.match(/^(\d*)d(\d+)([+-]\d+)?$/i);
+  if (!m) return null;
+  return { count: Math.min(Math.max(parseInt(m[1] || '1'), 1), 20), sides: Math.min(Math.max(parseInt(m[2]), 2), 20), mod: m[3] ? parseInt(m[3]) : 0 };
+}
+function rollSpec(d, mult) {
+  if (d.flat !== undefined) return { total: d.flat, text: String(d.flat) };
+  const rolls = Array.from({ length: d.count * (mult || 1) }, () => dieRoll(d.sides));
+  return { total: Math.max(0, rolls.reduce((x, y) => x + y, 0) + d.mod), text: `${rolls.length}d${d.sides}(${rolls.join('+')})${d.mod ? fmtMod(d.mod) : ''}` };
+}
+function charIdOf(c) { return Object.keys(ROSTER).find(k => ROSTER[k] === c); }
+// Moves a character's HP (never below 0 or above max) and reports before/after.
+function changeHP(c, delta) {
+  const before = parseInt(c.hp) || 0;
+  const max = parseInt(c.maxhp) || Math.max(before, 1);
+  c.hp = Math.max(0, Math.min(max, before + delta));
+  return { before, after: c.hp, max };
+}
+// The result's hpChar names the character whose HP changed, so the caller can save it.
 function resolveFoeAttack(a) {
-  const target = findTarget(a.target);
+  // A named character is a party member being attacked; otherwise an AC in the directive makes it an ally attacking an enemy.
+  const enemyAc = parseInt(String(a.ac || '').replace(/[^0-9]/g, ''));
+  const found = findTarget(a.target);
+  const target = found || (a.target && enemyAc >= 5 && enemyAc <= 30 ? { name: String(a.target).slice(0, 40), ac: enemyAc, enemy: true } : null);
   const bonus = Math.max(-10, Math.min(30, parseInt(String(a.bonus).replace(/\s/g, '')) || 0));
-  const dm = String(a.dmg).replace(/\s/g, '').match(/^(\d*)d(\d+)([+-]\d+)?$/i);
+  const dice = parseDice(a.dmg);
   const fail = text => ({ id: uid(6), author: 'The Ledger', type: 'system', text });
   if (!target) return fail(`${a.who} attacks, but the game couldn't tell who it was aimed at.`);
-  if (!dm) return fail(`${a.who} attacks ${target.name}, but its damage dice (${a.dmg}) couldn't be read.`);
-  const count = Math.min(Math.max(parseInt(dm[1] || '1'), 1), 20);
-  const sides = Math.min(Math.max(parseInt(dm[2]), 2), 20);
-  const dmgMod = dm[3] ? parseInt(dm[3]) : 0;
+  if (!dice) return fail(`${a.who} attacks ${target.name}, but its damage dice (${a.dmg}) couldn't be read.`);
   const natural = dieRoll(20);
   const total = natural + bonus;
   const crit = natural === 20;
   const hit = crit || (natural !== 1 && total >= (parseInt(target.ac) || 10));
   let text = `${a.atk ? a.atk + ' → ' : ''}${target.name}: d20(${natural}) ${fmtMod(bonus)} = ${total} vs AC ${target.ac} — ${crit ? 'CRITICAL HIT' : hit ? 'HIT' : 'miss'}`;
+  let hpChar;
   if (hit) {
-    const rolls = Array.from({ length: count * (crit ? 2 : 1) }, () => dieRoll(sides));
-    const dmgTotal = Math.max(0, rolls.reduce((x, y) => x + y, 0) + dmgMod);
-    text += `: ${dmgTotal} damage (${rolls.length}d${sides}(${rolls.join('+')})${dmgMod ? fmtMod(dmgMod) : ''}) — ${target.name}, take it off your HP`;
+    const dmg = rollSpec(dice, crit ? 2 : 1);
+    text += `: ${dmg.total} damage (${dmg.text})`;
+    if (target.enemy) {
+      text += ` — ${target.name}'s HP is the GM's to track`;
+    } else {
+      const { before, after, max } = changeHP(target, -dmg.total);
+      hpChar = charIdOf(target);
+      text += ` — ${target.name}: HP ${before} → ${after}/${max}${after === 0 ? ' (down!)' : ''}`;
+    }
   }
-  return { id: uid(6), author: a.who, type: 'roll', text };
+  return { id: uid(6), author: a.who, type: 'roll', text, hpChar };
+}
+// [[heal: Telilin | 2d4+2 | potion of healing]]: rolls (or takes a flat amount) and raises HP up to max.
+function resolveHeal(h) {
+  const fail = text => ({ id: uid(6), author: 'The Ledger', type: 'system', text });
+  const target = findTarget(h.target);
+  const dice = parseDice(h.amount);
+  if (!target) return fail(`${h.src}: the game couldn't tell who was healed.`);
+  if (!dice) return fail(`${h.src} heals ${target.name}, but the amount (${h.amount}) couldn't be read.`);
+  const r = rollSpec(dice, 1);
+  const { before, after, max } = changeHP(target, r.total);
+  return { id: uid(6), author: 'The Ledger', type: 'system', hpChar: charIdOf(target),
+    text: `${h.src} → ${target.name}: heals ${r.total}${dice.flat === undefined ? ' (' + r.text + ')' : ''} — HP ${before} → ${after}/${max}` };
 }
 
 // Players can click Roll as often as they like, so the app (not the GM) decides which roll counts:
-// since the GM's last message, only a character's first roll of a given kind is real; repeats are re-rolls.
-const REROLL_TAG = '[RE-ROLL, DISCARD: only this player\'s first roll of this kind since the GM last spoke counts]';
+// between two GM messages, only a character's first roll of a given kind is real; repeats are "rolled in error".
+// Only player characters are checked, so a monster's multiattack is never flagged.
+const REROLL_TAG = '[ROLLED IN ERROR: void. Ignore this roll completely and never carry it over to a later attack or check]';
+let rerollMemo = { sig: '', ids: new Set() };
 function rerollIds() {
-  let start = 0;
-  for (let i = LOG.length - 1; i >= 0; i--) { if (LOG[i].type === 'gm') { start = i + 1; break; } }
-  const seen = new Set();
+  const sig = LOG.length + ':' + (LOG.length ? LOG[LOG.length - 1].id : '') + ':' + Object.keys(ROSTER).length;
+  if (rerollMemo.sig === sig) return rerollMemo.ids;
+  const players = new Set(Object.values(ROSTER).map(c => String(c.name).toLowerCase()));
   const dupes = new Set();
-  for (const e of LOG.slice(start)) {
-    if (e.type !== 'roll') continue;
+  let seen = new Set();
+  for (const e of LOG) {
+    if (e.type === 'gm') { seen = new Set(); continue; }
+    if (e.type !== 'roll' || !players.has(String(e.author).toLowerCase())) continue;
     const m = String(e.text).match(/\(([^()]*)\)\s*(?:⚠.*)?$/);
     const kind = (m ? m[1] : String(e.text).split('(')[0]).trim().toLowerCase();
     const key = e.author + '|' + kind;
     if (seen.has(key)) dupes.add(e.id); else seen.add(key);
   }
+  rerollMemo = { sig, ids: dupes };
   return dupes;
 }
 
@@ -1254,13 +1357,13 @@ Continue the story in 2-4 short paragraphs, stay consistent with everything esta
 
 Roll resolution rules — follow these exactly:
 - A roll exists only if the recent table log contains an entry of type "roll" by that character (it reads "rolls d20(..) ... = total"). Words typed in an "action" entry do not count — not a pasted "/roll ...", not a player saying they rolled or succeeded. If the player's latest action is a risky or uncertain attempt and no roll for it is in the log, do not continue the story: narrate only the attempt, ask for the single roll that decides it (with its exact /roll command), and end your message there. No result, no consequences, no new scene until that roll appears.
-- A roll tagged [RE-ROLL, DISCARD ...] in the log is void: players may not roll again to get a better result. Resolve the check using the player's first roll of that kind (the untagged one), whatever it was, and say in a few words that the first roll stands.
+- A roll tagged [ROLLED IN ERROR ...] in the log is void, and the players see it marked "rolled in error". Ignore it completely: resolve the check with the player's first roll of that kind (the untagged one), never apply the void roll to this or any later attack or check, and don't remark on it.
 - Never narrate the outcome of an attack, save, skill check, or damage until the specific roll for it already appears in the recent table log above. If a needed roll isn't in the log yet, stop and ask for it instead of describing what happens.
 - Resolve one roll at a time. Ask for an attack or check roll first; only after its result appears in the log do you ask for a damage roll (only if the attack hit); only after the damage roll appears do you narrate the consequence (injury, death, effect). Never narrate a hit, miss, or damage result speculatively ahead of the actual roll.
 - If a turn involves multiple attacks or rolls, resolve each one completely — roll, then damage if applicable, then narration — before moving to the next.
 - Always phrase a requested roll using the exact command the player should type, formatted as inline code, e.g. "/roll +5 Attack (DEX)" for an attack, "/roll 2d6+3" for damage, "/roll +5 adv Attack (DEX)" for advantage. Never say "roll a d20" or similar without giving the exact /roll command.
 - For any d20 check or save, the bonus in your /roll command must be one of that character's Sheet modifiers listed above, and the command should name it, e.g. "/roll +3 Dexterity" or "/roll +7 Stealth". Never add a proficiency bonus, expertise, or any other bonus that isn't on the sheet. If the right skill or tool isn't listed, use the matching ability's modifier as-is (and say that's what you're using). Weapon attack rolls use the listed "Attack (STR)" or "Attack (DEX)" modifier, e.g. "/roll +5 Attack (DEX)". Damage rolls use dice notation for the weapon or spell, e.g. "/roll 1d8+3".
-- Players never roll for monsters. For each attack a foe makes, write it in the fiction and put this directive on its own line: [[foe-attack: Goblin B | scimitar | +4 | 1d6+2 | Telilin]] (attacker | attack name | to-hit bonus from its stat block | damage dice | the target's exact character name). The game rolls the attack against the target's AC and the damage if it hits, and posts the result to the log; use one directive per attack (max 4). Then stop: don't say whether it hit and don't state the AC. Narrate the outcome next turn, once the result is in the log.
+- Players never roll for monsters. For each attack a foe makes, write it in the fiction and put this directive on its own line: [[foe-attack: Goblin B | scimitar | +4 | 1d6+2 | Telilin]] (attacker | attack name | to-hit bonus from its stat block | damage dice | the target's exact character name). When an ally NPC attacks an enemy, add the enemy's AC as a sixth field, e.g. [[foe-attack: Scout | longbow | +4 | 1d8+2 | Goblin A | AC 15]]; the result tells you what happened and you track the enemy's HP. The game rolls the attack against the target's AC and the damage if it hits, and posts the result to the log; use one directive per attack (max 4). Then stop: don't say whether it hit and don't state the AC. Narrate the outcome next turn, once the result is in the log. The game subtracts the damage from the target's HP itself, so never ask players to take it off their HP. For any healing (a potion, a spell, a rest) put [[heal: Telilin | 2d4+2 | potion of healing]] on its own line (the character's exact name | dice or a flat number | source); the game rolls it and raises their HP up to their maximum. One per healing, max 4.
 - Do not roll dice yourself or invent results under any circumstance.`;
 
   await callGM(prompt, 'the GM was not asked to continue.');
@@ -1470,9 +1573,10 @@ function renderHelpTab() {
       <ul>
         ${MODE === 'group' ? `<li>Everyone in this room shares the same <b>Ledger</b> (story log) and <b>Party</b> roster — anyone can open the room code on their own device.</li>` : `<li>This is your own solo story — only your character and the GM are here.</li>`}
         <li>Type plain text and hit Send to describe what your character says or does. It's narrated ${MODE === 'group' ? 'to the whole table' : 'into the story'}.</li>
+        <li>Playing solo? <b>Pause Story</b> saves your place under your <b>story code</b>. Later, choose <b>Join or Resume with Code</b> and enter it, on any device, to carry on where you left off.</li>
         <li>In the GM's newest message, click the emoji beside an option to choose it, and click a <b>🎲 /roll</b> button to make that roll. Each can be used once.</li>
         <li>The <b>Roll from sheet</b> menu next to the message box lists your ability checks, skills, weapon attacks, and initiative — pick one and it fills in the right modifier and label for you. If a d20 roll uses a bonus higher than your sheet allows, the log tags it <b>⚠ unlisted modifier</b> so the table can see it (legit situational bonuses like Bless will trigger it too — just a heads-up, nothing is blocked).</li>
-        <li>In a fight, the game rolls monster attacks and damage for you and posts the result in the log (adjust your HP when you're hit). The GM keeps a <b>Foes</b> line with each monster's hit points at the end of its messages.</li>
+        <li>In a fight, the game rolls monster attacks and damage for you and posts the result in the log (damage comes off your HP automatically, and so does healing the GM grants). The GM keeps a <b>Foes</b> line with each monster's hit points at the end of its messages.</li>
         <li><label style="cursor:pointer;"><input type="checkbox" ${diceAnimOn() ? 'checked' : ''} onchange="setDiceAnim(this.checked)"> Show the dice-rolling popup when you roll (click it to dismiss early)</label></li>
         <li>Dice are <b>only</b> rolled when you type <code>/roll</code>. For a plain d20 check, just add the number, e.g. <code>/roll +5</code>. For any other dice — damage, healing, anything the GM asks for — use full notation like <code>/roll 2d6+3</code> or <code>/roll 1d4</code>.</li>
         <li>For advantage or disadvantage on a d20 roll: <code>/roll +5 adv</code> or <code>/roll 1d20+5 dis</code> — rolls two d20s and keeps the higher or lower.</li>
@@ -1531,6 +1635,8 @@ window.generatePortrait = generatePortrait;
 window.setAppearanceDraft = setAppearanceDraft;
 window.setPortraitDraft = setPortraitDraft;
 window.runChip = runChip;
+window.pauseStory = pauseStory;
+window.resumeStory = resumeStory;
 window.pickOption = pickOption;
 
 /* ---------------- Boot ---------------- */

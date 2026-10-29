@@ -168,6 +168,18 @@ The footer, the Field Notes feedback box, and `changelog.html` also show a "Buy 
   `lib/srd-monsters.json` (all 317 SRD 5.1 monsters, extracted from the SRD text). Monster attacks are
   rolled by the game: the GM writes a `[[foe-attack: name | attack | +bonus | dice | target]]` line, and the
   browser that asked the GM rolls it against the target's AC and logs the result.
+  A hit on a party member comes off their HP automatically; an ally NPC's attack on an enemy adds the
+  enemy's AC as a sixth field. Healing is a `[[heal: name | dice or amount | source]]` line the game rolls and
+  applies (capped at max HP). Repeat rolls of the same check between two GM messages are shown as
+  "rolled in error" and flagged to the GM as void.
+- **Telling tests from real players:** open the site once with `?tester=1` (and `?tester=0` to turn it
+  off) and every story that browser creates gets `"tester": true` in its `rooms.meta`. Count real stories with
+  `select count(*) from rooms where coalesce(meta->>'tester','false') <> 'true'`. Rooms made before this
+  was added carry no tag.
+- **Pausing a solo story:** the story code is the room code. *Pause Story* returns to the landing page
+  with the code shown; entering it under *Join or Resume with Code* (any device) reopens the story, and a
+  solo story's single character is re-adopted automatically. Rooms are still subject to the
+  `MAX_TOTAL_ROOMS` cap, which evicts the oldest room when it is full.
   The SRD 5.1 is licensed under CC BY 4.0; the credit is in `changelog.html#credits` and the site footer.
 - **What's New:** a collapsible teaser on the landing page and a full
   `changelog.html` page track shipped fixes/features and what's planned next
