@@ -7,6 +7,12 @@
 
 window.LEDGER_CHANGELOG = [
   {
+    date: "2026-10-28",
+    type: "fix",
+    title: "Re-rolling a check no longer helps",
+    detail: "You could roll the same check over and over and the GM would use the best-looking result. The game now marks every repeat roll of the same kind since the GM last spoke as void, and the GM resolves the check with your first roll."
+  },
+  {
     date: "2026-10-27",
     type: "feature",
     title: "Click the GM's options and rolls",

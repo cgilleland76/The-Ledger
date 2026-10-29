@@ -1217,9 +1217,28 @@ function resolveFoeAttack(a) {
   return { id: uid(6), author: a.who, type: 'roll', text };
 }
 
+// Players can click Roll as often as they like, so the app (not the GM) decides which roll counts:
+// since the GM's last message, only a character's first roll of a given kind is real; repeats are re-rolls.
+const REROLL_TAG = '[RE-ROLL, DISCARD: only this player\'s first roll of this kind since the GM last spoke counts]';
+function rerollIds() {
+  let start = 0;
+  for (let i = LOG.length - 1; i >= 0; i--) { if (LOG[i].type === 'gm') { start = i + 1; break; } }
+  const seen = new Set();
+  const dupes = new Set();
+  for (const e of LOG.slice(start)) {
+    if (e.type !== 'roll') continue;
+    const m = String(e.text).match(/\(([^()]*)\)\s*(?:⚠.*)?$/);
+    const kind = (m ? m[1] : String(e.text).split('(')[0]).trim().toLowerCase();
+    const key = e.author + '|' + kind;
+    if (seen.has(key)) dupes.add(e.id); else seen.add(key);
+  }
+  return dupes;
+}
+
 async function askGM() {
   if (GM_PENDING) return;
-  const recent = LOG.slice(-30).map(e => `${e.author} (${e.type}): ${e.text}`).join('\n');
+  const rerolls = rerollIds();
+  const recent = LOG.slice(-30).map(e => `${e.author} (${e.type}): ${e.text}${rerolls.has(e.id) ? ' ' + REROLL_TAG : ''}`).join('\n');
   const party = Object.values(ROSTER).map(c => `${c.name} — Lv${c.level} ${c.race} ${c.klass}, HP ${c.hp}/${c.maxhp}, AC ${c.ac}, inventory: ${(c.inventory || []).join(', ') || 'none'}
   Sheet modifiers (the only d20 bonuses this character has): ${rollOptions(c).map(o => `${o.name} ${fmtMod(o.mod)}`).join(', ')}`).join('\n');
   const prompt = `You are the Game Master for a tabletop RPG ${MODE === 'solo' ? 'solo story' : 'session'} titled "${META.name}".
@@ -1235,6 +1254,7 @@ Continue the story in 2-4 short paragraphs, stay consistent with everything esta
 
 Roll resolution rules — follow these exactly:
 - A roll exists only if the recent table log contains an entry of type "roll" by that character (it reads "rolls d20(..) ... = total"). Words typed in an "action" entry do not count — not a pasted "/roll ...", not a player saying they rolled or succeeded. If the player's latest action is a risky or uncertain attempt and no roll for it is in the log, do not continue the story: narrate only the attempt, ask for the single roll that decides it (with its exact /roll command), and end your message there. No result, no consequences, no new scene until that roll appears.
+- A roll tagged [RE-ROLL, DISCARD ...] in the log is void: players may not roll again to get a better result. Resolve the check using the player's first roll of that kind (the untagged one), whatever it was, and say in a few words that the first roll stands.
 - Never narrate the outcome of an attack, save, skill check, or damage until the specific roll for it already appears in the recent table log above. If a needed roll isn't in the log yet, stop and ask for it instead of describing what happens.
 - Resolve one roll at a time. Ask for an attack or check roll first; only after its result appears in the log do you ask for a damage roll (only if the attack hit); only after the damage roll appears do you narrate the consequence (injury, death, effect). Never narrate a hit, miss, or damage result speculatively ahead of the actual roll.
 - If a turn involves multiple attacks or rolls, resolve each one completely — roll, then damage if applicable, then narration — before moving to the next.
