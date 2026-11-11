@@ -1,0 +1,8 @@
+{
+  "appId": "com.thedndledger.app",
+  "appName": "The Ledger",
+  "webDir": "app-www",
+  "android": {
+    "allowMixedContent": false
+  }
+}

@@ -17,7 +17,18 @@ const ALLOWED_ORIGINS = [
   "https://thedndledger.com",
   "https://www.thedndledger.com",
   "http://localhost:8888", // `netlify dev` default port
+  "https://localhost",     // the Android app (Capacitor serves the bundled pages from here)
 ];
+
+function corsHeaders(event, methods = "POST, OPTIONS") {
+  const origin = event.headers && (event.headers.origin || event.headers.Origin);
+  return {
+    "Access-Control-Allow-Origin": ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0],
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Methods": methods,
+    Vary: "Origin",
+  };
+}
 
 const ROOM_CODE_RE = /^[A-Z0-9]{3,10}$/i;
 
@@ -49,4 +60,4 @@ async function roomExists(code) {
   }
 }
 
-module.exports = { SUPABASE_URL, SUPABASE_ANON_KEY, ALLOWED_ORIGINS, ROOM_CODE_RE, sbRest, roomExists };
+module.exports = { SUPABASE_URL, SUPABASE_ANON_KEY, ALLOWED_ORIGINS, ROOM_CODE_RE, sbRest, roomExists, corsHeaders };

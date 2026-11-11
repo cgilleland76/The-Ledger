@@ -45,6 +45,31 @@ const ID_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789";
 const uid = (n = 8) => Array.from({ length: n }, () => ID_ALPHABET[Math.floor(Math.random() * ID_ALPHABET.length)]).join('');
 const roomCode = () => uid(5).toUpperCase();
 
+/* ---------------- Android app + ink (the paywall) ----------------
+   In the Android app (Capacitor) the pages are bundled inside the app, so server calls go to the
+   live site (APP_API_BASE). Every device has a random player id: its "ink key". The server keeps the
+   ink balance for that id (free allowance each month + ink bought on Google Play via RevenueCat). */
+const IS_APP = !!(window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function' && window.Capacitor.isNativePlatform());
+const API_BASE = IS_APP ? String(cfg.APP_API_BASE || 'https://thedndledger.com').replace(/\/$/, '') : '';
+const api = path => API_BASE + path;
+const PLAYER_KEY = 'ledger:player';
+const PLAYER_ID_RE = /^[a-z0-9]{16,40}$/;
+let memoryPlayerId = '';
+function newPlayerId() {
+  const a = new Uint32Array(24);
+  crypto.getRandomValues(a);
+  return Array.from(a, n => ID_ALPHABET[n % ID_ALPHABET.length]).join('');
+}
+function playerId() {
+  try {
+    let id = localStorage.getItem(PLAYER_KEY);
+    if (!id || !PLAYER_ID_RE.test(id)) { id = newPlayerId(); localStorage.setItem(PLAYER_KEY, id); }
+    return id;
+  } catch (e) {
+    return memoryPlayerId || (memoryPlayerId = newPlayerId());
+  }
+}
+
 // Opening the site with ?tester=1 tags every story this browser creates as a test (?tester=0 turns it off),
 // so the owner's own test rooms can be told apart from real players' stories when counting.
 try {
@@ -159,6 +184,11 @@ function rememberCharacter(code, charId) {
 function recallCharacter(code) {
   try { const raw = localStorage.getItem(`ledger:${code}`); return raw ? JSON.parse(raw) : null; } catch (e) { return null; }
 }
+// The table this device is sitting at right now, so a tapped NFC mini (which opens a fresh page) knows where to go.
+const CURRENT_ROOM_KEY = 'ledger:currentRoom';
+function rememberCurrentRoom(code) { try { localStorage.setItem(CURRENT_ROOM_KEY, code); } catch (e) {} }
+function forgetCurrentRoom() { try { localStorage.removeItem(CURRENT_ROOM_KEY); } catch (e) {} }
+function recallCurrentRoom() { try { return localStorage.getItem(CURRENT_ROOM_KEY) || ''; } catch (e) { return ''; } }
 
 function render() {
   renderView();
@@ -173,18 +203,20 @@ function renderView() {
   if (VIEW === 'join') return renderJoin();
   if (VIEW === 'charsetup') return renderCharSetup();
   if (VIEW === 'game') return renderGame();
+  if (VIEW === 'tag') return renderTag();
 }
 
 /* ---------------- Feedback / contact / support ---------------- */
 let CONTACT_EMAIL = (cfg.CONTACT_EMAIL || '').trim(); // config.js value is the fallback; the SUPPORT_EMAIL Netlify variable wins (see loadSiteConfig)
-const SUPPORT_URL = (cfg.SUPPORT_URL || '').trim();
+// Google Play doesn't allow links to outside payments (tips included) inside the app, so it's web-only.
+const SUPPORT_URL = IS_APP ? '' : (cfg.SUPPORT_URL || '').trim();
 const escapeAttr = s => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 // The support email lives in a Netlify environment variable; ask the site-config function for it.
 // Any failure (offline, local file preview) just keeps the config.js address.
 async function loadSiteConfig() {
   try {
-    const resp = await fetch('/api/site-config');
+    const resp = await fetch(api('/api/site-config'));
     if (!resp.ok) return;
     const email = String((await resp.json()).supportEmail || '').trim();
     if (!email || email === CONTACT_EMAIL) return;
@@ -290,7 +322,10 @@ function whatsNewHTML() {
 }
 function startNewCampaign(mode) { pausedStory = null; MODE = mode; VIEW = 'create'; render(); }
 function goToJoin() { VIEW = 'join'; render(); }
-function goToLanding() { VIEW = 'landing'; render(); }
+function goToLanding() {
+  if (draftChar && draftChar.heroTag) draftChar = null; // a mini's hero shouldn't prefill the next, unrelated campaign
+  VIEW = 'landing'; render();
+}
 
 /* ---------------- CREATE CAMPAIGN ---------------- */
 let createDraft = { name: '', length: 'arc', ruleset: '5e2014', tone: '', seed: '', seedMode: 'blank' };
@@ -424,6 +459,7 @@ async function enterRoom(code) {
   pausedStory = null;
   if (mine && ROSTER[mine.characterId]) {
     MY_CHAR_ID = mine.characterId;
+    rememberCurrentRoom(code);
     VIEW = 'game'; subscribeRealtime(code); render();
   } else {
     VIEW = 'charsetup'; render();
@@ -456,6 +492,7 @@ function initiativeBonus(c) { return abilityMod(c.dex); }
 function renderCharSetup() {
   if (!draftChar) { draftChar = blankChar(); charGenMode = 'auto'; CHARGEN_ERROR = ''; }
   const d = draftChar;
+  if (d.heroTag) return renderHeroSetup(d); // a hero from a mini: its sheet is locked, only the player's name is typed
   el('app').innerHTML = `
     <div class="top-nav">
       ${codeBadge()}
@@ -471,13 +508,13 @@ function renderCharSetup() {
 
       <div class="field"><label>Your Name (player)</label><input type="text" id="pName" value="${escapeAttr(d.player)}" oninput="setDraftField('player', this.value)"></div>
       <div class="field"><label>Character Name</label><input type="text" id="cCharName" value="${escapeAttr(d.name)}" oninput="setDraftField('name', this.value)"></div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:end;">
         <div class="field"><label>Gender (optional)</label><input type="text" id="cGender" maxlength="30" placeholder="e.g. female, male, nonbinary" value="${escapeAttr(d.gender || '')}" oninput="setDraftField('gender', this.value)"></div>
         <div class="field"><label>Age (optional)</label><input type="text" id="cAge" maxlength="20" placeholder="e.g. 34, or ancient" value="${escapeAttr(d.age || '')}" oninput="setDraftField('age', this.value)"></div>
       </div>
       <div class="field"><label>Appearance (optional — used to paint your portrait)</label><textarea id="cAppearance" maxlength="500" placeholder="e.g. Tall and wiry, silver hair, a scar over one eye, patched green cloak" oninput="setDraftField('appearance', this.value)">${escapeAttr(d.appearance || '')}</textarea></div>
 
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:end;">
         <div class="field"><label>Race / Species ${charGenMode === 'auto' ? '(optional — leave blank to let the GM choose)' : ''}</label><input type="text" id="cRace" value="${escapeAttr(d.race)}" oninput="setDraftField('race', this.value)"></div>
         <div class="field"><label>Class ${charGenMode === 'auto' ? '(optional — leave blank to let the GM choose)' : ''}</label><input type="text" id="cClass" value="${escapeAttr(d.klass)}" oninput="setDraftField('klass', this.value)"></div>
       </div>
@@ -644,6 +681,14 @@ async function submitCharacter() {
       }
     }
     el('charErr').innerText = '';
+    if (draftChar.heroTag) {
+      // A hero from a mini: rebuild the sheet from the tag as it was read, so nothing typed or
+      // tweaked on this screen can change its stats. Only the player's own name comes from the form.
+      const src = HERO_SOURCES[draftChar.heroTag];
+      if (!src) { el('charErr').innerText = 'Tap your mini again to load this hero.'; return; }
+      const player = (el('pName').value.trim() || 'Player').slice(0, 40);
+      draftChar = { ...heroFromTag(draftChar.heroTag, src), player };
+    } else {
     draftChar.player = el('pName').value.trim() || 'Player';
     draftChar.name = el('cCharName').value.trim() || 'Unnamed';
     draftChar.race = el('cRace').value.trim();
@@ -664,11 +709,13 @@ async function submitCharacter() {
     draftChar.age = el('cAge').value.trim().slice(0, 20);
     draftChar.skills = draftChar.skills.filter(s => s.name.trim());
     draftChar.inventory = draftChar.inventory.filter(i => i.trim());
+    }
 
     const charId = uid(10);
     await dbUpsertCharacter(charId, ROOM, draftChar);
     ROSTER[charId] = draftChar;
     rememberCharacter(ROOM, charId);
+    rememberCurrentRoom(ROOM);
     MY_CHAR_ID = charId;
     draftChar = null;
 
@@ -723,6 +770,7 @@ function leaveTable() {
   if (realtimeChannel) { supabase.removeChannel(realtimeChannel); realtimeChannel = null; }
   if (GM_ABORT) GM_ABORT.abort();
   if (CHARGEN_ABORT) CHARGEN_ABORT.abort();
+  forgetCurrentRoom();
   ROOM = null; META = null; ROSTER = {}; LOG = []; MY_CHAR_ID = null; draftChar = null;
   MODE = 'group'; ACTIVE_TAB = 'story';
   VIEW = 'landing';
@@ -743,6 +791,7 @@ function renderGame() {
         ${codeBadge()}
         <span class="badge">${lengthLabel[META.length]}</span>
         <span class="badge">Session ${META.session}</span>
+        ${inkBadgeHTML()}
       </div>
       <div style="display:flex;gap:8px;">
         <button class="btn" onclick="copyCode()">${MODE === 'solo' ? 'Copy Story Code' : 'Copy Invite Code'}</button>
@@ -1172,13 +1221,18 @@ function pickOption(btn) {
 // kind 'story' = a Game Master story turn: the server adds its GM playbook and looks up stat blocks
 // for any monsters named in `lore` (the recent log text).
 async function fetchGM(prompt, signal, kind, lore) {
-  const resp = await fetch('/api/gm', {
+  const resp = await fetch(api('/api/gm'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt, roomCode: ROOM, kind, lore }),
+    body: JSON.stringify({ prompt, roomCode: ROOM, kind, lore, playerId: playerId() }),
     signal,
   });
   const data = await resp.json();
+  if (data.wallet) setWallet(data.wallet);
+  if (data.outOfInk) {
+    openShop(data.error);
+    throw new Error(data.error + ' Tap the ink badge at the top of the page to get more.');
+  }
   if (!resp.ok || data.error) throw new Error(data.error || `Request failed (${resp.status})`);
   return data.text || '';
 }
@@ -1437,7 +1491,7 @@ function portraitBoxHTML(c) {
   const img = portraitImg(c, 'portrait');
   const action = state === 'pending'
     ? `<div class="gm-pending"><span class="thinking">Painting your portrait<span class="thinking-dots"><span>.</span><span>.</span><span>.</span></span></span></div><p class="helptext">Usually under a minute — keep playing, it will appear here.</p>`
-    : `<button class="btn" onclick="generatePortrait()">${img ? 'Regenerate portrait' : 'Generate portrait'}</button>${state === 'error' ? `<div class="error-text" style="margin-top:8px;">${escapeHtml(portraitErrorText(c))}</div>` : ''}`;
+    : `<button class="btn" onclick="generatePortrait()">${img ? 'Regenerate portrait' : 'Generate portrait'}${inkCostLabel('portrait')}</button>${state === 'error' ? `<div class="error-text" style="margin-top:8px;">${escapeHtml(portraitErrorText(c))}</div>` : ''}`;
   return `<div class="portrait-box">
     ${img || '<div class="portrait-empty">No portrait yet</div>'}
     <div class="portrait-side">
@@ -1481,13 +1535,15 @@ async function generatePortrait() {
   portraitBaseline = c.portraitAt || '';
   render();
   try {
-    const resp = await fetch('/.netlify/functions/portrait-background', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ roomCode: ROOM, characterId: MY_CHAR_ID }),
-    });
-    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const body = JSON.stringify({ roomCode: ROOM, characterId: MY_CHAR_ID, playerId: playerId() });
+    // The app is on a different origin than the server, and background functions can't answer a CORS
+    // preflight, so it sends a "simple" request it can't read the reply to. Progress arrives on the row either way.
+    const resp = await fetch(api('/.netlify/functions/portrait-background'), IS_APP
+      ? { method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain' }, body }
+      : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+    if (!IS_APP && !resp.ok) throw new Error('HTTP ' + resp.status);
     startPortraitPoll();
+    setTimeout(() => refreshWallet().catch(() => {}), 8000);
   } catch (e) {
     console.error(e);
     portraitPendingSince = 0;
@@ -1639,7 +1695,410 @@ window.pauseStory = pauseStory;
 window.resumeStory = resumeStory;
 window.pickOption = pickOption;
 
+window.openShop = openShop;
+window.closeShop = closeShop;
+window.buyPack = buyPack;
+window.copyInkKey = copyInkKey;
+window.useInkKey = useInkKey;
+
+/* ---------------- Ink: balance, shop, Google Play purchases ---------------- */
+let WALLET = null; // { enforced, free_left, paid, free_per_month, costs } from /api/wallet
+let SHOP_REASON = '';
+let SHOP_PACKAGES = null; // RevenueCat packages, once loaded
+let SHOP_STATUS = '';
+let SHOP_BUSY = false;
+let purchasesReady = null;
+
+function inkTotal() { return WALLET ? (WALLET.free_left || 0) + (WALLET.paid || 0) : 0; }
+function inkBadgeHTML() {
+  if (!WALLET || !WALLET.enforced) return '';
+  return `<button class="badge ink-badge" onclick="openShop()" title="Your ink: GM replies and portraits use it">&#x1F58B; ${inkTotal()} ink</button>`;
+}
+function inkCostLabel(kind) {
+  const cost = WALLET && WALLET.enforced && WALLET.costs ? WALLET.costs[kind] : 0;
+  return cost ? ` <span class="ink-cost">(${cost} ink)</span>` : '';
+}
+function setWallet(w) {
+  WALLET = { ...(WALLET || { enforced: true }), ...w };
+  document.querySelectorAll('.ink-badge').forEach(b => { b.innerHTML = `&#x1F58B; ${inkTotal()} ink`; });
+  if (el('shopOverlay')) renderShop();
+}
+async function refreshWallet(action) {
+  const resp = await fetch(api('/api/wallet'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ playerId: playerId(), action: action === 'redeem' ? 'redeem' : 'balance' }),
+  });
+  const data = await resp.json();
+  if (!resp.ok || data.error) throw new Error(data.error || `Request failed (${resp.status})`);
+  const firstLoad = !WALLET;
+  WALLET = data;
+  if (firstLoad && data.enforced && VIEW === 'game') render();
+  else setWallet({});
+  return data;
+}
+
+function purchasesPlugin() {
+  const C = window.Capacitor;
+  if (!C) return null;
+  return (C.Plugins && C.Plugins.Purchases) || (typeof C.registerPlugin === 'function' ? C.registerPlugin('Purchases') : null);
+}
+function initPurchases() {
+  if (!IS_APP || !cfg.REVENUECAT_ANDROID_KEY) return Promise.reject(new Error('The shop is not set up in this build.'));
+  if (!purchasesReady) {
+    purchasesReady = (async () => {
+      const P = purchasesPlugin();
+      if (!P) throw new Error('The Google Play store module is missing from this build.');
+      await P.configure({ apiKey: cfg.REVENUECAT_ANDROID_KEY, appUserID: playerId() });
+      return P;
+    })().catch(e => { purchasesReady = null; throw e; });
+  }
+  return purchasesReady;
+}
+async function loadPackages() {
+  try {
+    const P = await initPurchases();
+    const offerings = await P.getOfferings();
+    const cur = offerings && offerings.current;
+    SHOP_PACKAGES = (cur && cur.availablePackages) || [];
+    if (!SHOP_PACKAGES.length) SHOP_STATUS = 'No ink packs are on sale right now. Try again later.';
+  } catch (e) {
+    console.error(e);
+    SHOP_PACKAGES = [];
+    SHOP_STATUS = 'Could not reach Google Play: ' + (e.message || e);
+  }
+  if (el('shopOverlay')) renderShop();
+}
+
+function openShop(reason) {
+  SHOP_REASON = typeof reason === 'string' ? reason : '';
+  SHOP_STATUS = '';
+  if (!el('shopOverlay')) {
+    const overlay = document.createElement('div');
+    overlay.id = 'shopOverlay';
+    overlay.className = 'dice-overlay shop-overlay';
+    overlay.onclick = e => { if (e.target === overlay) closeShop(); };
+    document.body.appendChild(overlay);
+  }
+  renderShop();
+  refreshWallet().catch(() => {});
+  if (IS_APP && SHOP_PACKAGES === null) loadPackages();
+}
+function closeShop() { const o = el('shopOverlay'); if (o) o.remove(); }
+
+function renderShop() {
+  const o = el('shopOverlay');
+  if (!o) return;
+  const w = WALLET || {};
+  const costs = w.costs || { gm: 1, portrait: 8 };
+  let store;
+  if (!IS_APP) {
+    store = cfg.PLAY_STORE_URL
+      ? `<p class="helptext">More ink is sold in <a href="${escapeAttr(cfg.PLAY_STORE_URL)}" target="_blank" rel="noopener">The Ledger app for Android</a>. Copy your ink key below and enter it in the app, and what you buy there works here too.</p>`
+      : `<p class="helptext">More ink is sold in The Ledger app for Android.</p>`;
+  } else if (SHOP_PACKAGES === null) {
+    store = `<p class="thinking">Opening the Google Play store...</p>`;
+  } else {
+    store = SHOP_PACKAGES.map((pkg, i) => {
+      const prod = pkg.product || {};
+      // Play adds "(App name)" to product titles; drop it.
+      const title = String(prod.title || prod.identifier || 'Ink').replace(/\s*\(.*\)\s*$/, '');
+      return `<button class="btn solid wide shop-pack" ${SHOP_BUSY ? 'disabled' : ''} onclick="buyPack(${i})">${escapeHtml(title)} &middot; ${escapeHtml(prod.priceString || '')}</button>`;
+    }).join('');
+  }
+  o.innerHTML = `
+    <div class="dice-card shop-card" role="dialog" aria-label="Ink pot">
+      <div class="dice-title">The Ink Pot</div>
+      ${SHOP_REASON ? `<p class="error-text">${escapeHtml(SHOP_REASON)}</p>` : ''}
+      <div class="shop-balance">${inkTotal()} <span>ink</span></div>
+      <p class="helptext">${w.free_left || 0} free ink left this month (of ${w.free_per_month || 0}; it refills on the 1st) &middot; ${w.paid || 0} bought ink, which never expires.</p>
+      <p class="helptext">A Game Master reply costs ${costs.gm} ink. A character portrait costs ${costs.portrait}. Rolls, sheets and the story log are always free.</p>
+      <div class="shop-packs">${store}</div>
+      ${SHOP_STATUS ? `<p class="helptext shop-status">${escapeHtml(SHOP_STATUS)}</p>` : ''}
+      <details class="shop-key">
+        <summary>Your ink key (to move your ink to another device)</summary>
+        <p class="helptext">Ink belongs to this key. Keep a copy somewhere safe: if you reinstall the app or switch phones, enter it there to keep your ink.</p>
+        <code class="ink-key">${escapeHtml(playerId())}</code> <button class="btn" onclick="copyInkKey()">Copy</button>
+        <div class="shop-key-row">
+          <input type="text" id="inkKeyInput" placeholder="Paste an ink key from another device" autocomplete="off" spellcheck="false">
+          <button class="btn" onclick="useInkKey()">Use key</button>
+        </div>
+      </details>
+      <button class="btn wide" style="margin-top:14px;" onclick="closeShop()">Close</button>
+    </div>`;
+}
+
+async function buyPack(i) {
+  const pkg = SHOP_PACKAGES && SHOP_PACKAGES[i];
+  if (!pkg || SHOP_BUSY) return;
+  SHOP_BUSY = true; SHOP_STATUS = 'Waiting for Google Play...'; renderShop();
+  try {
+    const P = await initPurchases();
+    await P.purchasePackage({ aPackage: pkg });
+    SHOP_STATUS = 'Payment received. Adding your ink...'; renderShop();
+    // RevenueCat can take a moment to see the purchase; try a few times.
+    let added = 0;
+    for (let attempt = 0; attempt < 4 && !added; attempt++) {
+      if (attempt) await new Promise(r => setTimeout(r, 1500 * attempt));
+      added = (await refreshWallet('redeem')).added || 0;
+    }
+    SHOP_STATUS = added ? `Added ${added} ink. Thank you!` : 'Your purchase went through. The ink will appear within a few minutes (reopen the app if it doesn\'t).';
+    SHOP_REASON = '';
+  } catch (e) {
+    // Raw native errors (no RevenueCat JS wrapper here): code "1" is PURCHASE_CANCELLED.
+    const d = (e && e.data) || {};
+    const cancelled = e && (e.userCancelled || d.userCancelled || String(e.code) === '1' || String(d.code) === '1' || /cancel/i.test(String(e.message || '')));
+    SHOP_STATUS = cancelled ? 'Purchase cancelled.' : 'The purchase didn\'t go through: ' + (e.message || e);
+  } finally {
+    SHOP_BUSY = false;
+    renderShop();
+  }
+}
+
+function copyInkKey() {
+  const key = playerId();
+  const done = () => { SHOP_STATUS = 'Ink key copied.'; renderShop(); };
+  if (navigator.clipboard) navigator.clipboard.writeText(key).then(done, () => {});
+}
+async function useInkKey() {
+  const box = el('inkKeyInput');
+  const key = (box ? box.value : '').trim().toLowerCase();
+  if (!PLAYER_ID_RE.test(key)) { SHOP_STATUS = 'That doesn\'t look like an ink key.'; return renderShop(); }
+  if (key === playerId()) { SHOP_STATUS = 'That is already this device\'s key.'; return renderShop(); }
+  if (!confirm('Switch this device to that ink key? Ink on the current key stays with the current key, so copy it first if it has ink left.')) return;
+  try { localStorage.setItem(PLAYER_KEY, key); } catch (e) { memoryPlayerId = key; }
+  if (IS_APP && purchasesReady) {
+    try { const P = await purchasesReady; await P.logIn({ appUserID: key }); } catch (e) { purchasesReady = null; }
+  }
+  SHOP_STATUS = 'This device now uses that ink key.';
+  try { await refreshWallet(IS_APP ? 'redeem' : 'balance'); } catch (e) { SHOP_STATUS = e.message; }
+  renderShop();
+}
+
+/* ---------------- NFC minis: tap-to-play tags (see NFC-MINIS.md) ----------------
+   A sticker in a mini's base holds https://<site>/t/<tag id>, which netlify.toml redirects to /?tag=<id>.
+   Tags point at lasting heroes and monsters, never at a room (rooms get evicted), and are added into
+   whatever table this device is sitting at (CURRENT_ROOM_KEY) or one picked by code. */
+const TAG_ID_RE = /^[hmik]_[a-z0-9]{10,40}$/;
+let TAG = null;        // { id, kind, data } once loaded
+let TAG_STATE = '';    // '' | 'loading' | 'missing' | 'error'
+let TAG_MSG = '';      // last result or problem, shown under the buttons
+let TAG_BUSY = false;
+let TAG_ROOM = null;   // { code, name } of the table this device is at, if it still exists
+
+async function openTag(id) {
+  VIEW = 'tag'; TAG = null; TAG_STATE = 'loading'; TAG_MSG = ''; TAG_ROOM = null;
+  render();
+  const { data, error } = await supabase.from('tags').select('id, kind, data').eq('id', id).maybeSingle();
+  if (error) { console.error(error); TAG_STATE = 'error'; }
+  else if (!data || !['hero', 'monster'].includes(data.kind)) TAG_STATE = 'missing';
+  else { TAG = data; TAG_STATE = ''; }
+  const code = recallCurrentRoom();
+  if (TAG && code) {
+    const room = await dbGetRoom(code);
+    if (room) TAG_ROOM = { code, name: (room.meta && room.meta.name) || code };
+    else forgetCurrentRoom();
+  }
+  if (VIEW === 'tag') render();
+}
+function closeTag() {
+  TAG = null; TAG_MSG = '';
+  goToLanding();
+}
+function tagCodeRow(label, onclick) {
+  return `
+    <div class="field tag-code">
+      <label>${label}</label>
+      <div class="tag-code-row">
+        <input type="text" id="tagCode" placeholder="e.g. F3K9M" maxlength="5" autocomplete="off" style="text-transform:uppercase;letter-spacing:0.1em;">
+        <button class="btn" ${TAG_BUSY ? 'disabled' : ''} onclick="${onclick}">Go</button>
+      </div>
+    </div>`;
+}
+function tagCodeInput() { const box = el('tagCode'); return box ? box.value : ''; }
+
+function renderTag() {
+  let eyebrow = 'Tapped Mini', body;
+  if (TAG_STATE === 'loading') body = `<p class="thinking">Reading your mini...</p>`;
+  else if (TAG_STATE === 'error') body = `<p class="error-text">Couldn't read this mini right now. Check your connection and tap it again.</p>`;
+  else if (TAG_STATE === 'missing' || !TAG) body = `<h2>Unknown mini</h2><p class="helptext">This mini isn't linked to anything The Ledger knows about. If it came in a kit, contact support.</p>`;
+  else if (TAG.kind === 'hero') { eyebrow = 'A Hero Answers'; body = tagHeroHTML(); }
+  else { eyebrow = 'A Foe Appears'; body = tagMonsterHTML(); }
+  el('app').innerHTML = `
+    <div class="top-nav"><button class="link-btn" onclick="closeTag()">&larr; The Ledger</button></div>
+    <div class="panel" style="max-width:520px;margin:0 auto;">
+      <div class="eyebrow">${eyebrow}</div>
+      ${body}
+      ${TAG_MSG ? `<p class="hero-note">${escapeHtml(TAG_MSG)}</p>` : ''}
+    </div>`;
+}
+
+/* ---- hero minis ---- */
+function tagHeroHTML() {
+  const h = TAG.data || {};
+  const name = h.name || 'this hero';
+  const stats = ['str', 'dex', 'con', 'int', 'wis', 'cha']
+    .map(k => `<div><b>${k.toUpperCase()}</b>${Number(h[k]) || 10}</div>`).join('');
+  return `
+    <h2>${escapeHtml(h.name || 'Unnamed hero')}</h2>
+    <p class="helptext">${escapeHtml([h.race, h.klass].filter(Boolean).join(' ') || 'Adventurer')} &middot; Level ${Number(h.level) || 1} &middot; HP ${Number(h.maxhp) || 10} &middot; AC ${Number(h.ac) || 10}</p>
+    <div class="tag-stats">${stats}</div>
+    ${h.appearance ? `<p class="helptext">${escapeHtml(h.appearance)}</p>` : ''}
+    ${TAG_ROOM ? `<button class="btn solid wide" ${TAG_BUSY ? 'disabled' : ''} onclick="tagHeroJoin('${escapeAttr(TAG_ROOM.code)}')">Bring ${escapeHtml(name)} to ${escapeHtml(TAG_ROOM.name)}</button>` : ''}
+    ${tagCodeRow(TAG_ROOM ? 'Or join another table with its code' : 'Join a table with its code', 'tagHeroJoinCode()')}
+    <button class="btn wide" ${TAG_BUSY ? 'disabled' : ''} onclick="tagHeroSolo()">Start a solo story with ${escapeHtml(name)}</button>`;
+}
+// Each hero sheet exactly as it was read from its tag, by tag id. Joining rebuilds the character from
+// this copy, so the locked setup screen can't be used to change a mini's stats.
+const HERO_SOURCES = {};
+// A tag's character sheet, shaped like a fresh character draft and marked with the tag it came from.
+function heroFromTag(tagId, data) {
+  const h = data || {};
+  const num = (v, lo, hi, dflt) => { const n = parseInt(v, 10); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : dflt; };
+  const d = {
+    ...blankChar(),
+    name: String(h.name || 'Unnamed hero').slice(0, 60),
+    race: String(h.race || '').slice(0, 40),
+    klass: String(h.klass || '').slice(0, 40),
+    level: num(h.level, 1, 20, 1),
+    ac: num(h.ac, 1, 30, 10),
+    notes: String(h.notes || '').slice(0, 2000),
+    appearance: String(h.appearance || '').slice(0, 500),
+    gender: String(h.gender || '').slice(0, 30),
+    age: String(h.age || '').slice(0, 20),
+    heroTag: tagId,
+  };
+  for (const k of ['str', 'dex', 'con', 'int', 'wis', 'cha']) d[k] = num(h[k], 1, 30, 10);
+  d.maxhp = num(h.maxhp, 1, 999, 10);
+  d.hp = d.maxhp;
+  d.skills = Array.isArray(h.skills) ? h.skills.slice(0, 30).map(s => ({ name: String((s && s.name) || '').slice(0, 40), mod: num(s && s.mod, -10, 20, 0) })).filter(s => s.name) : [];
+  d.inventory = Array.isArray(h.inventory) ? h.inventory.slice(0, 40).map(i => String(i).slice(0, 80)).filter(Boolean) : [];
+  d.spells = Array.isArray(h.spells) ? h.spells.slice(0, 40).map(s => String(s).slice(0, 60)) : [];
+  return d;
+}
+function heroDraft() {
+  HERO_SOURCES[TAG.id] = TAG.data || {};
+  return heroFromTag(TAG.id, TAG.data);
+}
+// Character setup for a hero that came from a mini: the sheet is shown read-only.
+function renderHeroSetup(d) {
+  const stats = ['str', 'dex', 'con', 'int', 'wis', 'cha'].map(k => `<div><b>${k.toUpperCase()}</b>${d[k]}</div>`).join('');
+  const list = items => items.length ? `<ul class="hero-list">${items.map(i => `<li>${i}</li>`).join('')}</ul>` : '<p class="helptext">None</p>';
+  el('app').innerHTML = `
+    <div class="top-nav">
+      ${codeBadge()}
+      <div style="display:flex;gap:14px;align-items:center;">
+        <button class="link-btn" onclick="copyCode()">${MODE === 'solo' ? 'Copy story code' : 'Copy invite code'}</button>
+        <button class="link-btn" onclick="${MODE === 'solo' ? 'pauseStory()' : 'leaveTable()'}">${MODE === 'solo' ? 'Pause' : 'Leave'}</button>
+      </div>
+    </div>
+    <div class="panel" style="max-width:600px;margin:0 auto;">
+      <div class="eyebrow">Your Hero, From Your Mini</div>
+      <h2>${escapeHtml(META.name)}</h2>
+      <p class="hero-note">&#x2726; <b>${escapeHtml(d.name)}</b> came from your mini. A mini's sheet is set by the mini, so it can't be changed here. Add your own name and press <i>${MODE === 'solo' ? 'Begin' : 'Join the Table'}</i>.</p>
+      <div class="field"><label>Your Name (player)</label><input type="text" id="pName" maxlength="40" value="${escapeAttr(d.player || '')}" oninput="setDraftField('player', this.value)"></div>
+      <h3 class="hero-name">${escapeHtml(d.name)}</h3>
+      <p class="helptext">${escapeHtml([d.race, d.klass].filter(Boolean).join(' ') || 'Adventurer')} &middot; Level ${d.level} &middot; HP ${d.maxhp} &middot; AC ${d.ac}</p>
+      <div class="tag-stats">${stats}</div>
+      <div class="field"><label>Skills</label>${list(d.skills.map(s => `${escapeHtml(s.name)} ${fmtMod(s.mod)}`))}</div>
+      <div class="field"><label>Gear</label>${list(d.inventory.map(i => escapeHtml(i)))}</div>
+      ${d.appearance ? `<div class="field"><label>Appearance</label><p class="helptext">${escapeHtml(d.appearance)}</p></div>` : ''}
+      ${d.notes ? `<div class="field"><label>Notes</label><p class="helptext">${escapeHtml(d.notes)}</p></div>` : ''}
+      <div id="charErr" class="error-text"></div>
+      <button class="btn solid wide" onclick="submitCharacter()">${MODE === 'solo' ? 'Begin' : 'Join the Table'}</button>
+      <button class="link-btn" style="display:block;margin:12px auto 0;" onclick="dropHeroDraft()">Build a different character instead</button>
+    </div>`;
+}
+function dropHeroDraft() { draftChar = null; renderCharSetup(); }
+window.dropHeroDraft = dropHeroDraft;
+async function tagHeroJoin(code) {
+  code = String(code || '').trim().toUpperCase();
+  if (!code || TAG_BUSY || !TAG) return;
+  TAG_BUSY = true; TAG_MSG = ''; render();
+  const tagId = TAG.id;
+  try {
+    draftChar = heroDraft(); charGenMode = 'manual'; CHARGEN_ERROR = '';
+    const err = await enterRoom(code);
+    if (err) { VIEW = 'tag'; TAG_MSG = err; return; }
+    // Tapping the same mini again (or on another phone) picks that hero back up instead of adding a copy.
+    const existingId = Object.keys(ROSTER).find(id => ROSTER[id].heroTag === tagId);
+    if (existingId) {
+      draftChar = null;
+      MY_CHAR_ID = existingId; rememberCharacter(code, existingId); rememberCurrentRoom(code);
+      VIEW = 'game'; ACTIVE_TAB = 'story'; subscribeRealtime(code);
+    } else {
+      VIEW = 'charsetup';
+    }
+    TAG = null;
+  } finally {
+    TAG_BUSY = false;
+    render();
+  }
+}
+function tagHeroJoinCode() { tagHeroJoin(tagCodeInput()); }
+function tagHeroSolo() {
+  if (!TAG) return;
+  draftChar = heroDraft(); charGenMode = 'manual'; CHARGEN_ERROR = '';
+  TAG = null;
+  startNewCampaign('solo');
+}
+
+/* ---- monster minis ---- */
+function tagMonsterHTML() {
+  const m = TAG.data || {};
+  return `
+    <h2>${escapeHtml(m.name || 'Unknown creature')}</h2>
+    ${m.cr ? `<p class="helptext">Challenge rating ${escapeHtml(String(m.cr))}</p>` : ''}
+    <p class="helptext">Summoning puts it into the scene. Everyone at the table sees it in the story log, and the Game Master gets its full stat block on the next turn.</p>
+    ${TAG_ROOM ? `<button class="btn solid wide" ${TAG_BUSY ? 'disabled' : ''} onclick="tagSummon('${escapeAttr(TAG_ROOM.code)}')">Summon into ${escapeHtml(TAG_ROOM.name)}</button>` : ''}
+    ${tagCodeRow(TAG_ROOM ? 'Or summon into another table' : 'Which table? Enter its room code', 'tagSummonCode()')}`;
+}
+async function tagSummon(code) {
+  code = String(code || '').trim().toUpperCase();
+  if (!code || TAG_BUSY || !TAG) return;
+  TAG_BUSY = true; TAG_MSG = ''; render();
+  try {
+    const room = await dbGetRoom(code);
+    if (!room) { TAG_MSG = 'No campaign found with that code.'; return; }
+    const name = String((TAG.data && TAG.data.name) || 'creature').slice(0, 60);
+    const article = /^[aeiou]/i.test(name) ? 'An' : 'A';
+    await dbInsertLog(code, { id: uid(6), author: 'The Ledger', type: 'system', text: `⚔ ${article} ${name} enters the scene! (summoned by a mini)` });
+    // If this device has a character at that table, go straight to the game to watch it arrive.
+    if (recallCharacter(code)) {
+      const err = await enterRoom(code);
+      if (!err && VIEW === 'game') { TAG = null; return; }
+      VIEW = 'tag';
+    }
+    TAG_ROOM = { code, name: (room.meta && room.meta.name) || code };
+    TAG_MSG = `${article} ${name} has entered ${TAG_ROOM.name}. Ask the GM to continue the story and it will join the scene.`;
+  } finally {
+    TAG_BUSY = false;
+    if (VIEW === 'tag') render();
+  }
+}
+function tagSummonCode() { tagSummon(tagCodeInput()); }
+
+window.closeTag = closeTag;
+window.tagHeroJoin = tagHeroJoin;
+window.tagHeroJoinCode = tagHeroJoinCode;
+window.tagHeroSolo = tagHeroSolo;
+window.tagSummon = tagSummon;
+window.tagSummonCode = tagSummonCode;
+
 /* ---------------- Boot ---------------- */
-if (checkConfigured()) { render(); loadSiteConfig(); }
+if (checkConfigured()) {
+  let tagParam = '';
+  try { tagParam = new URLSearchParams(location.search).get('tag') || ''; } catch (e) {}
+  if (TAG_ID_RE.test(tagParam)) {
+    // Drop ?tag= from the address bar so a refresh doesn't re-run the tap.
+    try { history.replaceState(null, '', location.pathname); } catch (e) {}
+    openTag(tagParam);
+  } else {
+    render();
+  }
+  loadSiteConfig();
+  // In the app, "redeem" also credits any purchase whose confirmation was interrupted last time.
+  refreshWallet(IS_APP ? 'redeem' : 'balance').catch(() => {});
+}
 
 })();

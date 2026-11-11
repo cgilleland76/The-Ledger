@@ -13,4 +13,8 @@ window.LEDGER_CONFIG = {
   CONTACT_EMAIL: "you@example.com",
   // Optional "support the project" link (e.g. Buy Me a Coffee). Leave blank to hide it.
   SUPPORT_URL: "",
+  // Android app: live site URL, RevenueCat public Google Play key (goog_...), Play Store listing URL.
+  APP_API_BASE: "https://thedndledger.com",
+  REVENUECAT_ANDROID_KEY: "",
+  PLAY_STORE_URL: "",
 };

@@ -7,6 +7,12 @@
   to = "/.netlify/functions/:splat"
   status = 200
 
+# NFC minis: each sticker holds /t/<tag id>; the app reads ?tag= on load (see NFC-MINIS.md).
+[[redirects]]
+  from = "/t/:id"
+  to = "/?tag=:id"
+  status = 302
+
 [dev]
   publish = "public"
   functions = "netlify/functions"

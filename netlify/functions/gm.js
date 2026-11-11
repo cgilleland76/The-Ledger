@@ -6,17 +6,12 @@
 //
 // Set ANTHROPIC_API_KEY in Netlify: Site configuration > Environment variables.
 
-const { ALLOWED_ORIGINS, roomExists } = require("./lib/shared");
+const { roomExists, corsHeaders } = require("./lib/shared");
 const { PLAYBOOK, statBlocksFor } = require("./lib/gm-knowledge");
+const billing = require("./lib/billing");
 
 exports.handler = async function (event) {
-  const origin = event.headers && (event.headers.origin || event.headers.Origin);
-  const headers = {
-    "Access-Control-Allow-Origin": ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0],
-    "Access-Control-Allow-Headers": "Content-Type",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    Vary: "Origin",
-  };
+  const headers = corsHeaders(event);
 
   if (event.httpMethod === "OPTIONS") {
     return { statusCode: 200, headers, body: "" };
@@ -34,11 +29,12 @@ exports.handler = async function (event) {
     };
   }
 
-  let prompt, roomCode, kind, lore;
+  let prompt, roomCode, kind, lore, playerId;
   try {
     const body = JSON.parse(event.body || "{}");
     prompt = body.prompt;
     roomCode = body.roomCode;
+    playerId = body.playerId;
     kind = body.kind === "story" ? "story" : "";
     lore = typeof body.lore === "string" ? body.lore.slice(-6000) : "";
     if (!prompt || typeof prompt !== "string") {
@@ -51,6 +47,23 @@ exports.handler = async function (event) {
   if (!(await roomExists(roomCode))) {
     return { statusCode: 403, headers, body: JSON.stringify({ error: "Unknown or missing room code." }) };
   }
+
+  // Paywall: spend 1 ink before calling Claude (given back below if the call fails).
+  let charge;
+  try {
+    charge = await billing.spend(playerId, "gm");
+  } catch (e) {
+    console.error("billing spend failed:", e.message);
+    return { statusCode: 503, headers, body: JSON.stringify({ error: "The ink ledger is unavailable right now. Try again in a minute." }) };
+  }
+  if (!charge.ok) {
+    return {
+      statusCode: 402,
+      headers,
+      body: JSON.stringify({ error: billing.outOfInkMessage("gm"), outOfInk: true, wallet: { free_left: charge.free_left, paid: charge.paid } }),
+    };
+  }
+  const wallet = charge.skipped ? undefined : { free_left: charge.free_left, paid: charge.paid };
 
   // Story turns get the GM playbook (cached between calls) and stat blocks for any SRD
   // monsters named in the recent log. Other uses of this endpoint (character generation) don't.
@@ -80,6 +93,7 @@ exports.handler = async function (event) {
 
     if (!resp.ok) {
       const errText = await resp.text();
+      await billing.refund(playerId, charge);
       return { statusCode: resp.status, headers, body: JSON.stringify({ error: `Anthropic API error: ${errText}` }) };
     }
 
@@ -90,8 +104,10 @@ exports.handler = async function (event) {
       .join("\n")
       .trim();
 
-    return { statusCode: 200, headers, body: JSON.stringify({ text }) };
+    if (!text) await billing.refund(playerId, charge);
+    return { statusCode: 200, headers, body: JSON.stringify({ text, wallet }) };
   } catch (err) {
+    await billing.refund(playerId, charge);
     return { statusCode: 500, headers, body: JSON.stringify({ error: err.message }) };
   }
 };

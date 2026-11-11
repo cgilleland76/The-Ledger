@@ -378,3 +378,32 @@ input, textarea, select{ font-family:var(--font-body); font-size:1rem; }
 
 .paused-note{ display:flex; gap:16px; align-items:center; justify-content:space-between; flex-wrap:wrap; max-width:720px; margin:22px auto 0; padding:14px 18px; background:var(--paper); color:var(--ink); border:1px solid var(--gold); border-radius:6px; text-align:left; }
 .paused-note .room-code{ font-family:Cinzel,serif; font-weight:700; letter-spacing:.12em; color:var(--oxblood); }
+
+/* Ink (credits) badge + shop */
+.ink-badge{ cursor:pointer; font:inherit; }
+.ink-cost{ opacity:0.75; font-size:0.85em; }
+.shop-overlay{ cursor:default; padding:16px; box-sizing:border-box; }
+.shop-card{ width:440px; max-width:100%; max-height:calc(100vh - 32px); overflow-y:auto; text-align:left; padding:24px 24px 20px; }
+.shop-card .dice-title{ text-align:center; }
+.shop-balance{ font-family:var(--font-display); font-size:2.2rem; font-weight:700; color:var(--oxblood); text-align:center; margin:4px 0 6px; }
+.shop-balance span{ font-size:1rem; letter-spacing:0.1em; text-transform:uppercase; }
+.shop-packs{ display:flex; flex-direction:column; gap:8px; margin:14px 0 6px; }
+.shop-pack[disabled]{ opacity:0.55; cursor:wait; }
+.shop-status{ font-style:italic; }
+.shop-key{ margin-top:12px; }
+.shop-key summary{ cursor:pointer; color:var(--ink-dim); font-size:0.9rem; }
+.ink-key{ font-family:var(--font-code); word-break:break-all; background:rgba(0,0,0,0.06); padding:2px 6px; }
+.shop-key-row{ display:flex; gap:8px; margin-top:10px; }
+.shop-key-row input{ flex:1; min-width:0; }
+
+/* NFC minis: tapped-mini screen */
+.hero-note{ margin:10px 0 14px; padding:10px 12px; border-left:3px solid var(--gold-dim); background:rgba(217,180,90,0.12); font-size:0.95rem; line-height:1.5; }
+.tag-stats{ display:grid; grid-template-columns:repeat(6, 1fr); gap:6px; margin:12px 0; text-align:center; }
+.tag-stats div{ padding:6px 2px; border:1px solid var(--gold-dim); border-radius:4px; font-size:1.05rem; }
+.tag-stats b{ display:block; font-family:var(--font-display); font-size:0.62rem; letter-spacing:0.12em; color:var(--ink-dim); }
+.tag-code{ margin:14px 0; }
+.tag-code-row{ display:flex; gap:8px; }
+.tag-code-row input{ flex:1; min-width:0; }
+@media (max-width:420px){ .tag-stats{ grid-template-columns:repeat(3, 1fr); } }
+.hero-name{ margin:18px 0 2px; }
+.hero-list{ margin:4px 0 0 18px; padding:0; line-height:1.6; }

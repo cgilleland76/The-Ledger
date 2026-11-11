@@ -4,9 +4,18 @@
   "description": "A remote tabletop hub with solo and group play, AI game-mastered by Claude.",
   "private": true,
   "scripts": {
-    "dev": "netlify dev"
+    "dev": "netlify dev",
+    "app:build": "node scripts/build-app.js",
+    "app:sync": "node scripts/build-app.js && npx cap sync android",
+    "app:open": "npx cap open android"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.6.0",
     "netlify-cli": "^17.0.0"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.6.0",
+    "@capacitor/core": "^8.6.0",
+    "@revenuecat/purchases-capacitor": "^14.1.0"
   }
 }

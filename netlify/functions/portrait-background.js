@@ -19,6 +19,7 @@
 
 const crypto = require("crypto");
 const { SUPABASE_URL, SUPABASE_ANON_KEY, ROOM_CODE_RE, sbRest } = require("./lib/shared");
+const billing = require("./lib/billing");
 
 const COOLDOWN_MS = 60 * 1000;
 const STALE_PENDING_MS = 4 * 60 * 1000;
@@ -84,11 +85,13 @@ function openAiErrorMessage(status, body) {
 exports.handler = async function (event) {
   if (event.httpMethod !== "POST") return;
 
-  let roomCode, characterId;
+  // The Android app sends this as text/plain (no CORS preflight); it's still JSON.
+  let roomCode, characterId, playerId;
   try {
     const body = JSON.parse(event.body || "{}");
     roomCode = body.roomCode;
     characterId = body.characterId;
+    playerId = body.playerId;
   } catch (e) {
     return;
   }
@@ -125,8 +128,18 @@ exports.handler = async function (event) {
   const openAiKey = process.env.OPENAI_API_KEY;
   if (!openAiKey) return report({ portrait_status: "error:Portraits aren't enabled on this server yet." });
 
+  // Paywall: spend the portrait's ink now; refunded below if no portrait is delivered.
+  let charge;
+  try {
+    charge = await billing.spend(playerId, "portrait");
+  } catch (e) {
+    return report({ portrait_status: "error:The ink ledger is unavailable right now. Try again in a minute." });
+  }
+  if (!charge.ok) return report({ portrait_status: "error:" + billing.outOfInkMessage("portrait") });
+
   await report({ portrait_status: "pending" });
 
+  let delivered = false;
   try {
     const c = ch.data || {};
     const meta = room.meta || {};
@@ -169,12 +182,15 @@ exports.handler = async function (event) {
     });
     if (!up.ok) return report({ portrait_status: "error:The portrait was drawn but couldn't be saved. Try again." });
 
+    delivered = true;
     await report({
       portrait_url: `${SUPABASE_URL}/storage/v1/object/public/portraits/${objectPath}`,
       portrait_status: "ready",
     });
   } catch (e) {
     await report({ portrait_status: "error:Something went wrong making the portrait. Try again." });
+  } finally {
+    if (!delivered) await billing.refund(playerId, charge);
   }
 };
 
