@@ -45,7 +45,11 @@ function progressFrom(tagData, ch) {
     name: String((s && s.name) || "").slice(0, 40),
     mod: int(s && s.mod, -10, 20, 0) + bump,
   })).filter((s) => s.name);
-  const inventory = (Array.isArray(ch.inventory) ? ch.inventory : []).slice(0, 40).map((i) => String(i).slice(0, 80)).filter((i) => i.trim());
+  // Items the player typed in themselves (handItems) are not earned, so they never go onto the mini.
+  const typed = Array.isArray(ch.handItems) ? [...ch.handItems] : [];
+  const inventory = (Array.isArray(ch.inventory) ? ch.inventory : []).slice().reverse()
+    .filter((i) => { const k = typed.indexOf(i); if (k >= 0) { typed.splice(k, 1); return false; } return true; })
+    .reverse().slice(0, 40).map((i) => String(i).slice(0, 80)).filter((i) => i.trim());
   const notes = String(ch.notes || "").slice(0, 2000);
   return { ...t, level, maxhp, hp: maxhp, skills, inventory, notes };
 }

@@ -416,3 +416,5 @@ input, textarea, select{ font-family:var(--font-body); font-size:1rem; }
 
 /* Portrait buttons: generate + upload */
 .portrait-actions{ display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+
+.hand-item{ font-style:italic; font-size:0.85em; color:var(--sienna); }

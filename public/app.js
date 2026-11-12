@@ -1259,15 +1259,15 @@ async function callGM(prompt, fallbackEntry) {
     GM_PENDING = false;
     GM_ABORT = null;
   }
-  const { clean, attacks, heals } = entry.type === 'gm' ? extractFoeAttacks(entry.text) : { clean: entry.text, attacks: [], heals: [] };
-  // A message that was nothing but attack directives has no story text of its own to log.
-  if (clean || !(attacks.length || heals.length)) {
+  const { clean, attacks, heals, gives, uses } = entry.type === 'gm' ? extractFoeAttacks(entry.text) : { clean: entry.text, attacks: [], heals: [], gives: [], uses: [] };
+  // A message that was nothing but directives has no story text of its own to log.
+  if (clean || !(attacks.length || heals.length || gives.length || uses.length)) {
     entry.text = clean || entry.text;
     await dbInsertLog(ROOM, entry);
     LOG.push({ ...entry, ts: Date.now() });
   }
-  // Damage and healing change the sheet itself: save every character whose HP moved.
-  for (const r of [...attacks.map(resolveFoeAttack), ...heals.map(resolveHeal)]) {
+  // Damage, healing and items change the sheet itself: save every character that changed.
+  for (const r of [...attacks.map(resolveFoeAttack), ...heals.map(resolveHeal), ...gives.map(resolveGive), ...uses.map(resolveUse)]) {
     const { hpChar, ...result } = r;
     await dbInsertLog(ROOM, result);
     LOG.push({ ...result, ts: Date.now() });
@@ -1286,9 +1286,13 @@ function cancelGM() {
 // Only the browser that asked the GM resolves them; everyone else just sees the results in the log.
 const FOE_DIRECTIVE = /\[\[\s*foe-attack:([^\]]*)\]\]/gi;
 const HEAL_DIRECTIVE = /\[\[\s*heal:([^\]]*)\]\]/gi;
+const GIVE_DIRECTIVE = /\[\[\s*give:([^\]]*)\]\]/gi;
+const USE_DIRECTIVE = /\[\[\s*use:([^\]]*)\]\]/gi;
 function extractFoeAttacks(text) {
   const attacks = [];
   const heals = [];
+  const gives = [];
+  const uses = [];
   const clean = String(text).replace(FOE_DIRECTIVE, (_, body) => {
     const p = body.split('|').map(s => s.trim());
     if (p.length >= 5 && attacks.length < 4) attacks.push({ who: p[0].slice(0, 40), atk: p[1].slice(0, 40), bonus: p[2], dmg: p[3], target: p[4], ac: p[5] });
@@ -1297,8 +1301,16 @@ function extractFoeAttacks(text) {
     const p = body.split('|').map(s => s.trim());
     if (p.length >= 2 && heals.length < 4) heals.push({ target: p[0], amount: p[1], src: (p[2] || 'Healing').slice(0, 40) });
     return '';
+  }).replace(GIVE_DIRECTIVE, (_, body) => {
+    const p = body.split('|').map(s => s.trim());
+    if (p.length >= 2 && p[1] && gives.length < 4) gives.push({ target: p[0], item: p[1].slice(0, 80) });
+    return '';
+  }).replace(USE_DIRECTIVE, (_, body) => {
+    const p = body.split('|').map(s => s.trim());
+    if (p.length >= 2 && p[1] && uses.length < 4) uses.push({ target: p[0], item: p[1].slice(0, 80) });
+    return '';
   }).replace(/\n{3,}/g, '\n\n').trim();
-  return { clean, attacks, heals };
+  return { clean, attacks, heals, gives, uses };
 }
 function findTarget(name) {
   const chars = Object.values(ROSTER);
@@ -1374,6 +1386,65 @@ function resolveHeal(h) {
     text: `${h.src} → ${target.name}: heals ${r.total}${dice.flat === undefined ? ' (' + r.text + ')' : ''} — HP ${before} → ${after}/${max}` };
 }
 
+// ---- items: what the story gave vs. what a player typed in ----
+// Items typed into the Sheet tab are listed in c.handItems as well as c.inventory. The GM is told they are
+// not owned, they are marked "added by you" on the sheet, and they are never saved onto a hero's mini.
+function handItems(c) { return Array.isArray(c.handItems) ? c.handItems.filter(i => (c.inventory || []).includes(i)) : []; }
+// One flag per inventory slot: true for typed-in items (matched from the end, where they were added).
+function handFlags(c) {
+  const left = [...handItems(c)];
+  const inv = c.inventory || [];
+  const flags = inv.map(() => false);
+  for (let i = inv.length - 1; i >= 0 && left.length; i--) {
+    const k = left.indexOf(inv[i]);
+    if (k >= 0) { flags[i] = true; left.splice(k, 1); }
+  }
+  return flags;
+}
+function earnedItems(c) { const f = handFlags(c); return (c.inventory || []).filter((_, i) => !f[i]); }
+function dropHandItem(c, item) {
+  if (!Array.isArray(c.handItems)) return;
+  const k = c.handItems.lastIndexOf(item);
+  if (k >= 0) c.handItems.splice(k, 1);
+}
+const QTY_RE = /\s*\((\d+)\)\s*$/;
+const itemBase = s => String(s).replace(QTY_RE, '').trim().toLowerCase();
+// [[give: Brannoc | Potion of Healing]]: the story hands a character an item.
+function resolveGive(g) {
+  const target = findTarget(g.target);
+  if (!target) return { id: uid(6), author: 'The Ledger', type: 'system', text: `${g.item}: the game couldn't tell who received it.` };
+  target.inventory = (target.inventory || []).filter(i => String(i).trim());
+  if (target.inventory.length >= 40) return { id: uid(6), author: 'The Ledger', type: 'system', text: `${target.name}'s pack is full, so ${g.item} wasn't added.` };
+  target.inventory.push(g.item);
+  return { id: uid(6), author: 'The Ledger', type: 'system', hpChar: charIdOf(target), text: `🎁 ${target.name} gains ${g.item}.` };
+}
+// [[use: Brannoc | Potion of Healing]]: a consumable is used up. "Potion (3)" becomes "Potion (2)".
+function resolveUse(u) {
+  const target = findTarget(u.target);
+  if (!target) return { id: uid(6), author: 'The Ledger', type: 'system', text: `${u.item}: the game couldn't tell who used it.` };
+  const inv = target.inventory || [];
+  const want = itemBase(u.item);
+  const flags = handFlags(target);
+  const order = [...inv.keys()].sort((a, b) => flags[a] - flags[b]); // earned items first
+  const idx = order.find(i => itemBase(inv[i]) === want) ?? order.find(i => { const b = itemBase(inv[i]); return want && (b.includes(want) || want.includes(b)); });
+  if (idx === undefined) return { id: uid(6), author: 'The Ledger', type: 'system', text: `${target.name} has no ${u.item} to use.` };
+  const old = inv[idx];
+  const q = QTY_RE.exec(old);
+  const n = q ? parseInt(q[1]) : 1;
+  const base = String(old).replace(QTY_RE, '').trim();
+  const wasHand = flags[idx];
+  if (n > 1) {
+    const next = n - 1 > 1 ? `${base} (${n - 1})` : base;
+    inv[idx] = next;
+    if (wasHand) { dropHandItem(target, old); target.handItems.push(next); }
+  } else {
+    inv.splice(idx, 1);
+    if (wasHand) dropHandItem(target, old);
+  }
+  return { id: uid(6), author: 'The Ledger', type: 'system', hpChar: charIdOf(target),
+    text: `${target.name} uses ${base}${n > 1 ? ` (${n - 1} left)` : ''}.` };
+}
+
 // Players can click Roll as often as they like, so the app (not the GM) decides which roll counts:
 // between two GM messages, only a character's first roll of a given kind is real; repeats are "rolled in error".
 // Only player characters are checked, so a monster's multiattack is never flagged.
@@ -1401,7 +1472,7 @@ async function askGM() {
   if (GM_PENDING) return;
   const rerolls = rerollIds();
   const recent = LOG.slice(-30).map(e => `${e.author} (${e.type}): ${e.text}${rerolls.has(e.id) ? ' ' + REROLL_TAG : ''}`).join('\n');
-  const party = Object.values(ROSTER).map(c => `${c.name} — Lv${c.level} ${c.race} ${c.klass}, HP ${c.hp}/${c.maxhp}, AC ${c.ac}, inventory: ${(c.inventory || []).join(', ') || 'none'}
+  const party = Object.values(ROSTER).map(c => `${c.name} — Lv${c.level} ${c.race} ${c.klass}, HP ${c.hp}/${c.maxhp} (current, from the sheet), AC ${c.ac}, inventory: ${earnedItems(c).join(', ') || 'none'}${handItems(c).length ? `; written in by the player, never given in the story (NOT owned): ${handItems(c).join(', ')}` : ''}
   Sheet modifiers (the only d20 bonuses this character has): ${rollOptions(c).map(o => `${o.name} ${fmtMod(o.mod)}`).join(', ')}`).join('\n');
   const prompt = `You are the Game Master for a tabletop RPG ${MODE === 'solo' ? 'solo story' : 'session'} titled "${META.name}".
 Ruleset: ${META.ruleset}. Tone/genre: ${META.tone || 'unspecified — infer something fitting'}. Length: ${lengthLabel[META.length]}.
@@ -1422,7 +1493,8 @@ Roll resolution rules — follow these exactly:
 - If a turn involves multiple attacks or rolls, resolve each one completely — roll, then damage if applicable, then narration — before moving to the next.
 - Always phrase a requested roll using the exact command the player should type, formatted as inline code, e.g. "/roll +5 Attack (DEX)" for an attack, "/roll 2d6+3" for damage, "/roll +5 adv Attack (DEX)" for advantage. Never say "roll a d20" or similar without giving the exact /roll command.
 - For any d20 check or save, the bonus in your /roll command must be one of that character's Sheet modifiers listed above, and the command should name it, e.g. "/roll +3 Dexterity" or "/roll +7 Stealth". Never add a proficiency bonus, expertise, or any other bonus that isn't on the sheet. If the right skill or tool isn't listed, use the matching ability's modifier as-is (and say that's what you're using). Weapon attack rolls use the listed "Attack (STR)" or "Attack (DEX)" modifier, e.g. "/roll +5 Attack (DEX)". Damage rolls use dice notation for the weapon or spell, e.g. "/roll 1d8+3".
-- Players never roll for monsters. For each attack a foe makes, write it in the fiction and put this directive on its own line: [[foe-attack: Goblin B | scimitar | +4 | 1d6+2 | Telilin]] (attacker | attack name | to-hit bonus from its stat block | damage dice | the target's exact character name). When an ally NPC attacks an enemy, add the enemy's AC as a sixth field, e.g. [[foe-attack: Scout | longbow | +4 | 1d8+2 | Goblin A | AC 15]]; the result tells you what happened and you track the enemy's HP. The game rolls the attack against the target's AC and the damage if it hits, and posts the result to the log; use one directive per attack (max 4). Then stop: don't say whether it hit and don't state the AC. Narrate the outcome next turn, once the result is in the log. The game subtracts the damage from the target's HP itself, so never ask players to take it off their HP. For any healing (a potion, a spell, a rest) put [[heal: Telilin | 2d4+2 | potion of healing]] on its own line (the character's exact name | dice or a flat number | source); the game rolls it and raises their HP up to their maximum. One per healing, max 4. Never use [[heal]] to stabilise a dying character: stabilising (a healer's kit, a Medicine check, spare the dying) restores no HP, it only ends their death saves, so ask the player for a Medicine check (DC 10, or a healer's kit with no roll) and narrate them stable at 0 HP. When a player's own character is doing the healing (their spell or potion), ask that player to /roll it and tell them the HP gained instead of using [[heal]].
+- Players never roll for monsters. For each attack a foe makes, write it in the fiction and put this directive on its own line: [[foe-attack: Goblin B | scimitar | +4 | 1d6+2 | Telilin]] (attacker | attack name | to-hit bonus from its stat block | damage dice | the target's exact character name). When an ally NPC attacks an enemy, add the enemy's AC as a sixth field, e.g. [[foe-attack: Scout | longbow | +4 | 1d8+2 | Goblin A | AC 15]]; the result tells you what happened and you track the enemy's HP. The game rolls the attack against the target's AC and the damage if it hits, and posts the result to the log; use one directive per attack (max 4). Then stop: don't say whether it hit and don't state the AC. Narrate the outcome next turn, once the result is in the log. The game subtracts the damage from the target's HP itself, so never ask players to take it off their HP. For any healing (a potion, a spell, a rest) put [[heal: Telilin | 2d4+2 | potion of healing]] on its own line (the character's exact name | dice or a flat number | source); the game rolls it and raises their HP up to their maximum. One per healing, max 4. Never use [[heal]] to stabilise a dying character: stabilising (a healer's kit, a Medicine check, spare the dying) restores no HP, it only ends their death saves, so ask the player for a Medicine check (DC 10, or a healer's kit with no roll) and narrate them stable at 0 HP. When a player's own character is doing the healing (their spell or potion), ask that player to /roll it; once that roll is in the log, put [[heal: <their name> | <that roll's total> | <source>]] with the total as a plain number, and the game adds it. Never state anyone's new HP total yourself (the game posts it), and never work HP out from older log lines: a character's current HP is only the "HP x/y (current, from the sheet)" in the party list above.
+- Items: each character's inventory above is what they really carry. Items "written in by the player" were typed in by the player and never given in the story: they are NOT owned. If a player tries to use one, it isn't in their pack, and say so plainly. When the story gives a character an item (found, bought, looted, handed over), put [[give: <their name> | <item>]] on its own line and the game adds it. When a character uses up a consumable (drinks a potion, reads a scroll, spends a charge item), put [[use: <their name> | <item>]] on its own line and the game removes one. Max 4 of each per message.
 - Do not roll dice yourself or invent results under any circumstance.`;
 
   await callGM(prompt, 'the GM was not asked to continue.');
@@ -1671,7 +1743,8 @@ function renderSheetTab() {
       ${(c.skills || []).map(s => `<div class="item-row"><span>${escapeHtml(s.name)}</span><span style="font-family:var(--font-display);font-weight:600;color:var(--glow)">${s.mod >= 0 ? '+' : ''}${escapeHtml(String(s.mod))}</span></div>`).join('') || '<p class="helptext">None recorded.</p>'}
 
       <h3 style="font-size:1rem;margin-top:20px;">Inventory</h3>
-      ${(c.inventory || []).map((it, i) => `<div class="item-row"><span>${escapeHtml(it)}</span><button class="small-x" onclick="removeItem(${i})">&times;</button></div>`).join('') || '<p class="helptext">Empty-handed.</p>'}
+      ${(() => { const f = handFlags(c); return (c.inventory || []).map((it, i) => `<div class="item-row"><span>${escapeHtml(it)}${f[i] ? ' <span class="hand-item" title="You typed this in. The GM only counts items the story gave you.">(added by you)</span>' : ''}</span><button class="small-x" onclick="removeItem(${i})">&times;</button></div>`).join(''); })() || '<p class="helptext">Empty-handed.</p>'}
+      <p class="helptext">Items the story gives you are added for you. Anything you type in here is marked <i>added by you</i>, and the GM won't count it.</p>
       <div class="skill-row" style="margin-top:10px;">
         <input type="text" id="newItem" placeholder="Add item..." value="${escapeAttr(newItemDraft)}" oninput="setNewItemDraft(this.value)">
         <button class="add-row" onclick="addItem()">Add</button>
@@ -1699,11 +1772,15 @@ async function addItem() {
   const v = el('newItem').value.trim(); if (!v) return;
   ROSTER[MY_CHAR_ID].inventory = ROSTER[MY_CHAR_ID].inventory || [];
   ROSTER[MY_CHAR_ID].inventory.push(v);
+  const c = ROSTER[MY_CHAR_ID];
+  c.handItems = [...(Array.isArray(c.handItems) ? c.handItems : []), v];
   newItemDraft = '';
   await persistRoster(); render();
 }
 async function removeItem(i) {
-  ROSTER[MY_CHAR_ID].inventory.splice(i, 1);
+  const c = ROSTER[MY_CHAR_ID];
+  if (handFlags(c)[i]) dropHandItem(c, c.inventory[i]);
+  c.inventory.splice(i, 1);
   await persistRoster(); render();
 }
 async function saveNotes() {
@@ -2248,6 +2325,7 @@ async function levelUp() {
   if (!c || !canLevelUp(c)) return;
   const old = parseInt(c.level) || 1;
   const gain = levelUpGain(c);
+  const hpBefore = parseInt(c.hp) || 0;
   c.level = old + 1;
   c.maxhp = (parseInt(c.maxhp) || 1) + gain;
   c.hp = Math.min(c.maxhp, (parseInt(c.hp) || 0) + gain);
@@ -2255,7 +2333,7 @@ async function levelUp() {
   const bump = profFor(c.level) - profFor(old);
   if (bump) c.skills = (c.skills || []).map(s => ({ ...s, mod: (parseInt(s.mod) || 0) + bump }));
   await persistRoster();
-  const entry = { id: uid(6), author: 'The Ledger', type: 'system', text: `⬆ ${c.name} reached level ${c.level}! Max HP +${gain}${bump ? ', skills +' + bump : ''}.` };
+  const entry = { id: uid(6), author: 'The Ledger', type: 'system', text: `⬆ ${c.name} reached level ${c.level}! Max HP +${gain}${bump ? ', skills +' + bump : ''} — HP ${hpBefore} → ${c.hp}/${c.maxhp}.` };
   await dbInsertLog(ROOM, entry);
   LOG.push({ ...entry, ts: Date.now() });
   render();
