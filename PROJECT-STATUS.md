@@ -18,6 +18,9 @@ Work from either Claude session starts here.
 - `?tester=1` tags test rooms (`rooms.meta.tester`); count real stories with `coalesce(meta->>'tester','false') <> 'true'`.
 - Stabilising is not healing: the GM asks for a Medicine check and never uses `[[heal]]` for it; heal lines worded as stabilising are ignored by the game; a player's own healing is rolled by that player.
 - Android app (Capacitor), ink credits paywall, NFC minis and NFC phase 2 (loot coins, level up, heroes save to their mini).
+- HP only changes through the game: no manual HP buttons. GM directives `[[damage]]` (traps, falls, saves; `| half`), `[[heal]]`, area effects with several targets or `party` rolled once, `[[give]]`/`[[use]]` items; typed-in items are marked and not owned.
+- XP from SRD kills (`[[defeat]]`, capped at party level) and verified skill rolls (`[[success]]`); `[[short-rest]]` (hit dice) and `[[long-rest]]` (full HP, unlocks Level Up). Level-ups need XP plus a long rest.
+- Battle map (Battle Map tab, `rooms.meta.grid`): GM uses `[[map]]`, `[[place]]`, `[[wall]]`, `[[remove]]`, `[[end-battle]]`; players tap to move within their speed per GM turn; the GM prompt gets squares and distances. With no map, the Foes line gives distances.
 - Upload your own portrait on the Sheet tab (cropped to 640px square in the browser, stored in the `portraits` bucket, no ink).
 - Ink paywall is deployed but OFF (`BILLING_ENFORCED` unset). `billing.sql` and `tags-phase2.sql` have been run; `SUPABASE_SERVICE_ROLE_KEY` is set in Netlify. Google Play / RevenueCat (steps 7–10 in `ANDROID-APP.md`) are on hold until the owner is ready.
 

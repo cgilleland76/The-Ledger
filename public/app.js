@@ -172,7 +172,17 @@ function subscribeRealtime(code) {
     })
     .on('postgres_changes', { event: '*', schema: 'public', table: 'rooms', filter: `code=eq.${code}` }, async () => {
       const r = await dbGetRoom(code);
-      if (r) { META = r.meta; if (VIEW === 'game') render(); }
+      if (!r) return;
+      const strip = m => JSON.stringify({ ...(m || {}), grid: null });
+      const onlyMap = strip(META) === strip(r.meta);
+      META = r.meta;
+      if (VIEW !== 'game') return;
+      if (onlyMap && ACTIVE_TAB !== 'map') {
+        const tab = document.querySelector('.tab[onclick="setTab(\'map\')"]');
+        if (tab) tab.textContent = mapState() ? 'Battle Map ⚔' : 'Battle Map';
+        return;
+      }
+      render();
     })
     .subscribe();
 }
@@ -784,8 +794,8 @@ const lengthLabel = { oneshot: 'One-Shot', arc: 'Short Arc', long: 'Long Campaig
 
 function renderGame() {
   const tabs = MODE === 'solo'
-    ? [['story', 'The Ledger (Story)'], ['sheet', 'Your Sheet'], ['help', 'Field Notes']]
-    : [['story', 'The Ledger (Story)'], ['party', 'The Party'], ['sheet', 'Your Sheet'], ['help', 'Field Notes']];
+    ? [['story', 'The Ledger (Story)'], ['map', mapState() ? 'Battle Map ⚔' : 'Battle Map'], ['sheet', 'Your Sheet'], ['help', 'Field Notes']]
+    : [['story', 'The Ledger (Story)'], ['map', mapState() ? 'Battle Map ⚔' : 'Battle Map'], ['party', 'The Party'], ['sheet', 'Your Sheet'], ['help', 'Field Notes']];
   el('app').innerHTML = `
     <div class="game-header">
       <div>
@@ -807,6 +817,7 @@ function renderGame() {
     <div id="tabBody"></div>
   `;
   if (ACTIVE_TAB === 'story') renderStoryTab();
+  else if (ACTIVE_TAB === 'map') renderMapTab();
   else if (ACTIVE_TAB === 'party') renderPartyTab();
   else if (ACTIVE_TAB === 'sheet') renderSheetTab();
   else renderHelpTab();
@@ -1259,19 +1270,19 @@ async function callGM(prompt, fallbackEntry) {
     GM_PENDING = false;
     GM_ABORT = null;
   }
-  const { clean, attacks, heals, gives, uses, defeats, successes, rests } = entry.type === 'gm' ? extractFoeAttacks(entry.text)
-    : { clean: entry.text, attacks: [], heals: [], gives: [], uses: [], defeats: [], successes: [], rests: [] };
+  const { clean, attacks, heals, gives, uses, damages, mapOps, defeats, successes, rests } = entry.type === 'gm' ? extractFoeAttacks(entry.text)
+    : { clean: entry.text, attacks: [], heals: [], gives: [], uses: [], damages: [], mapOps: [], defeats: [], successes: [], rests: [] };
   // A message that was nothing but directives has no story text of its own to log.
-  if (clean || !(attacks.length || heals.length || gives.length || uses.length || defeats.length || successes.length || rests.length)) {
+  if (clean || !(attacks.length || heals.length || gives.length || uses.length || damages.length || mapOps.length || defeats.length || successes.length || rests.length)) {
     entry.text = clean || entry.text;
     await dbInsertLog(ROOM, entry);
     LOG.push({ ...entry, ts: Date.now() });
   }
   // Damage, healing and items change the sheet itself: save every character that changed.
   // XP is awarded before a rest, so a long rest in the same message can unlock a level-up.
-  const results = [...attacks.map(resolveFoeAttack), ...heals.map(resolveHeal), ...gives.map(resolveGive), ...uses.map(resolveUse),
+  const results = [resolveMapOps(mapOps), ...attacks.map(resolveFoeAttack), ...damages.map(resolveDamage), ...heals.map(resolveHeal), ...gives.map(resolveGive), ...uses.map(resolveUse),
     ...defeats.map(resolveDefeat), ...successes.map(resolveSuccess), ...rests.map(k => k === 'long' ? resolveLongRest() : resolveShortRest())];
-  for (const r of results) {
+  for (const r of results.filter(Boolean)) {
     const { hpChar, saveAll, saveMeta, ...result } = r;
     await dbInsertLog(ROOM, result);
     LOG.push({ ...result, ts: Date.now() });
@@ -1286,6 +1297,231 @@ function cancelGM() {
   if (GM_ABORT) GM_ABORT.abort();
 }
 
+/* ---------------- Battle map ----------------
+   A square grid (1 square = 5 ft) kept in the room's meta.grid, so every player sees it live through the
+   rooms realtime channel. The GM sets it up and moves foes with directives:
+     [[map: 12x10]]                     start (or reset) a battle map, up to 20x20
+     [[place: Goblin A | F3]]           put or move a token (a hero's exact name moves that hero)
+     [[wall: D2-D5, H7]]                walls / heavy cover squares (single squares or straight runs)
+     [[remove: Goblin A]]               take a token off (fled, gone); [[defeat]] also removes it
+     [[end-battle]]                     clear the map
+   Players move their own hero by tapping it, then a highlighted square; the game limits the move to their
+   speed for the turn (until the GM's next message) and won't let them walk through walls or foes.
+   The GM gets every token's square and the distance between heroes and foes in its prompt. */
+const MAP_MAX = 20;
+const MAP_DIRECTIVE = /\[\[\s*(map|place|wall|remove|end-battle)\s*(?::([^\]]*))?\]\]/gi;
+const colName = x => String.fromCharCode(65 + x);
+const sq = (x, y) => `${colName(x)}${y + 1}`;
+function parseSquare(s) {
+  const m = /^\s*([A-Ta-t])\s*(\d{1,2})\s*$/.exec(String(s || ''));
+  if (!m) return null;
+  return { x: m[1].toUpperCase().charCodeAt(0) - 65, y: parseInt(m[2]) - 1 };
+}
+const feetBetween = (a, b) => Math.max(Math.abs(a.x - b.x), Math.abs(a.y - b.y)) * 5;
+function heroSpeed(c) {
+  const n = parseInt(c && c.speed);
+  if (n >= 5 && n <= 120) return n;
+  return /dwarf|halfling|gnome/i.test((c && c.race) || '') ? 25 : 30;
+}
+function mapState() { return META && META.grid && META.grid.w ? META.grid : null; }
+function tokenKey(name) { return String(name || '').trim().toLowerCase(); }
+function inBounds(g, p) { return p && p.x >= 0 && p.y >= 0 && p.x < g.w && p.y < g.h; }
+function wallSet(g) { return new Set(g.walls || []); }
+function tokenAt(g, x, y) { return (g.tokens || []).find(t => t.x === x && t.y === y); }
+
+// Applies a GM message's map directives to META.grid. Returns a short log line, or null.
+function resolveMapOps(ops) {
+  if (!ops.length || !META) return null;
+  const notes = [];
+  for (const op of ops) {
+    const g = META.grid && META.grid.w ? META.grid : null;
+    if (op.kind === 'end-battle') { if (g) { META.grid = null; notes.push('the battle map is cleared'); } continue; }
+    if (op.kind === 'map') {
+      const m = /(\d{1,2})\s*[x×]\s*(\d{1,2})/i.exec(op.body);
+      const w = Math.min(MAP_MAX, Math.max(4, m ? parseInt(m[1]) : 12));
+      const h = Math.min(MAP_MAX, Math.max(4, m ? parseInt(m[2]) : 10));
+      META.grid = { w, h, tokens: [], walls: [], moved: {} };
+      notes.push(`battle map ${w}×${h} (1 square = 5 ft)`);
+      continue;
+    }
+    if (!g) continue;
+    if (op.kind === 'place') {
+      const [who, at] = op.body.split('|').map(s => s.trim());
+      const p = parseSquare(at);
+      if (!who || !inBounds(g, p) || wallSet(g).has(sq(p.x, p.y))) continue;
+      const hero = findTarget(who);
+      const heroId = hero ? charIdOf(hero) : null;
+      const name = heroId ? hero.name : who.slice(0, 30);
+      const other = tokenAt(g, p.x, p.y);
+      if (other && tokenKey(other.name) !== tokenKey(name)) continue; // square taken
+      g.tokens = (g.tokens || []).filter(t => tokenKey(t.name) !== tokenKey(name));
+      g.tokens.push({ name, kind: heroId ? 'hero' : 'foe', charId: heroId || undefined, x: p.x, y: p.y });
+      notes.push(`${name} at ${sq(p.x, p.y)}`);
+      continue;
+    }
+    if (op.kind === 'wall') {
+      const walls = wallSet(g);
+      for (const part of op.body.split(',')) {
+        const [a, b] = part.split('-').map(parseSquare);
+        if (!inBounds(g, a)) continue;
+        const end = inBounds(g, b) && (b.x === a.x || b.y === a.y) ? b : a;
+        for (let x = Math.min(a.x, end.x); x <= Math.max(a.x, end.x); x++)
+          for (let y = Math.min(a.y, end.y); y <= Math.max(a.y, end.y); y++)
+            if (!tokenAt(g, x, y) && walls.size < 120) walls.add(sq(x, y));
+      }
+      g.walls = [...walls];
+      continue;
+    }
+    if (op.kind === 'remove') {
+      const before = (g.tokens || []).length;
+      g.tokens = (g.tokens || []).filter(t => tokenKey(t.name) !== tokenKey(op.body));
+      if (g.tokens.length < before) notes.push(`${op.body.trim()} leaves the map`);
+    }
+  }
+  return { id: uid(6), author: 'The Ledger', type: 'system', text: `🗺 ${notes.length ? notes.join(' · ') : 'battle map updated'}.`, saveMeta: true };
+}
+function removeTokenNamed(name) {
+  const g = mapState();
+  if (!g) return false;
+  const before = g.tokens.length;
+  g.tokens = g.tokens.filter(t => tokenKey(t.name) !== tokenKey(name));
+  return g.tokens.length < before;
+}
+
+// For the GM: every token's square plus hero-to-foe distances.
+function mapPromptText() {
+  const g = mapState();
+  if (!g) return 'Battle map: none right now. If a fight starts, set one up (see the battle map rules).';
+  const toks = g.tokens || [];
+  const heroes = toks.filter(t => t.kind === 'hero');
+  const foes = toks.filter(t => t.kind !== 'hero');
+  const lines = toks.map(t => `${t.name} (${t.kind}) at ${sq(t.x, t.y)}`);
+  const dist = heroes.flatMap(h => foes.map(f => `${h.name} ↔ ${f.name}: ${feetBetween(h, f)} ft`));
+  const unplaced = Object.values(ROSTER).filter(c => !heroes.some(h => tokenKey(h.name) === tokenKey(c.name))).map(c => c.name);
+  return `Battle map (${g.w}×${g.h} squares, columns A-${colName(g.w - 1)}, rows 1-${g.h}, 1 square = 5 ft, distances count diagonals as 5 ft):
+${lines.join('\n') || 'No tokens yet.'}
+${g.walls && g.walls.length ? 'Walls / heavy cover: ' + g.walls.join(', ') : 'No walls.'}
+${dist.length ? 'Distances: ' + dist.join('; ') : ''}${unplaced.length ? '\nNot on the map yet (place them): ' + unplaced.join(', ') : ''}`;
+}
+
+// ---- the Map tab ----
+let MAP_SELECTED = false; // the player has tapped their own token and is choosing a square
+let MAP_INFO = '';        // last tapped square's description
+let MAP_BUSY = false;
+function myToken(g) { return (g.tokens || []).find(t => t.charId === MY_CHAR_ID) || (g.tokens || []).find(t => t.kind === 'hero' && ROSTER[MY_CHAR_ID] && tokenKey(t.name) === tokenKey(ROSTER[MY_CHAR_ID].name)); }
+function movedThisTurn(g) {
+  const m = (g.moved || {})[MY_CHAR_ID];
+  return m && m.gm === gmCount() ? m.ft : 0;
+}
+// Squares my hero can reach this turn: walk around walls and foes (5 ft per step, diagonals too).
+function reachable(g) {
+  const me = myToken(g);
+  if (!me) return new Map();
+  const steps = Math.floor((heroSpeed(ROSTER[MY_CHAR_ID]) - movedThisTurn(g)) / 5);
+  const walls = wallSet(g);
+  const foes = new Set((g.tokens || []).filter(t => t.kind !== 'hero').map(t => `${t.x},${t.y}`));
+  const out = new Map();
+  const seen = new Map([[`${me.x},${me.y}`, 0]]);
+  let frontier = [me];
+  for (let s = 1; s <= steps; s++) {
+    const next = [];
+    for (const p of frontier) {
+      for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+        const q = { x: p.x + dx, y: p.y + dy };
+        const k = `${q.x},${q.y}`;
+        if ((!dx && !dy) || !inBounds(g, q) || seen.has(k) || walls.has(sq(q.x, q.y)) || foes.has(k)) continue;
+        seen.set(k, s);
+        next.push(q);
+        if (!tokenAt(g, q.x, q.y)) out.set(k, s * 5); // can pass allies, but not stop on them
+      }
+    }
+    frontier = next;
+  }
+  return out;
+}
+function renderMapTab() {
+  const body = el('tabBody');
+  const g = mapState();
+  if (!g) {
+    body.innerHTML = `<div class="panel" style="max-width:640px;"><h2>Battle map</h2><p class="helptext">No battle map right now. When a fight starts, the GM lays one out here: a grid of 5-foot squares with every hero and foe on it. In the meantime the GM gives each foe's distance in its <b>Foes</b> line.</p></div>`;
+    return;
+  }
+  const me = myToken(g);
+  const reach = MAP_SELECTED && me ? reachable(g) : new Map();
+  const walls = wallSet(g);
+  const left = me ? heroSpeed(ROSTER[MY_CHAR_ID]) - movedThisTurn(g) : 0;
+  let cells = '<div class="map-corner"></div>';
+  for (let x = 0; x < g.w; x++) cells += `<div class="map-label">${colName(x)}</div>`;
+  for (let y = 0; y < g.h; y++) {
+    cells += `<div class="map-label">${y + 1}</div>`;
+    for (let x = 0; x < g.w; x++) {
+      const t = tokenAt(g, x, y);
+      const k = `${x},${y}`;
+      const cls = ['map-cell'];
+      if (walls.has(sq(x, y))) cls.push('map-wall');
+      if (reach.has(k)) cls.push('map-reach');
+      if (t) cls.push(t.kind === 'hero' ? 'map-hero' : 'map-foe');
+      if (t && me && t === me) cls.push('map-me');
+      const label = t ? escapeHtml(t.name.split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase()) : '';
+      cells += `<button class="${cls.join(' ')}" onclick="mapTap(${x},${y})" title="${t ? escapeAttr(t.name) + ' — ' : ''}${sq(x, y)}">${label}</button>`;
+    }
+  }
+  const legend = (g.tokens || []).map(t => `<span class="map-key ${t.kind === 'hero' ? 'map-hero' : 'map-foe'}">${escapeHtml(t.name.split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase())}</span> ${escapeHtml(t.name)} <span class="helptext">${sq(t.x, t.y)}${me && t !== me ? ' · ' + feetBetween(me, t) + ' ft' : ''}</span>`).join('<br>');
+  const prevScroll = el('mapScroll') ? el('mapScroll').scrollLeft : null; // keep the view still across redraws
+  body.innerHTML = `
+    <div class="map-wrap">
+      <div class="map-scroll" id="mapScroll"><div class="map-grid" style="grid-template-columns:22px repeat(${g.w}, minmax(26px, 1fr));">${cells}</div></div>
+      <div class="map-side">
+        <p class="helptext">${me ? (MAP_SELECTED ? `Tap a highlighted square to move (${left} ft left this turn), or tap your hero again to cancel.` : `Tap your hero to move. ${left} ft of movement left this turn.`) : 'The GM will place your hero on the map.'} 1 square = 5 ft.</p>
+        ${MAP_INFO ? `<p class="hero-note">${escapeHtml(MAP_INFO)}</p>` : ''}
+        <div class="map-legend">${legend || '<span class="helptext">No tokens yet.</span>'}</div>
+      </div>
+    </div>`;
+  const box = el('mapScroll');
+  const mine = box && box.querySelector('.map-me');
+  if (box && prevScroll !== null) box.scrollLeft = prevScroll;
+  else if (box && mine) box.scrollLeft = Math.max(0, mine.offsetLeft - box.clientWidth / 2); // first open: centre on your hero
+}
+async function mapTap(x, y) {
+  const g = mapState();
+  if (!g || MAP_BUSY) return;
+  const me = myToken(g);
+  const t = tokenAt(g, x, y);
+  if (me && t === me) { MAP_SELECTED = !MAP_SELECTED; MAP_INFO = ''; return renderMapTab(); }
+  if (MAP_SELECTED && me) {
+    const reach = reachable(g);
+    const cost = reach.get(`${x},${y}`);
+    if (cost === undefined) { MAP_INFO = `${sq(x, y)} is out of reach this turn.`; return renderMapTab(); }
+    MAP_BUSY = true;
+    try {
+      // Re-read the room so another player's move isn't overwritten.
+      const room = await dbGetRoom(ROOM);
+      const fresh = room && room.meta && room.meta.grid;
+      if (!fresh || !fresh.w) { MAP_INFO = 'The battle map has ended.'; return; }
+      META = room.meta;
+      const mine = myToken(fresh);
+      if (!mine || tokenAt(fresh, x, y) || wallSet(fresh).has(sq(x, y))) { MAP_INFO = 'That square just changed. Try again.'; return; }
+      const from = sq(mine.x, mine.y);
+      mine.x = x; mine.y = y;
+      fresh.moved = fresh.moved || {};
+      fresh.moved[MY_CHAR_ID] = { gm: gmCount(), ft: movedThisTurn(fresh) + cost };
+      await dbUpdateRoomMeta(ROOM, META);
+      const entry = { id: uid(6), author: 'The Ledger', type: 'system', text: `🗺 ${mine.name} moves ${from} → ${sq(x, y)} (${cost} ft).` };
+      await dbInsertLog(ROOM, entry);
+      LOG.push({ ...entry, ts: Date.now() });
+      MAP_SELECTED = false;
+      MAP_INFO = '';
+    } finally {
+      MAP_BUSY = false;
+      if (VIEW === 'game' && ACTIVE_TAB === 'map') renderMapTab();
+    }
+    return;
+  }
+  MAP_INFO = t ? `${t.name} at ${sq(x, y)}${me ? ` — ${feetBetween(me, t)} ft from you` : ''}.` : `${sq(x, y)}${wallSet(g).has(sq(x, y)) ? ' (wall)' : ''}${me ? ` — ${feetBetween(me, { x, y })} ft from you` : ''}.`;
+  renderMapTab();
+}
+window.mapTap = mapTap;
+
 /* ---------------- Foe attacks ---------------- */
 // The GM can't roll dice, so it writes a directive line for each monster attack and the game rolls it:
 //   [[foe-attack: Goblin B | scimitar | +4 | 1d6+2 | Telilin]]
@@ -1294,6 +1530,7 @@ const FOE_DIRECTIVE = /\[\[\s*foe-attack:([^\]]*)\]\]/gi;
 const HEAL_DIRECTIVE = /\[\[\s*heal:([^\]]*)\]\]/gi;
 const GIVE_DIRECTIVE = /\[\[\s*give:([^\]]*)\]\]/gi;
 const USE_DIRECTIVE = /\[\[\s*use:([^\]]*)\]\]/gi;
+const DAMAGE_DIRECTIVE = /\[\[\s*damage:([^\]]*)\]\]/gi;
 const DEFEAT_DIRECTIVE = /\[\[\s*defeat:([^\]]*)\]\]/gi;
 const SUCCESS_DIRECTIVE = /\[\[\s*success:([^\]]*)\]\]/gi;
 const REST_DIRECTIVE = /\[\[\s*(short|long)[- ]rest\s*(?::[^\]]*)?\]\]/gi;
@@ -1302,6 +1539,8 @@ function extractFoeAttacks(text) {
   const heals = [];
   const gives = [];
   const uses = [];
+  const damages = [];
+  const mapOps = [];
   const defeats = [];
   const successes = [];
   const rests = [];
@@ -1321,6 +1560,13 @@ function extractFoeAttacks(text) {
     const p = body.split('|').map(s => s.trim());
     if (p.length >= 2 && p[1] && uses.length < 4) uses.push({ target: p[0], item: p[1].slice(0, 80) });
     return '';
+  }).replace(MAP_DIRECTIVE, (_, kind, body) => {
+    if (mapOps.length < 40) mapOps.push({ kind: kind.toLowerCase(), body: String(body || '').trim() });
+    return '';
+  }).replace(DAMAGE_DIRECTIVE, (_, body) => {
+    const p = body.split('|').map(s => s.trim());
+    if (p.length >= 2 && damages.length < 4) damages.push({ target: p[0], amount: p[1], src: (p[2] || 'Damage').slice(0, 40), half: p.slice(3).some(x => /half/i.test(x)) });
+    return '';
   }).replace(DEFEAT_DIRECTIVE, (_, body) => {
     const p = body.split('|').map(s => s.trim());
     if (p[0] && defeats.length < 6) defeats.push({ target: p[0].slice(0, 60), cr: p[1] || '' });
@@ -1333,7 +1579,7 @@ function extractFoeAttacks(text) {
     if (!rests.length) rests.push(kind.toLowerCase());
     return '';
   }).replace(/\n{3,}/g, '\n\n').trim();
-  return { clean, attacks, heals, gives, uses, defeats, successes, rests };
+  return { clean, attacks, heals, gives, uses, damages, mapOps, defeats, successes, rests };
 }
 function findTarget(name) {
   const chars = Object.values(ROSTER);
@@ -1394,19 +1640,67 @@ function resolveFoeAttack(a) {
   }
   return { id: uid(6), author: a.who, type: 'roll', text, hpChar };
 }
-// [[heal: Telilin | 2d4+2 | potion of healing]]: rolls (or takes a flat amount) and raises HP up to max.
+// Targets for damage and healing: one name, a list ("Brannoc, Sera half", "Brannoc and Sera"), or everyone
+// ("party", "all", "everyone"). A trailing "half" / "(half)" on a name means that character made their save.
+const PARTY_WORDS = /^(the\s+)?(party|all|everyone|everybody|all of them|the group|group)$/i;
+function parseTargets(spec) {
+  const out = [];
+  const seen = new Set();
+  const missing = [];
+  for (let raw of String(spec || '').split(/\s*(?:,|;|&|\band\b)\s*/i)) {
+    raw = raw.trim();
+    if (!raw) continue;
+    const half = /\s*\(?\bhalf\b\)?$/i.test(raw);
+    const name = raw.replace(/\s*\(?\bhalf\b\)?$/i, '').trim();
+    const list = PARTY_WORDS.test(name) ? Object.values(ROSTER) : [findTarget(name)];
+    if (!list[0]) { missing.push(name); continue; }
+    for (const c of list) { if (!seen.has(c)) { seen.add(c); out.push({ c, half }); } }
+  }
+  return { targets: out, missing };
+}
+// [[damage: Telilin | 2d6 | spike trap]], [[damage: Brannoc, Sera half | 8d6 | fireball]], [[damage: party | 2d6 | cave-in]]
+// Damage that isn't a monster's attack roll (traps, falls, poison, area spells). Rolled ONCE, applied to each
+// target; a target marked "half", or "| half" for everyone, takes half (rounded down), as for a made save.
+function resolveDamage(d) {
+  const fail = text => ({ id: uid(6), author: 'The Ledger', type: 'system', text });
+  const { targets, missing } = parseTargets(d.target);
+  const dice = parseDice(d.amount);
+  if (!targets.length) return fail(`${d.src}: the game couldn't tell who was hurt.`);
+  if (!dice) return fail(`${d.src} hurts ${targets.map(t => t.c.name).join(', ')}, but the amount (${d.amount}) couldn't be read.`);
+  const r = rollSpec(dice, 1);
+  const parts = targets.map(({ c, half }) => {
+    const halved = half || d.half;
+    const dmg = halved ? Math.floor(r.total / 2) : r.total;
+    const { before, after, max } = changeHP(c, -dmg);
+    return `${c.name} ${dmg}${halved ? ' (halved by the save)' : ''} — HP ${before} → ${after}/${max}${after === 0 ? ' (down!)' : ''}`;
+  });
+  const rolled = dice.flat === undefined ? ` (${r.text} = ${r.total})` : '';
+  const text = targets.length === 1
+    ? `🩸 ${d.src} → ${parts[0].replace(/^(.+?) (\d+)/, `$1: $2 damage${dice.flat === undefined ? ' (' + r.text + ')' : ''}`)}`
+    : `🩸 ${d.src}${rolled || ` (${r.total})`}: ${parts.join('; ')}`;
+  return { id: uid(6), author: 'The Ledger', type: 'system', text: text + (missing.length ? ` (couldn't find: ${missing.join(', ')})` : ''), saveAll: true };
+}
+// [[heal: Telilin | 2d4+2 | potion of healing]], [[heal: Brannoc, Sera | 1d4+3 | mass healing word]], [[heal: party | 10 | prayer]]
+// Rolled once (or a flat number) and applied to each target, up to their maximum.
 function resolveHeal(h) {
   const fail = text => ({ id: uid(6), author: 'The Ledger', type: 'system', text });
-  const target = findTarget(h.target);
+  const { targets, missing } = parseTargets(h.target);
   const dice = parseDice(h.amount);
-  if (!target) return fail(`${h.src}: the game couldn't tell who was healed.`);
+  if (!targets.length) return fail(`${h.src}: the game couldn't tell who was healed.`);
+  const names = targets.map(t => t.c.name).join(', ');
   // Stabilising only ends death saves; it never restores HP, so a heal line worded that way is ignored.
-  if (/stabili[sz]|healer|medicine|spare the dying/i.test(h.src)) return fail(`${h.src} → ${target.name}: stabilising restores no HP; ${target.name} stays at ${target.hp ?? 0} HP.`);
-  if (!dice) return fail(`${h.src} heals ${target.name}, but the amount (${h.amount}) couldn't be read.`);
+  if (/stabili[sz]|healer|medicine|spare the dying/i.test(h.src)) return fail(`${h.src} → ${names}: stabilising restores no HP.`);
+  if (!dice) return fail(`${h.src} heals ${names}, but the amount (${h.amount}) couldn't be read.`);
   const r = rollSpec(dice, 1);
-  const { before, after, max } = changeHP(target, r.total);
-  return { id: uid(6), author: 'The Ledger', type: 'system', hpChar: charIdOf(target),
-    text: `${h.src} → ${target.name}: heals ${r.total}${dice.flat === undefined ? ' (' + r.text + ')' : ''} — HP ${before} → ${after}/${max}` };
+  const parts = targets.map(({ c }) => {
+    const { before, after, max } = changeHP(c, r.total);
+    return `${c.name} HP ${before} → ${after}/${max}`;
+  });
+  const rolled = dice.flat === undefined ? ' (' + r.text + ')' : '';
+  const text = targets.length === 1
+    ? `${h.src} → ${targets[0].c.name}: heals ${r.total}${rolled} — ${parts[0].replace(/^.+? HP/, 'HP')}`
+    : `${h.src}: heals ${r.total}${rolled} each — ${parts.join('; ')}`;
+  return { id: uid(6), author: 'The Ledger', type: 'system', text: text + (missing.length ? ` (couldn't find: ${missing.join(', ')})` : ''), saveAll: true };
 }
 
 // ---- items: what the story gave vs. what a player typed in ----
@@ -1503,6 +1797,8 @@ ${META.seed ? 'Opening premise the GM previously established: ' + META.seed : ''
 ${MODE === 'solo' ? 'Character' : 'Party'}:
 ${party}
 
+${mapPromptText()}
+
 Recent table log:
 ${recent}
 
@@ -1516,8 +1812,9 @@ Roll resolution rules — follow these exactly:
 - If a turn involves multiple attacks or rolls, resolve each one completely — roll, then damage if applicable, then narration — before moving to the next.
 - Always phrase a requested roll using the exact command the player should type, formatted as inline code, e.g. "/roll +5 Attack (DEX)" for an attack, "/roll 2d6+3" for damage, "/roll +5 adv Attack (DEX)" for advantage. Never say "roll a d20" or similar without giving the exact /roll command.
 - For any d20 check or save, the bonus in your /roll command must be one of that character's Sheet modifiers listed above, and the command should name it, e.g. "/roll +3 Dexterity" or "/roll +7 Stealth". Never add a proficiency bonus, expertise, or any other bonus that isn't on the sheet. If the right skill or tool isn't listed, use the matching ability's modifier as-is (and say that's what you're using). Weapon attack rolls use the listed "Attack (STR)" or "Attack (DEX)" modifier, e.g. "/roll +5 Attack (DEX)". Damage rolls use dice notation for the weapon or spell, e.g. "/roll 1d8+3".
-- Players never roll for monsters. For each attack a foe makes, write it in the fiction and put this directive on its own line: [[foe-attack: Goblin B | scimitar | +4 | 1d6+2 | Telilin]] (attacker | attack name | to-hit bonus from its stat block | damage dice | the target's exact character name). When an ally NPC attacks an enemy, add the enemy's AC as a sixth field, e.g. [[foe-attack: Scout | longbow | +4 | 1d8+2 | Goblin A | AC 15]]; the result tells you what happened and you track the enemy's HP. The game rolls the attack against the target's AC and the damage if it hits, and posts the result to the log; use one directive per attack (max 4). Then stop: don't say whether it hit and don't state the AC. Narrate the outcome next turn, once the result is in the log. The game subtracts the damage from the target's HP itself, so never ask players to take it off their HP. For any healing (a potion, a spell) put [[heal: Telilin | 2d4+2 | potion of healing]] on its own line (the character's exact name | dice or a flat number | source); the game rolls it and raises their HP up to their maximum. One per healing, max 4. Never use [[heal]] to stabilise a dying character: stabilising (a healer's kit, a Medicine check, spare the dying) restores no HP, it only ends their death saves, so ask the player for a Medicine check (DC 10, or a healer's kit with no roll) and narrate them stable at 0 HP. When a player's own character is doing the healing (their spell or potion), ask that player to /roll it; once that roll is in the log, put [[heal: <their name> | <that roll's total> | <source>]] with the total as a plain number, and the game adds it. Never state anyone's new HP total yourself (the game posts it), and never work HP out from older log lines: a character's current HP is only the "HP x/y (current, from the sheet)" in the party list above.
+- Players never roll for monsters. For each attack a foe makes, write it in the fiction and put this directive on its own line: [[foe-attack: Goblin B | scimitar | +4 | 1d6+2 | Telilin]] (attacker | attack name | to-hit bonus from its stat block | damage dice | the target's exact character name). When an ally NPC attacks an enemy, add the enemy's AC as a sixth field, e.g. [[foe-attack: Scout | longbow | +4 | 1d8+2 | Goblin A | AC 15]]; the result tells you what happened and you track the enemy's HP. The game rolls the attack against the target's AC and the damage if it hits, and posts the result to the log; use one directive per attack (max 4). Then stop: don't say whether it hit and don't state the AC. Narrate the outcome next turn, once the result is in the log. The game subtracts the damage from the target's HP itself, so never ask players to take it off their HP. For damage that isn't a foe's attack (a trap, a fall, poison, fire, a failed save), put [[damage: <their name> | <dice or a number> | <source>]] on its own line and the game rolls it and takes it off their HP; when a successful save halves it, ask for the save first and add "| half" if they made it. Area effects roll once for everyone: list every character caught in it and mark those who made their save, e.g. [[damage: Brannoc, Sera half | 8d6 | fireball]], or use "party" for everyone at the table. Healing that reaches several characters works the same way: [[heal: Brannoc, Sera | 1d4+3 | mass healing word]]. Players can't change their own HP, so never ask them to. For any healing (a potion, a spell) put [[heal: Telilin | 2d4+2 | potion of healing]] on its own line (the character's exact name | dice or a flat number | source); the game rolls it and raises their HP up to their maximum. One per healing, max 4. Never use [[heal]] to stabilise a dying character: stabilising (a healer's kit, a Medicine check, spare the dying) restores no HP, it only ends their death saves, so ask the player for a Medicine check (DC 10, or a healer's kit with no roll) and narrate them stable at 0 HP. When a player's own character is doing the healing (their spell or potion), ask that player to /roll it; once that roll is in the log, put [[heal: <their name> | <that roll's total> | <source>]] with the total as a plain number, and the game adds it. Never state anyone's new HP total yourself (the game posts it), and never work HP out from older log lines: a character's current HP is only the "HP x/y (current, from the sheet)" in the party list above.
 - Items: each character's inventory above is what they really carry. Items "written in by the player" were typed in by the player and never given in the story: they are NOT owned. If a player tries to use one, it isn't in their pack, and say so plainly. When the story gives a character an item (found, bought, looted, handed over), put [[give: <their name> | <item>]] on its own line and the game adds it. When a character uses up a consumable (drinks a potion, reads a scroll, spends a charge item), put [[use: <their name> | <item>]] on its own line and the game removes one. Max 4 of each per message.
+- Battle map: when a fight starts, lay out a map before the first attack: [[map: 12x10]] (columns A-L, rows 1-10; at most 20x20), then [[place: <name> | <square>]] for every hero and foe, and [[wall: D2-D5, H7]] for walls or heavy cover. On later turns move foes with [[place]], use [[remove: <name>]] when one flees, and [[end-battle]] when the fight is over. Players move their own heroes on the map, so never move a hero yourself unless the story forces it (a shove, a fall). Use the map's distances: a melee attack needs 5 ft (10 ft with reach); a ranged attack past normal range has disadvantage and can't go past long range; an area spell hits everyone within its radius of the square it's centred on. With no battle map, give each foe's distance in the Foes line, e.g. **Foes:** Goblin A 4/7 HP, 30 ft.
 - XP, levels and rests are the game's job: never announce XP, levels or level-ups yourself. When the party kills or defeats a foe, put [[defeat: <creature>]] on its own line, one per creature (for a creature you invented, add its CR: [[defeat: Cave Wyrm | CR 2]]). When a character succeeds at a check you set a DC for, once their roll is in the log, put [[success: <their name> | <skill> | DC <n>]]. When the party actually rests in the story, put [[short-rest]] (about an hour) or [[long-rest]] (about 8 hours somewhere safe, at most once per in-game day) on its own line; the game restores HP and hit dice, so never use [[heal]] for a rest. A rest in danger gets interrupted instead.
 - Do not roll dice yourself or invent results under any circumstance.`;
 
@@ -1757,12 +2054,7 @@ function renderSheetTab() {
       ${levelUpHTML(c)}
       ${miniPanelHTML(c)}
       ${abilityGridHTML(c)}
-      <div class="mini-btns" style="max-width:260px;margin-bottom:20px;">
-        <button class="mini-btn" onclick="hpDelta(-1)">HP -1</button>
-        <button class="mini-btn" onclick="hpDelta(-5)">HP -5</button>
-        <button class="mini-btn" onclick="hpDelta(5)">HP +5</button>
-        <button class="mini-btn" onclick="hpDelta(1)">HP +1</button>
-      </div>
+      <p class="helptext" style="margin:-4px 0 20px;">HP only changes through the game: damage from attacks, traps and falls; healing from potions, spells and rests.</p>
 
       <h3 style="font-size:1rem;">Skills</h3>
       ${(c.skills || []).map(s => `<div class="item-row"><span>${escapeHtml(s.name)}</span><span style="font-family:var(--font-display);font-weight:600;color:var(--glow)">${s.mod >= 0 ? '+' : ''}${escapeHtml(String(s.mod))}</span></div>`).join('') || '<p class="helptext">None recorded.</p>'}
@@ -1782,14 +2074,6 @@ function renderSheetTab() {
   `;
 }
 async function persistRoster() { await dbUpsertCharacter(MY_CHAR_ID, ROOM, ROSTER[MY_CHAR_ID]); }
-async function hpDelta(n) {
-  const c = ROSTER[MY_CHAR_ID]; c.hp = Math.max(0, Math.min(c.maxhp, c.hp + n));
-  await persistRoster();
-  const entry = { id: uid(6), author: 'The Ledger', type: 'system', text: `${c.name}'s HP is now ${c.hp}/${c.maxhp}.` };
-  await dbInsertLog(ROOM, entry);
-  LOG.push({ ...entry, ts: Date.now() });
-  render();
-}
 function setComposerDraft(v) { composerDraft = v; }
 function setNewItemDraft(v) { newItemDraft = v; }
 function setNotesDraft(v) { notesDraft = v; }
@@ -1826,7 +2110,8 @@ function renderHelpTab() {
         <li>Playing solo? <b>Pause Story</b> saves your place under your <b>story code</b>. Later, choose <b>Join or Resume with Code</b> and enter it, on any device, to carry on where you left off.</li>
         <li>In the GM's newest message, click the emoji beside an option to choose it, and click a <b>🎲 /roll</b> button to make that roll. Each can be used once.</li>
         <li>The <b>Roll from sheet</b> menu next to the message box lists your ability checks, skills, weapon attacks, and initiative — pick one and it fills in the right modifier and label for you. If a d20 roll uses a bonus higher than your sheet allows, the log tags it <b>⚠ unlisted modifier</b> so the table can see it (legit situational bonuses like Bless will trigger it too — just a heads-up, nothing is blocked).</li>
-        <li>In a fight, the game rolls monster attacks and damage for you and posts the result in the log (damage comes off your HP automatically, and so does healing the GM grants). The GM keeps a <b>Foes</b> line with each monster's hit points at the end of its messages.</li>
+        <li>In a fight, the game rolls monster attacks and damage for you and posts the result in the log (damage comes off your HP automatically, and so does damage from traps and falls; healing comes from potions, spells and rests, and HP can't be changed by hand). The GM keeps a <b>Foes</b> line with each monster's hit points at the end of its messages.</li>
+        <li><b>Battle map:</b> when a fight starts the GM lays out a grid on the <b>Battle Map</b> tab (1 square = 5 ft) with every hero and foe. Tap your hero, then a highlighted square, to move; you can move up to your speed each turn (30 ft for most, 25 ft for dwarves, halflings and gnomes). Tap anything to see how far away it is.</li>
         <li><b>XP and levels:</b> you earn XP for defeating foes (shared by the table) and for checks you pass against a DC with a real roll. Once you have enough XP, <b>Level Up</b> unlocks on Your Sheet after a <b>long rest</b>. A <b>short rest</b> lets you spend hit dice there to heal.</li>
         <li><label style="cursor:pointer;"><input type="checkbox" ${diceAnimOn() ? 'checked' : ''} onchange="setDiceAnim(this.checked)"> Show the dice-rolling popup when you roll (click it to dismiss early)</label></li>
         <li>Dice are <b>only</b> rolled when you type <code>/roll</code>. For a plain d20 check, just add the number, e.g. <code>/roll +5</code>. For any other dice — your own damage or healing, anything the GM asks you to roll — use full notation like <code>/roll 2d6+3</code> or <code>/roll 1d4</code>.</li>
@@ -1878,7 +2163,6 @@ window.pickRoll = pickRoll;
 window.setDiceAnim = setDiceAnim;
 window.askGM = askGM;
 window.cancelGM = cancelGM;
-window.hpDelta = hpDelta;
 window.addItem = addItem;
 window.removeItem = removeItem;
 window.saveNotes = saveNotes;
@@ -2383,11 +2667,12 @@ function creatureXp(name, crText) {
 function resolveDefeat(d) {
   const cs = Object.values(ROSTER);
   const { xp, known, capped } = creatureXp(d.target, d.cr);
-  if (!known) return sysEntry(`⚔ ${d.target} is defeated (no XP: the game doesn't know that creature's challenge rating).`);
+  if (!known) { const off = removeTokenNamed(d.target); return sysEntry(`⚔ ${d.target} is defeated (no XP: the game doesn't know that creature's challenge rating).`, { saveMeta: off }); }
+  const offMap = removeTokenNamed(d.target);
   const each = Math.floor(xp / Math.max(cs.length, 1));
   const ready = [];
   cs.forEach(c => { if (addXp(c, each)) ready.push(c.name); });
-  return sysEntry(`⚔ ${d.target} defeated: +${each} XP${cs.length > 1 ? ' each' : ''}${capped ? ' (capped for your level)' : ''}.${ready.length ? ` ${ready.join(', ')} ${ready.length > 1 ? 'have' : 'has'} enough XP to level up at the next long rest.` : ''}`, { saveAll: true });
+  return sysEntry(`⚔ ${d.target} defeated: +${each} XP${cs.length > 1 ? ' each' : ''}${capped ? ' (capped for your level)' : ''}.${ready.length ? ` ${ready.join(', ')} ${ready.length > 1 ? 'have' : 'has'} enough XP to level up at the next long rest.` : ''}`, { saveAll: true, saveMeta: offMap });
 }
 // [[success: Brannoc | Stealth | DC 15]] — pays only for a real roll that met the DC.
 function resolveSuccess(s) {
