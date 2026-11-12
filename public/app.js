@@ -858,7 +858,7 @@ function renderStoryTab() {
     </div>
   `;
   if (MODE === 'group') renderRosterMini();
-  const box = el('logBox'); if (box) box.scrollTop = box.scrollHeight;
+  placeLogScroll();
 }
 function abilityGridHTML(c) {
   const abilities = [['STR', c.str], ['DEX', c.dex], ['CON', c.con], ['INT', c.int], ['WIS', c.wis], ['CHA', c.cha]];
@@ -1138,7 +1138,31 @@ function entryHTML(e) {
   const body = e.type === 'gm' ? `<div class="md">${renderMarkdown(e.text, ctx)}</div>`
     : escapeHtml(flagged ? e.text.replace(UNLISTED_FLAG, '').trim() : e.text);
   const flag = flagged ? ` <span class="roll-flag" title="This bonus isn't on that character's sheet">${UNLISTED_FLAG}</span>` : '';
-  return `<div class="entry ${cls}${voided ? ' void' : ''}"><div class="who">${dot}${escapeHtml(e.author)}</div><div class="text">${voided ? '<s class="void-text">' + body + '</s>' : body}${flag}${voided ? ' <span class="roll-void" title="Only your first roll of each kind counts">rolled in error — ignored</span>' : ''}</div></div>`;
+  return `<div class="entry ${cls}${voided ? ' void' : ''}" data-id="${escapeAttr(e.id)}"><div class="who">${dot}${escapeHtml(e.author)}</div><div class="text">${voided ? '<s class="void-text">' + body + '</s>' : body}${flag}${voided ? ' <span class="roll-void" title="Only your first roll of each kind counts">rolled in error — ignored</span>' : ''}</div></div>`;
+}
+// Where the story log should sit after a redraw:
+// - a new GM reply arrived: show it from its first line (long replies would otherwise start off-screen);
+// - other new lines (actions, rolls, game notes): scroll to the bottom;
+// - nothing new (a redraw from a map move, a portrait, etc.): stay where the reader is.
+let LOG_VIEW = { room: null, lastId: null, gmId: null, scroll: null };
+function placeLogScroll() {
+  const box = el('logBox');
+  if (!box) return;
+  const shown = LOG.filter(e => !heldLogIds.has(e.id));
+  const lastId = shown.length ? shown[shown.length - 1].id : '';
+  let newestGm = null;
+  for (let i = shown.length - 1; i >= 0; i--) if (shown[i].type === 'gm') { newestGm = shown[i]; break; }
+  const sameRoom = LOG_VIEW.room === ROOM;
+  if (sameRoom && lastId === LOG_VIEW.lastId && LOG_VIEW.scroll !== null) {
+    box.scrollTop = LOG_VIEW.scroll;
+  } else if (newestGm && (!sameRoom || newestGm.id !== LOG_VIEW.gmId)) {
+    const node = box.querySelector(`[data-id="${CSS.escape(newestGm.id)}"]`);
+    box.scrollTop = node ? box.scrollTop + node.getBoundingClientRect().top - box.getBoundingClientRect().top - 8 : box.scrollHeight;
+  } else {
+    box.scrollTop = box.scrollHeight;
+  }
+  LOG_VIEW = { room: ROOM, lastId, gmId: newestGm ? newestGm.id : null, scroll: box.scrollTop };
+  box.onscroll = () => { LOG_VIEW.scroll = box.scrollTop; };
 }
 function escapeHtml(s) { return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>'); }
 
