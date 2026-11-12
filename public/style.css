@@ -407,3 +407,12 @@ input, textarea, select{ font-family:var(--font-body); font-size:1rem; }
 @media (max-width:420px){ .tag-stats{ grid-template-columns:repeat(3, 1fr); } }
 .hero-name{ margin:18px 0 2px; }
 .hero-list{ margin:4px 0 0 18px; padding:0; line-height:1.6; }
+
+/* Level up + hero minis on the Sheet tab */
+.level-up-note{ display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+.mini-panel{ margin:0 0 18px; padding:10px 12px; border:1px dashed var(--gold-dim); border-radius:3px; }
+.mini-panel .helptext{ margin:0 0 8px; }
+.mini-save-msg{ margin-top:8px !important; font-style:italic; }
+
+/* Portrait buttons: generate + upload */
+.portrait-actions{ display:flex; flex-wrap:wrap; gap:8px; align-items:center; }

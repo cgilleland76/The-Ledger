@@ -711,6 +711,7 @@ async function submitCharacter() {
     draftChar.inventory = draftChar.inventory.filter(i => i.trim());
     }
 
+    draftChar.levelSession = (META && META.session) || 1;
     const charId = uid(10);
     await dbUpsertCharacter(charId, ROOM, draftChar);
     ROSTER[charId] = draftChar;
@@ -765,6 +766,7 @@ function pausedNote() {
 }
 
 function leaveTable() {
+  saveHeroToMini(true);
   closeDiceRoll();
   stopPortraitPoll(); portraitPendingSince = 0; appearanceDraft = null; genderDraft = null; ageDraft = null;
   if (realtimeChannel) { supabase.removeChannel(realtimeChannel); realtimeChannel = null; }
@@ -818,6 +820,7 @@ async function advanceSession() {
   await dbInsertLog(ROOM, entry);
   LOG.push({ ...entry, ts: Date.now() });
   render();
+  saveHeroToMini(true);
 }
 
 function renderStoryTab() {
@@ -1491,7 +1494,10 @@ function portraitBoxHTML(c) {
   const img = portraitImg(c, 'portrait');
   const action = state === 'pending'
     ? `<div class="gm-pending"><span class="thinking">Painting your portrait<span class="thinking-dots"><span>.</span><span>.</span><span>.</span></span></span></div><p class="helptext">Usually under a minute — keep playing, it will appear here.</p>`
-    : `<button class="btn" onclick="generatePortrait()">${img ? 'Regenerate portrait' : 'Generate portrait'}${inkCostLabel('portrait')}</button>${state === 'error' ? `<div class="error-text" style="margin-top:8px;">${escapeHtml(portraitErrorText(c))}</div>` : ''}`;
+    : `<div class="portrait-actions">
+        <button class="btn" onclick="generatePortrait()">${img ? 'Regenerate portrait' : 'Generate portrait'}${inkCostLabel('portrait')}</button>
+        ${uploadPortraitButtonHTML()}
+      </div>${state === 'error' ? `<div class="error-text" style="margin-top:8px;">${escapeHtml(portraitErrorText(c))}</div>` : ''}`;
   return `<div class="portrait-box">
     ${img || '<div class="portrait-empty">No portrait yet</div>'}
     <div class="portrait-side">
@@ -1505,6 +1511,88 @@ function portraitBoxHTML(c) {
     </div>
   </div>`;
 }
+/* ---- uploading your own portrait ----
+   The picture is cropped to a centred square and shrunk to 640px in the browser (which also drops
+   hidden photo data such as GPS location), then stored next to the AI portraits in the public
+   "portraits" bucket and linked on the character row, so it shows everywhere portraits do. */
+const UPLOAD_SIDE = 640;
+const PORTRAIT_UPLOAD = { busy: false, error: '' };
+function uploadPortraitButtonHTML() {
+  if (PORTRAIT_UPLOAD.busy) return `<span class="thinking">Uploading your picture<span class="thinking-dots"><span>.</span><span>.</span><span>.</span></span></span>`;
+  return `<button class="btn" onclick="pickPortraitUpload()">Upload a picture</button>
+    <input type="file" id="portraitFile" accept="image/*" hidden onchange="onPortraitFile(this)">
+    ${PORTRAIT_UPLOAD.error ? `<div class="error-text" style="flex-basis:100%;">${escapeHtml(PORTRAIT_UPLOAD.error)}</div>` : ''}`;
+}
+function pickPortraitUpload() { PORTRAIT_UPLOAD.error = ''; const f = el('portraitFile'); if (f) f.click(); }
+function rerenderSheet() { if (VIEW === 'game' && ACTIVE_TAB === 'sheet') renderSheetTab(); }
+
+async function loadImageFile(file) {
+  if (window.createImageBitmap) {
+    try { return await createImageBitmap(file, { imageOrientation: 'from-image' }); } catch (e) { /* fall back below */ }
+  }
+  const url = URL.createObjectURL(file);
+  try {
+    return await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error("That file couldn't be opened as a picture."));
+      img.src = url;
+    });
+  } finally { setTimeout(() => URL.revokeObjectURL(url), 1000); }
+}
+function canvasBlob(canvas, type, quality) {
+  return new Promise(resolve => canvas.toBlob(resolve, type, quality));
+}
+async function squarePortraitBlob(file) {
+  const img = await loadImageFile(file);
+  const w = img.width, h = img.height;
+  if (!w || !h) throw new Error("That file couldn't be opened as a picture.");
+  const side = Math.min(w, h);
+  const out = Math.min(UPLOAD_SIDE, side);
+  const canvas = document.createElement('canvas');
+  canvas.width = out; canvas.height = out;
+  canvas.getContext('2d').drawImage(img, (w - side) / 2, (h - side) / 2, side, side, 0, 0, out, out);
+  if (img.close) img.close();
+  // WebP where the browser can make it; otherwise JPEG (both are allowed by the bucket).
+  let blob = await canvasBlob(canvas, 'image/webp', 0.85);
+  if (!blob || blob.type !== 'image/webp') blob = await canvasBlob(canvas, 'image/jpeg', 0.85);
+  if (!blob) throw new Error("Couldn't prepare that picture. Try a different one.");
+  return blob;
+}
+async function onPortraitFile(input) {
+  const file = input.files && input.files[0];
+  input.value = '';
+  if (!file || !ROOM || !MY_CHAR_ID || PORTRAIT_UPLOAD.busy) return;
+  if (!/^image\//.test(file.type)) { PORTRAIT_UPLOAD.error = 'Choose a picture file (JPG, PNG or WebP).'; return rerenderSheet(); }
+  if (file.size > 30 * 1024 * 1024) { PORTRAIT_UPLOAD.error = 'That picture is too large (over 30 MB).'; return rerenderSheet(); }
+  const room = ROOM, charId = MY_CHAR_ID;
+  PORTRAIT_UPLOAD.busy = true; PORTRAIT_UPLOAD.error = ''; rerenderSheet();
+  try {
+    const blob = await squarePortraitBlob(file);
+    const ext = blob.type === 'image/webp' ? 'webp' : 'jpg';
+    const path = `${room}/${charId}-upload-${Date.now()}.${ext}`;
+    const up = await supabase.storage.from('portraits').upload(path, blob, { contentType: blob.type, upsert: false });
+    if (up.error) throw new Error(up.error.message || 'the picture could not be stored');
+    const url = PORTRAIT_URL_PREFIX + path;
+    const at = new Date().toISOString();
+    const { error } = await supabase.from('characters')
+      .update({ portrait_url: url, portrait_status: 'ready', portrait_updated_at: at })
+      .eq('id', charId).eq('room_code', room);
+    if (error) throw new Error(error.message || 'the character could not be updated');
+    const c = ROSTER[charId];
+    if (c) { c.portrait = url; c.portraitStatus = 'ready'; c.portraitAt = at; }
+    portraitPendingSince = 0;
+  } catch (e) {
+    console.error(e);
+    PORTRAIT_UPLOAD.error = 'Upload failed: ' + (e.message || e) + '. Try again.';
+  } finally {
+    PORTRAIT_UPLOAD.busy = false;
+    if (ROOM === room) render();
+  }
+}
+window.pickPortraitUpload = pickPortraitUpload;
+window.onPortraitFile = onPortraitFile;
+
 function setAppearanceDraft(v) { appearanceDraft = v; }
 function setPortraitDraft(field, v) { if (field === 'gender') genderDraft = v; else ageDraft = v; }
 
@@ -1567,6 +1655,8 @@ function renderSheetTab() {
         <div class="sheet-stat"><div class="label">AC</div><div class="val">${c.ac}</div></div>
         <div class="sheet-stat"><div class="label">Level</div><div class="val">${c.level}</div></div>
       </div>
+      ${levelUpHTML(c)}
+      ${miniPanelHTML(c)}
       ${abilityGridHTML(c)}
       <div class="mini-btns" style="max-width:260px;margin-bottom:20px;">
         <button class="mini-btn" onclick="hpDelta(-1)">HP -1</button>
@@ -1891,7 +1981,7 @@ async function openTag(id) {
   render();
   const { data, error } = await supabase.from('tags').select('id, kind, data').eq('id', id).maybeSingle();
   if (error) { console.error(error); TAG_STATE = 'error'; }
-  else if (!data || !['hero', 'monster'].includes(data.kind)) TAG_STATE = 'missing';
+  else if (!data || !['hero', 'monster', 'item'].includes(data.kind)) TAG_STATE = 'missing';
   else { TAG = data; TAG_STATE = ''; }
   const code = recallCurrentRoom();
   if (TAG && code) {
@@ -1923,6 +2013,7 @@ function renderTag() {
   else if (TAG_STATE === 'error') body = `<p class="error-text">Couldn't read this mini right now. Check your connection and tap it again.</p>`;
   else if (TAG_STATE === 'missing' || !TAG) body = `<h2>Unknown mini</h2><p class="helptext">This mini isn't linked to anything The Ledger knows about. If it came in a kit, contact support.</p>`;
   else if (TAG.kind === 'hero') { eyebrow = 'A Hero Answers'; body = tagHeroHTML(); }
+  else if (TAG.kind === 'item') { eyebrow = 'Loot Found'; body = tagItemHTML(); }
   else { eyebrow = 'A Foe Appears'; body = tagMonsterHTML(); }
   el('app').innerHTML = `
     <div class="top-nav"><button class="link-btn" onclick="closeTag()">&larr; The Ledger</button></div>
@@ -2077,6 +2168,139 @@ async function tagSummon(code) {
   }
 }
 function tagSummonCode() { tagSummon(tagCodeInput()); }
+
+/* ---- loot minis (i_ tags) ----
+   Tapping a loot coin puts its item into your character's inventory at your table. Each coin can be
+   claimed once per table per session (tracked in the room's meta.loot), so it can't be tapped for
+   endless potions, but it can turn up again in a later session. */
+const withArticle = name => `${/^[aeiou]/i.test(name) ? 'an' : 'a'} ${name}`;
+function tagItemHTML() {
+  const it = TAG.data || {};
+  return `
+    <h2>${escapeHtml(it.name || 'A mysterious item')}</h2>
+    ${it.description ? `<p class="helptext">${escapeHtml(it.description)}</p>` : ''}
+    <p class="helptext">Your character picks it up and it goes into their inventory. Each loot token can be claimed once per table each session.</p>
+    ${TAG_ROOM ? `<button class="btn solid wide" ${TAG_BUSY ? 'disabled' : ''} onclick="tagClaimItem('${escapeAttr(TAG_ROOM.code)}')">Give it to your hero in ${escapeHtml(TAG_ROOM.name)}</button>` : ''}
+    ${tagCodeRow(TAG_ROOM ? 'Or claim it at another table' : 'Which table are you playing at? Enter its room code', 'tagClaimItemCode()')}`;
+}
+async function tagClaimItem(code) {
+  code = String(code || '').trim().toUpperCase();
+  if (!code || TAG_BUSY || !TAG) return;
+  TAG_BUSY = true; TAG_MSG = ''; render();
+  try {
+    const room = await dbGetRoom(code);
+    if (!room) { TAG_MSG = 'No campaign found with that code.'; return; }
+    const tableName = (room.meta && room.meta.name) || code;
+    const mem = recallCharacter(code);
+    const row = mem ? (await dbGetCharacters(code)).find(r => r.id === mem.characterId) : null;
+    if (!row) { TAG_MSG = `You don't have a hero at ${tableName} on this device. Join the table first, then tap the loot again.`; return; }
+    const meta = room.meta || {};
+    const session = meta.session || 1;
+    const loot = meta.loot && typeof meta.loot === 'object' ? meta.loot : {};
+    if (loot[TAG.id] === session) { TAG_MSG = 'This loot has already been claimed at that table this session. It can turn up again next session.'; return; }
+    const item = String((TAG.data && TAG.data.name) || 'Mysterious item').slice(0, 80);
+    const c = row.data || {};
+    const inv = Array.isArray(c.inventory) ? c.inventory.filter(i => String(i).trim()) : [];
+    if (inv.length >= 40) { TAG_MSG = `${c.name || 'Your hero'}'s pack is full. Drop something from the Sheet tab first.`; return; }
+    c.inventory = [...inv, item];
+    await dbUpsertCharacter(row.id, code, c);
+    await dbUpdateRoomMeta(code, { ...meta, loot: { ...loot, [TAG.id]: session } });
+    const desc = String((TAG.data && TAG.data.description) || '').slice(0, 300);
+    await dbInsertLog(code, { id: uid(6), author: 'The Ledger', type: 'system', text: `🎁 ${c.name || 'A hero'} found ${withArticle(item)}! (from a loot token)${desc ? ' ' + desc : ''}` });
+    // Go to the table to see it land in the log.
+    const err = await enterRoom(code);
+    if (!err && VIEW === 'game') { TAG = null; return; }
+    VIEW = 'tag';
+    TAG_ROOM = { code, name: tableName };
+    TAG_MSG = `${item} is now in ${c.name || 'your hero'}'s inventory.`;
+  } finally {
+    TAG_BUSY = false;
+    if (VIEW === 'tag') render();
+  }
+}
+function tagClaimItemCode() { tagClaimItem(tagCodeInput()); }
+window.tagClaimItem = tagClaimItem;
+window.tagClaimItemCode = tagClaimItemCode;
+
+/* ---- levelling up (any character) ----
+   Once the table has advanced to a new session, each character may gain one level: max HP goes up by
+   the class hit die's average + CON modifier, and listed skills rise with the proficiency bonus. */
+const HIT_DIE = { barbarian: 12, fighter: 10, paladin: 10, ranger: 10, sorcerer: 6, wizard: 6 }; // everything else d8
+function hitDieFor(klass) {
+  const k = String(klass || '').toLowerCase();
+  for (const [name, die] of Object.entries(HIT_DIE)) if (k.includes(name)) return die;
+  return 8;
+}
+const profFor = lvl => 2 + Math.floor((Math.max(1, lvl) - 1) / 4);
+function levelUpGain(c) { return Math.max(1, hitDieFor(c.klass) / 2 + 1 + abilityMod(c.con)); }
+function canLevelUp(c) {
+  return (parseInt(c.level) || 1) < 20 && ((META && META.session) || 1) > (parseInt(c.levelSession) || 1);
+}
+function levelUpHTML(c) {
+  if (!canLevelUp(c)) return '';
+  const next = (parseInt(c.level) || 1) + 1;
+  return `<div class="hero-note level-up-note"><span>&#x2726; A new session has begun. <b>${escapeHtml(c.name)}</b> can reach level ${next} (+${levelUpGain(c)} max HP${profFor(next) > profFor(next - 1) ? ', +1 to skills' : ''}).</span><button class="btn solid" onclick="levelUp()">Level Up</button></div>`;
+}
+async function levelUp() {
+  const c = ROSTER[MY_CHAR_ID];
+  if (!c || !canLevelUp(c)) return;
+  const old = parseInt(c.level) || 1;
+  const gain = levelUpGain(c);
+  c.level = old + 1;
+  c.maxhp = (parseInt(c.maxhp) || 1) + gain;
+  c.hp = Math.min(c.maxhp, (parseInt(c.hp) || 0) + gain);
+  c.levelSession = (META && META.session) || 1;
+  const bump = profFor(c.level) - profFor(old);
+  if (bump) c.skills = (c.skills || []).map(s => ({ ...s, mod: (parseInt(s.mod) || 0) + bump }));
+  await persistRoster();
+  const entry = { id: uid(6), author: 'The Ledger', type: 'system', text: `⬆ ${c.name} reached level ${c.level}! Max HP +${gain}${bump ? ', skills +' + bump : ''}.` };
+  await dbInsertLog(ROOM, entry);
+  LOG.push({ ...entry, ts: Date.now() });
+  render();
+  saveHeroToMini(false);
+}
+window.levelUp = levelUp;
+
+/* ---- heroes save their progress back to the mini ----
+   The hero-save function checks the character really came from that mini, binds the mini to the first
+   ink key that saves it, and limits each save to +1 level. Runs on its own after a level-up, when the
+   session advances and when leaving the table; the Sheet tab also has a button. */
+const MINI_SAVE = { busy: false, msg: '', again: false };
+function miniPanelHTML(c) {
+  if (!c.heroTag) return '';
+  return `<div class="mini-panel">
+    <p class="helptext"><b>${escapeHtml(c.name)} came from your mini.</b> Their level, max HP, gear and notes are saved back to it when you level up, advance the session or leave, so the next tap brings them back as they are now.</p>
+    <button class="btn" ${MINI_SAVE.busy ? 'disabled' : ''} onclick="saveHeroToMini()">Save to my mini now</button>
+    ${MINI_SAVE.msg ? `<p class="helptext mini-save-msg">${escapeHtml(MINI_SAVE.msg)}</p>` : ''}
+  </div>`;
+}
+async function saveHeroToMini(quiet) {
+  const c = ROSTER[MY_CHAR_ID];
+  if (!c || !c.heroTag || !ROOM || !MY_CHAR_ID) return;
+  if (MINI_SAVE.busy) { MINI_SAVE.again = true; return; } // e.g. Level Up pressed while the session-advance save runs
+  // Built before the first await, so leaving the table (which clears ROOM/ROSTER) can't change it.
+  const body = JSON.stringify({ tagId: c.heroTag, roomCode: ROOM, characterId: MY_CHAR_ID, playerId: playerId() });
+  const showSheet = () => { if (VIEW === 'game' && ACTIVE_TAB === 'sheet') renderSheetTab(); };
+  MINI_SAVE.busy = true;
+  if (quiet !== true) { MINI_SAVE.msg = 'Saving to your mini...'; showSheet(); }
+  try {
+    const resp = await fetch(api('/api/hero-save'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true });
+    const data = await resp.json().catch(() => ({}));
+    if (resp.status === 429) { MINI_SAVE.again = true; MINI_SAVE.msg = quiet === true ? MINI_SAVE.msg : 'Saving to your mini in a few seconds...'; return; }
+    if (!resp.ok || data.error) throw new Error(data.error || `Request failed (${resp.status})`);
+    MINI_SAVE.msg = `Saved to your mini: level ${data.saved.level}, ${data.saved.maxhp} max HP, ${data.saved.items} item${data.saved.items === 1 ? '' : 's'}.` +
+      (data.claimed ? ' This mini is now bound to your ink key.' : '');
+  } catch (e) {
+    console.warn('Saving to the mini failed:', e.message);
+    MINI_SAVE.msg = e.message;
+  } finally {
+    MINI_SAVE.busy = false;
+    showSheet();
+    // A save was asked for while this one ran (or the server said "too soon"): send the latest once more.
+    if (MINI_SAVE.again) { MINI_SAVE.again = false; setTimeout(() => saveHeroToMini(quiet), 6000); }
+  }
+}
+window.saveHeroToMini = saveHeroToMini;
 
 window.closeTag = closeTag;
 window.tagHeroJoin = tagHeroJoin;

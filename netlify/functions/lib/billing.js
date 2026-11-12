@@ -112,4 +112,4 @@ const outOfInkMessage = (kind) =>
     ? `Not enough ink for a portrait (it costs ${COSTS.portrait}).`
     : "You're out of ink for this month.";
 
-module.exports = { COSTS, PACKS, enforced, freePerMonth, validPlayer, spend, refund, balance, redeem, outOfInkMessage };
+module.exports = { COSTS, PACKS, enforced, freePerMonth, validPlayer, spend, refund, balance, redeem, outOfInkMessage, sbAdmin };
