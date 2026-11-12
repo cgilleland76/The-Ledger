@@ -1259,19 +1259,25 @@ async function callGM(prompt, fallbackEntry) {
     GM_PENDING = false;
     GM_ABORT = null;
   }
-  const { clean, attacks, heals, gives, uses } = entry.type === 'gm' ? extractFoeAttacks(entry.text) : { clean: entry.text, attacks: [], heals: [], gives: [], uses: [] };
+  const { clean, attacks, heals, gives, uses, defeats, successes, rests } = entry.type === 'gm' ? extractFoeAttacks(entry.text)
+    : { clean: entry.text, attacks: [], heals: [], gives: [], uses: [], defeats: [], successes: [], rests: [] };
   // A message that was nothing but directives has no story text of its own to log.
-  if (clean || !(attacks.length || heals.length || gives.length || uses.length)) {
+  if (clean || !(attacks.length || heals.length || gives.length || uses.length || defeats.length || successes.length || rests.length)) {
     entry.text = clean || entry.text;
     await dbInsertLog(ROOM, entry);
     LOG.push({ ...entry, ts: Date.now() });
   }
   // Damage, healing and items change the sheet itself: save every character that changed.
-  for (const r of [...attacks.map(resolveFoeAttack), ...heals.map(resolveHeal), ...gives.map(resolveGive), ...uses.map(resolveUse)]) {
-    const { hpChar, ...result } = r;
+  // XP is awarded before a rest, so a long rest in the same message can unlock a level-up.
+  const results = [...attacks.map(resolveFoeAttack), ...heals.map(resolveHeal), ...gives.map(resolveGive), ...uses.map(resolveUse),
+    ...defeats.map(resolveDefeat), ...successes.map(resolveSuccess), ...rests.map(k => k === 'long' ? resolveLongRest() : resolveShortRest())];
+  for (const r of results) {
+    const { hpChar, saveAll, saveMeta, ...result } = r;
     await dbInsertLog(ROOM, result);
     LOG.push({ ...result, ts: Date.now() });
-    if (hpChar && ROSTER[hpChar]) await dbUpsertCharacter(hpChar, ROOM, ROSTER[hpChar]);
+    if (saveAll) { for (const id of Object.keys(ROSTER)) await dbUpsertCharacter(id, ROOM, ROSTER[id]); }
+    else if (hpChar && ROSTER[hpChar]) await dbUpsertCharacter(hpChar, ROOM, ROSTER[hpChar]);
+    if (saveMeta && META) await dbUpdateRoomMeta(ROOM, META);
   }
   if (VIEW === 'game') render();
 }
@@ -1288,11 +1294,17 @@ const FOE_DIRECTIVE = /\[\[\s*foe-attack:([^\]]*)\]\]/gi;
 const HEAL_DIRECTIVE = /\[\[\s*heal:([^\]]*)\]\]/gi;
 const GIVE_DIRECTIVE = /\[\[\s*give:([^\]]*)\]\]/gi;
 const USE_DIRECTIVE = /\[\[\s*use:([^\]]*)\]\]/gi;
+const DEFEAT_DIRECTIVE = /\[\[\s*defeat:([^\]]*)\]\]/gi;
+const SUCCESS_DIRECTIVE = /\[\[\s*success:([^\]]*)\]\]/gi;
+const REST_DIRECTIVE = /\[\[\s*(short|long)[- ]rest\s*(?::[^\]]*)?\]\]/gi;
 function extractFoeAttacks(text) {
   const attacks = [];
   const heals = [];
   const gives = [];
   const uses = [];
+  const defeats = [];
+  const successes = [];
+  const rests = [];
   const clean = String(text).replace(FOE_DIRECTIVE, (_, body) => {
     const p = body.split('|').map(s => s.trim());
     if (p.length >= 5 && attacks.length < 4) attacks.push({ who: p[0].slice(0, 40), atk: p[1].slice(0, 40), bonus: p[2], dmg: p[3], target: p[4], ac: p[5] });
@@ -1309,8 +1321,19 @@ function extractFoeAttacks(text) {
     const p = body.split('|').map(s => s.trim());
     if (p.length >= 2 && p[1] && uses.length < 4) uses.push({ target: p[0], item: p[1].slice(0, 80) });
     return '';
+  }).replace(DEFEAT_DIRECTIVE, (_, body) => {
+    const p = body.split('|').map(s => s.trim());
+    if (p[0] && defeats.length < 6) defeats.push({ target: p[0].slice(0, 60), cr: p[1] || '' });
+    return '';
+  }).replace(SUCCESS_DIRECTIVE, (_, body) => {
+    const p = body.split('|').map(s => s.trim());
+    if (p[0] && successes.length < 4) successes.push({ target: p[0], skill: (p[1] || '').slice(0, 40), dc: p[2] || '' });
+    return '';
+  }).replace(REST_DIRECTIVE, (_, kind) => {
+    if (!rests.length) rests.push(kind.toLowerCase());
+    return '';
   }).replace(/\n{3,}/g, '\n\n').trim();
-  return { clean, attacks, heals, gives, uses };
+  return { clean, attacks, heals, gives, uses, defeats, successes, rests };
 }
 function findTarget(name) {
   const chars = Object.values(ROSTER);
@@ -1472,7 +1495,7 @@ async function askGM() {
   if (GM_PENDING) return;
   const rerolls = rerollIds();
   const recent = LOG.slice(-30).map(e => `${e.author} (${e.type}): ${e.text}${rerolls.has(e.id) ? ' ' + REROLL_TAG : ''}`).join('\n');
-  const party = Object.values(ROSTER).map(c => `${c.name} — Lv${c.level} ${c.race} ${c.klass}, HP ${c.hp}/${c.maxhp} (current, from the sheet), AC ${c.ac}, inventory: ${earnedItems(c).join(', ') || 'none'}${handItems(c).length ? `; written in by the player, never given in the story (NOT owned): ${handItems(c).join(', ')}` : ''}
+  const party = Object.values(ROSTER).map(c => `${c.name} — Lv${c.level} ${c.race} ${c.klass}, HP ${c.hp}/${c.maxhp} (current, from the sheet), AC ${c.ac}, XP ${xpOf(c)}, inventory: ${earnedItems(c).join(', ') || 'none'}${handItems(c).length ? `; written in by the player, never given in the story (NOT owned): ${handItems(c).join(', ')}` : ''}
   Sheet modifiers (the only d20 bonuses this character has): ${rollOptions(c).map(o => `${o.name} ${fmtMod(o.mod)}`).join(', ')}`).join('\n');
   const prompt = `You are the Game Master for a tabletop RPG ${MODE === 'solo' ? 'solo story' : 'session'} titled "${META.name}".
 Ruleset: ${META.ruleset}. Tone/genre: ${META.tone || 'unspecified — infer something fitting'}. Length: ${lengthLabel[META.length]}.
@@ -1493,8 +1516,9 @@ Roll resolution rules — follow these exactly:
 - If a turn involves multiple attacks or rolls, resolve each one completely — roll, then damage if applicable, then narration — before moving to the next.
 - Always phrase a requested roll using the exact command the player should type, formatted as inline code, e.g. "/roll +5 Attack (DEX)" for an attack, "/roll 2d6+3" for damage, "/roll +5 adv Attack (DEX)" for advantage. Never say "roll a d20" or similar without giving the exact /roll command.
 - For any d20 check or save, the bonus in your /roll command must be one of that character's Sheet modifiers listed above, and the command should name it, e.g. "/roll +3 Dexterity" or "/roll +7 Stealth". Never add a proficiency bonus, expertise, or any other bonus that isn't on the sheet. If the right skill or tool isn't listed, use the matching ability's modifier as-is (and say that's what you're using). Weapon attack rolls use the listed "Attack (STR)" or "Attack (DEX)" modifier, e.g. "/roll +5 Attack (DEX)". Damage rolls use dice notation for the weapon or spell, e.g. "/roll 1d8+3".
-- Players never roll for monsters. For each attack a foe makes, write it in the fiction and put this directive on its own line: [[foe-attack: Goblin B | scimitar | +4 | 1d6+2 | Telilin]] (attacker | attack name | to-hit bonus from its stat block | damage dice | the target's exact character name). When an ally NPC attacks an enemy, add the enemy's AC as a sixth field, e.g. [[foe-attack: Scout | longbow | +4 | 1d8+2 | Goblin A | AC 15]]; the result tells you what happened and you track the enemy's HP. The game rolls the attack against the target's AC and the damage if it hits, and posts the result to the log; use one directive per attack (max 4). Then stop: don't say whether it hit and don't state the AC. Narrate the outcome next turn, once the result is in the log. The game subtracts the damage from the target's HP itself, so never ask players to take it off their HP. For any healing (a potion, a spell, a rest) put [[heal: Telilin | 2d4+2 | potion of healing]] on its own line (the character's exact name | dice or a flat number | source); the game rolls it and raises their HP up to their maximum. One per healing, max 4. Never use [[heal]] to stabilise a dying character: stabilising (a healer's kit, a Medicine check, spare the dying) restores no HP, it only ends their death saves, so ask the player for a Medicine check (DC 10, or a healer's kit with no roll) and narrate them stable at 0 HP. When a player's own character is doing the healing (their spell or potion), ask that player to /roll it; once that roll is in the log, put [[heal: <their name> | <that roll's total> | <source>]] with the total as a plain number, and the game adds it. Never state anyone's new HP total yourself (the game posts it), and never work HP out from older log lines: a character's current HP is only the "HP x/y (current, from the sheet)" in the party list above.
+- Players never roll for monsters. For each attack a foe makes, write it in the fiction and put this directive on its own line: [[foe-attack: Goblin B | scimitar | +4 | 1d6+2 | Telilin]] (attacker | attack name | to-hit bonus from its stat block | damage dice | the target's exact character name). When an ally NPC attacks an enemy, add the enemy's AC as a sixth field, e.g. [[foe-attack: Scout | longbow | +4 | 1d8+2 | Goblin A | AC 15]]; the result tells you what happened and you track the enemy's HP. The game rolls the attack against the target's AC and the damage if it hits, and posts the result to the log; use one directive per attack (max 4). Then stop: don't say whether it hit and don't state the AC. Narrate the outcome next turn, once the result is in the log. The game subtracts the damage from the target's HP itself, so never ask players to take it off their HP. For any healing (a potion, a spell) put [[heal: Telilin | 2d4+2 | potion of healing]] on its own line (the character's exact name | dice or a flat number | source); the game rolls it and raises their HP up to their maximum. One per healing, max 4. Never use [[heal]] to stabilise a dying character: stabilising (a healer's kit, a Medicine check, spare the dying) restores no HP, it only ends their death saves, so ask the player for a Medicine check (DC 10, or a healer's kit with no roll) and narrate them stable at 0 HP. When a player's own character is doing the healing (their spell or potion), ask that player to /roll it; once that roll is in the log, put [[heal: <their name> | <that roll's total> | <source>]] with the total as a plain number, and the game adds it. Never state anyone's new HP total yourself (the game posts it), and never work HP out from older log lines: a character's current HP is only the "HP x/y (current, from the sheet)" in the party list above.
 - Items: each character's inventory above is what they really carry. Items "written in by the player" were typed in by the player and never given in the story: they are NOT owned. If a player tries to use one, it isn't in their pack, and say so plainly. When the story gives a character an item (found, bought, looted, handed over), put [[give: <their name> | <item>]] on its own line and the game adds it. When a character uses up a consumable (drinks a potion, reads a scroll, spends a charge item), put [[use: <their name> | <item>]] on its own line and the game removes one. Max 4 of each per message.
+- XP, levels and rests are the game's job: never announce XP, levels or level-ups yourself. When the party kills or defeats a foe, put [[defeat: <creature>]] on its own line, one per creature (for a creature you invented, add its CR: [[defeat: Cave Wyrm | CR 2]]). When a character succeeds at a check you set a DC for, once their roll is in the log, put [[success: <their name> | <skill> | DC <n>]]. When the party actually rests in the story, put [[short-rest]] (about an hour) or [[long-rest]] (about 8 hours somewhere safe, at most once per in-game day) on its own line; the game restores HP and hit dice, so never use [[heal]] for a rest. A rest in danger gets interrupted instead.
 - Do not roll dice yourself or invent results under any circumstance.`;
 
   await callGM(prompt, 'the GM was not asked to continue.');
@@ -1729,6 +1753,7 @@ function renderSheetTab() {
         <div class="sheet-stat"><div class="label">AC</div><div class="val">${c.ac}</div></div>
         <div class="sheet-stat"><div class="label">Level</div><div class="val">${c.level}</div></div>
       </div>
+      ${progressHTML(c)}
       ${levelUpHTML(c)}
       ${miniPanelHTML(c)}
       ${abilityGridHTML(c)}
@@ -1802,6 +1827,7 @@ function renderHelpTab() {
         <li>In the GM's newest message, click the emoji beside an option to choose it, and click a <b>🎲 /roll</b> button to make that roll. Each can be used once.</li>
         <li>The <b>Roll from sheet</b> menu next to the message box lists your ability checks, skills, weapon attacks, and initiative — pick one and it fills in the right modifier and label for you. If a d20 roll uses a bonus higher than your sheet allows, the log tags it <b>⚠ unlisted modifier</b> so the table can see it (legit situational bonuses like Bless will trigger it too — just a heads-up, nothing is blocked).</li>
         <li>In a fight, the game rolls monster attacks and damage for you and posts the result in the log (damage comes off your HP automatically, and so does healing the GM grants). The GM keeps a <b>Foes</b> line with each monster's hit points at the end of its messages.</li>
+        <li><b>XP and levels:</b> you earn XP for defeating foes (shared by the table) and for checks you pass against a DC with a real roll. Once you have enough XP, <b>Level Up</b> unlocks on Your Sheet after a <b>long rest</b>. A <b>short rest</b> lets you spend hit dice there to heal.</li>
         <li><label style="cursor:pointer;"><input type="checkbox" ${diceAnimOn() ? 'checked' : ''} onchange="setDiceAnim(this.checked)"> Show the dice-rolling popup when you roll (click it to dismiss early)</label></li>
         <li>Dice are <b>only</b> rolled when you type <code>/roll</code>. For a plain d20 check, just add the number, e.g. <code>/roll +5</code>. For any other dice — your own damage or healing, anything the GM asks you to roll — use full notation like <code>/roll 2d6+3</code> or <code>/roll 1d4</code>.</li>
         <li>For advantage or disadvantage on a d20 roll: <code>/roll +5 adv</code> or <code>/roll 1d20+5 dis</code> — rolls two d20s and keeps the higher or lower.</li>
@@ -2141,6 +2167,7 @@ function heroFromTag(tagId, data) {
   for (const k of ['str', 'dex', 'con', 'int', 'wis', 'cha']) d[k] = num(h[k], 1, 30, 10);
   d.maxhp = num(h.maxhp, 1, 999, 10);
   d.hp = d.maxhp;
+  d.xp = num(h.xp, 0, 400000, [0, 0, 300, 900, 2700, 6500, 14000, 23000, 34000, 48000, 64000, 85000, 100000, 120000, 140000, 165000, 195000, 225000, 265000, 305000, 355000][d.level]);
   d.skills = Array.isArray(h.skills) ? h.skills.slice(0, 30).map(s => ({ name: String((s && s.name) || '').slice(0, 40), mod: num(s && s.mod, -10, 20, 0) })).filter(s => s.name) : [];
   d.inventory = Array.isArray(h.inventory) ? h.inventory.slice(0, 40).map(i => String(i).slice(0, 80)).filter(Boolean) : [];
   d.spells = Array.isArray(h.spells) ? h.spells.slice(0, 40).map(s => String(s).slice(0, 60)) : [];
@@ -2312,34 +2339,174 @@ function hitDieFor(klass) {
 }
 const profFor = lvl => 2 + Math.floor((Math.max(1, lvl) - 1) / 4);
 function levelUpGain(c) { return Math.max(1, hitDieFor(c.klass) / 2 + 1 + abilityMod(c.con)); }
+/* ---- levelling: XP earned in play, level-ups at a long rest ----
+   Characters can't level just by pressing Advance Session. XP comes only from things the game can check:
+   - kills: [[defeat: Goblin]] -> XP from the SRD monster list (srd-xp.js), split across the party.
+     Made-up creatures may give a CR ([[defeat: Cave Wyrm | CR 2]]), and every kill is capped near the
+     party's level (CR = level), so a story can't hand a level-1 hero a dragon's worth of XP.
+   - skills: [[success: Brannoc | Stealth | DC 15]] pays only if that character has a real, un-voided
+     d20 roll since the previous GM message that meets the DC; each roll can pay once.
+   Level Up then needs enough XP *and* a long rest ([[long-rest]]), which restores full HP anyway. */
+const XP_FOR_LEVEL = [0, 0, 300, 900, 2700, 6500, 14000, 23000, 34000, 48000, 64000, 85000, 100000, 120000, 140000, 165000, 195000, 225000, 265000, 305000, 355000];
+const CR_XP = { '0': 10, '1/8': 25, '1/4': 50, '1/2': 100, '1': 200, '2': 450, '3': 700, '4': 1100, '5': 1800, '6': 2300, '7': 2900, '8': 3900, '9': 5000, '10': 5900, '11': 7200, '12': 8400, '13': 10000, '14': 11500, '15': 13000, '16': 15000, '17': 18000, '18': 20000, '19': 22000, '20': 25000 };
+const LONG_REST_GAP = 8;  // GM replies needed between long rests
+const SHORT_REST_GAP = 3; // ...and between short rests
+const crNum = cr => { const s = String(cr); if (s.includes('/')) { const [a, b] = s.split('/').map(Number); return a / b; } return Number(s) || 0; };
+function xpOf(c) { const lvl = parseInt(c.level) || 1; return Number.isFinite(c.xp) ? c.xp : XP_FOR_LEVEL[lvl]; }
+function nextLevelXp(c) { const lvl = parseInt(c.level) || 1; return lvl >= 20 ? null : XP_FOR_LEVEL[lvl + 1]; }
+function partyLevel() { const cs = Object.values(ROSTER); return cs.length ? Math.round(cs.reduce((s, c) => s + (parseInt(c.level) || 1), 0) / cs.length) : 1; }
+function gmCount() { return LOG.filter(e => e.type === 'gm').length; }
+const sysEntry = (text, extra) => ({ id: uid(6), author: 'The Ledger', type: 'system', text, ...(extra || {}) });
+
+function addXp(c, amount) {
+  c.xp = xpOf(c) + Math.max(0, Math.round(amount));
+  const need = nextLevelXp(c);
+  return need !== null && c.xp >= need;
+}
+// XP for a creature by name: SRD table first ("Goblin B" -> goblin, "goblins" -> goblin), then a CR the GM gave.
+function creatureXp(name, crText) {
+  const table = window.SRD_XP || {};
+  let n = String(name || '').toLowerCase().replace(/^(the|a|an)\s+/, '').replace(/\s+(#?\d+|[a-z])$/, '').trim();
+  let xp = table[n] ?? table[n.replace(/s$/, '')] ?? table[n.replace(/es$/, '')];
+  let cr = null;
+  if (xp === undefined) {
+    const m = /cr\s*([0-9]+(?:\/[0-9]+)?)/i.exec(String(crText || ''));
+    if (m && CR_XP[m[1]] !== undefined) { cr = m[1]; xp = CR_XP[cr]; }
+  }
+  if (xp === undefined) return { xp: 0, known: false };
+  // Cap: one kill is never worth more than a creature of the party's own level (CR = average level).
+  const capCr = Math.min(20, partyLevel());
+  const capXp = CR_XP[String(capCr)] || 25000;
+  return { xp: Math.min(xp, capXp), known: true, capped: xp > capXp };
+}
+// [[defeat: Goblin]] — split the creature's XP across everyone at the table.
+function resolveDefeat(d) {
+  const cs = Object.values(ROSTER);
+  const { xp, known, capped } = creatureXp(d.target, d.cr);
+  if (!known) return sysEntry(`⚔ ${d.target} is defeated (no XP: the game doesn't know that creature's challenge rating).`);
+  const each = Math.floor(xp / Math.max(cs.length, 1));
+  const ready = [];
+  cs.forEach(c => { if (addXp(c, each)) ready.push(c.name); });
+  return sysEntry(`⚔ ${d.target} defeated: +${each} XP${cs.length > 1 ? ' each' : ''}${capped ? ' (capped for your level)' : ''}.${ready.length ? ` ${ready.join(', ')} ${ready.length > 1 ? 'have' : 'has'} enough XP to level up at the next long rest.` : ''}`, { saveAll: true });
+}
+// [[success: Brannoc | Stealth | DC 15]] — pays only for a real roll that met the DC.
+function resolveSuccess(s) {
+  const c = findTarget(s.target);
+  if (!c) return sysEntry(`A success was noted, but the game couldn't tell whose it was.`);
+  const dc = Math.max(5, Math.min(30, parseInt(String(s.dc || '').replace(/[^0-9]/g, '')) || 0));
+  if (!dc) return sysEntry(`${c.name}'s success had no DC, so it earns no XP.`);
+  const voided = rerollIds();
+  const paid = new Set(Array.isArray(c.xpRolls) ? c.xpRolls : []);
+  // Rolls since the GM message before this one (the current GM message is already in LOG).
+  const gmIdx = LOG.map((e, i) => e.type === 'gm' ? i : -1).filter(i => i >= 0);
+  const from = gmIdx.length >= 2 ? gmIdx[gmIdx.length - 2] + 1 : 0;
+  const skill = String(s.skill || '').toLowerCase();
+  const rolls = LOG.slice(from).filter(e => e.type === 'roll' && String(e.author).toLowerCase() === c.name.toLowerCase()
+    && /d20\(/.test(e.text) && !/attack|death save/i.test(e.text) && !voided.has(e.id) && !paid.has(e.id));
+  const pick = rolls.filter(e => skill && String(e.text).toLowerCase().includes(skill)).pop() || rolls.pop();
+  if (!pick) return sysEntry(`${c.name}'s ${s.skill || 'check'} earns no XP: there's no new roll for it in the log.`);
+  const total = parseInt((/=\s*(-?\d+)/.exec(pick.text) || [])[1]);
+  if (!(total >= dc)) return sysEntry(`${c.name}'s ${s.skill || 'check'} earns no XP: the roll (${total}) didn't meet DC ${dc}.`);
+  const lvl = parseInt(c.level) || 1;
+  const xp = (dc - 5) * 3 * lvl;
+  c.xpRolls = [...paid, pick.id].slice(-60);
+  const ready = addXp(c, xp);
+  return sysEntry(`✦ ${c.name}: ${s.skill || 'check'} succeeded (${total} vs DC ${dc}) — +${xp} XP.${ready ? ` ${c.name} has enough XP to level up at the next long rest.` : ''}`, { hpChar: charIdOf(c) });
+}
+
+// ---- rests ----
+function roomMeta() { return META || {}; }
+function shortRestOpen() { const m = roomMeta(); return Number.isFinite(m.shortRestAt) && m.shortRestAt === gmCount(); }
+function hitDiceLeft(c) { return Math.max(0, (parseInt(c.level) || 1) - (parseInt(c.hitDiceUsed) || 0)); }
+// [[long-rest]]: full HP, half your hit dice back, and Level Up unlocks for anyone with the XP.
+function resolveLongRest() {
+  const m = roomMeta();
+  const since = gmCount() - (Number.isFinite(m.lastLongRest) ? m.lastLongRest : -999);
+  if (since < LONG_REST_GAP) return sysEntry(`🌙 Too soon for another long rest (the story needs to move on first), so it gives no benefits.`);
+  m.lastLongRest = gmCount();
+  m.shortRestAt = null;
+  const ready = [];
+  for (const c of Object.values(ROSTER)) {
+    c.hp = parseInt(c.maxhp) || c.hp;
+    c.hitDiceUsed = Math.max(0, (parseInt(c.hitDiceUsed) || 0) - Math.max(1, Math.floor((parseInt(c.level) || 1) / 2)));
+    const need = nextLevelXp(c);
+    c.levelReady = need !== null && xpOf(c) >= need;
+    if (c.levelReady) ready.push(c.name);
+  }
+  return sysEntry(`🌙 Long rest: everyone is back to full HP and regains hit dice.${ready.length ? ` ${ready.join(', ')} can level up now (Your Sheet tab).` : ''}`, { saveAll: true, saveMeta: true });
+}
+// [[short-rest]]: opens a window (until the next GM message) to spend hit dice on the Sheet tab.
+function resolveShortRest() {
+  const m = roomMeta();
+  const since = gmCount() - (Number.isFinite(m.lastShortRest) ? m.lastShortRest : -999);
+  if (since < SHORT_REST_GAP) return sysEntry(`☕ Too soon for another short rest, so it gives no benefits.`);
+  m.lastShortRest = gmCount();
+  m.shortRestAt = gmCount();
+  return sysEntry(`☕ Short rest: each hero can spend hit dice on the Your Sheet tab to heal, until the story continues.`, { saveMeta: true });
+}
+async function spendHitDie() {
+  const c = ROSTER[MY_CHAR_ID];
+  if (!c || !shortRestOpen() || hitDiceLeft(c) < 1) return;
+  const die = hitDieFor(c.klass);
+  const roll = dieRoll(die);
+  const heal = Math.max(1, roll + abilityMod(c.con));
+  c.hitDiceUsed = (parseInt(c.hitDiceUsed) || 0) + 1;
+  const { before, after, max } = changeHP(c, heal);
+  await persistRoster();
+  const entry = sysEntry(`☕ ${c.name} spends a hit die: d${die}(${roll}) ${fmtMod(abilityMod(c.con))} = ${heal} — HP ${before} → ${after}/${max}. ${hitDiceLeft(c)} hit ${hitDiceLeft(c) === 1 ? 'die' : 'dice'} left.`);
+  await dbInsertLog(ROOM, entry);
+  LOG.push({ ...entry, ts: Date.now() });
+  render();
+}
+window.spendHitDie = spendHitDie;
+
+// Sheet tab: XP, hit dice, short-rest healing and the Level Up offer.
+function progressHTML(c) {
+  const need = nextLevelXp(c);
+  const xp = xpOf(c);
+  const pct = need === null ? 100 : Math.max(0, Math.min(100, Math.round((xp - XP_FOR_LEVEL[parseInt(c.level) || 1]) / (need - XP_FOR_LEVEL[parseInt(c.level) || 1]) * 100)));
+  const die = hitDieFor(c.klass);
+  const rest = shortRestOpen() && hitDiceLeft(c) > 0 && c.hp < c.maxhp
+    ? `<button class="btn" onclick="spendHitDie()">Spend a hit die (d${die} ${fmtMod(abilityMod(c.con))})</button>` : '';
+  return `<div class="xp-panel">
+    <div class="xp-row"><span><b>XP</b> ${xp}${need !== null ? ` / ${need} for level ${(parseInt(c.level) || 1) + 1}` : ' (max level)'}</span><span><b>Hit dice</b> ${hitDiceLeft(c)}/${parseInt(c.level) || 1} (d${die})</span></div>
+    <div class="xp-bar"><div style="width:${pct}%"></div></div>
+    ${rest}
+  </div>`;
+}
 function canLevelUp(c) {
-  return (parseInt(c.level) || 1) < 20 && ((META && META.session) || 1) > (parseInt(c.levelSession) || 1);
+  const need = nextLevelXp(c);
+  return !!c.levelReady && need !== null && xpOf(c) >= need;
 }
 function levelUpHTML(c) {
-  if (!canLevelUp(c)) return '';
+  const need = nextLevelXp(c);
   const next = (parseInt(c.level) || 1) + 1;
-  return `<div class="hero-note level-up-note"><span>&#x2726; A new session has begun. <b>${escapeHtml(c.name)}</b> can reach level ${next} (+${levelUpGain(c)} max HP${profFor(next) > profFor(next - 1) ? ', +1 to skills' : ''}).</span><button class="btn solid" onclick="levelUp()">Level Up</button></div>`;
+  if (canLevelUp(c)) {
+    return `<div class="hero-note level-up-note"><span>&#x2726; Rested and ready: <b>${escapeHtml(c.name)}</b> can reach level ${next} (+${levelUpGain(c)} max HP${profFor(next) > profFor(next - 1) ? ', +1 to skills' : ''}).</span><button class="btn solid" onclick="levelUp()">Level Up</button></div>`;
+  }
+  if (need !== null && xpOf(c) >= need) return `<p class="helptext">&#x2726; Enough XP for level ${next}. It unlocks at your next long rest.</p>`;
+  return '';
 }
 async function levelUp() {
   const c = ROSTER[MY_CHAR_ID];
   if (!c || !canLevelUp(c)) return;
   const old = parseInt(c.level) || 1;
   const gain = levelUpGain(c);
-  const hpBefore = parseInt(c.hp) || 0;
   c.level = old + 1;
   c.maxhp = (parseInt(c.maxhp) || 1) + gain;
-  c.hp = Math.min(c.maxhp, (parseInt(c.hp) || 0) + gain);
-  c.levelSession = (META && META.session) || 1;
+  c.hp = c.maxhp; // level-ups happen at a long rest, so the hero is at full health
+  c.levelReady = false; // one level per long rest
   const bump = profFor(c.level) - profFor(old);
   if (bump) c.skills = (c.skills || []).map(s => ({ ...s, mod: (parseInt(s.mod) || 0) + bump }));
   await persistRoster();
-  const entry = { id: uid(6), author: 'The Ledger', type: 'system', text: `⬆ ${c.name} reached level ${c.level}! Max HP +${gain}${bump ? ', skills +' + bump : ''} — HP ${hpBefore} → ${c.hp}/${c.maxhp}.` };
+  const entry = sysEntry(`⬆ ${c.name} reached level ${c.level}! Max HP +${gain} (now ${c.hp}/${c.maxhp})${bump ? ', skills +' + bump : ''}.`);
   await dbInsertLog(ROOM, entry);
   LOG.push({ ...entry, ts: Date.now() });
   render();
   saveHeroToMini(false);
 }
 window.levelUp = levelUp;
+
 
 /* ---- heroes save their progress back to the mini ----
    The hero-save function checks the character really came from that mini, binds the mini to the first

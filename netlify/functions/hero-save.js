@@ -28,14 +28,19 @@ const hitDie = (klass) => {
   return 8;
 };
 const prof = (level) => 2 + Math.floor((level - 1) / 4);
+const XP_FOR_LEVEL = [0, 0, 300, 900, 2700, 6500, 14000, 23000, 34000, 48000, 64000, 85000, 100000, 120000, 140000, 165000, 195000, 225000, 265000, 305000, 355000];
+const levelForXp = (xp) => { let l = 1; while (l < 20 && xp >= XP_FOR_LEVEL[l + 1]) l++; return l; };
 const mod = (score) => Math.floor((int(score, 1, 30, 10) - 10) / 2);
 
 // Works out what may be saved, given the tag as stored and the character as played.
 function progressFrom(tagData, ch) {
   const t = tagData || {};
   const oldLevel = int(t.level, 1, 20, 1);
-  // Never lower the mini's level; raise it by at most one per save.
-  const level = Math.max(oldLevel, Math.min(int(ch.level, 1, 20, oldLevel), oldLevel + 1, 20));
+  // XP never goes down, and can't run more than two levels ahead of the mini.
+  const oldXp = int(t.xp, 0, 400000, XP_FOR_LEVEL[oldLevel]);
+  const xp = Math.min(Math.max(oldXp, int(ch.xp, 0, 400000, oldXp)), XP_FOR_LEVEL[Math.min(20, oldLevel + 2)] || 355000);
+  // Never lower the mini's level; raise it by at most one per save, and only if the XP supports it.
+  const level = Math.max(oldLevel, Math.min(int(ch.level, 1, 20, oldLevel), oldLevel + 1, levelForXp(xp), 20));
   const gained = Math.max(level - oldLevel, 0);
   const oldMax = int(t.maxhp, 1, 999, 10);
   const perLevelMax = Math.max(hitDie(t.klass) + mod(t.con), 1);
@@ -51,7 +56,7 @@ function progressFrom(tagData, ch) {
     .filter((i) => { const k = typed.indexOf(i); if (k >= 0) { typed.splice(k, 1); return false; } return true; })
     .reverse().slice(0, 40).map((i) => String(i).slice(0, 80)).filter((i) => i.trim());
   const notes = String(ch.notes || "").slice(0, 2000);
-  return { ...t, level, maxhp, hp: maxhp, skills, inventory, notes };
+  return { ...t, level, xp, maxhp, hp: maxhp, skills, inventory, notes };
 }
 
 exports.handler = async function (event) {

@@ -418,3 +418,9 @@ input, textarea, select{ font-family:var(--font-body); font-size:1rem; }
 .portrait-actions{ display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
 
 .hand-item{ font-style:italic; font-size:0.85em; color:var(--sienna); }
+
+/* XP and hit dice on the Sheet tab */
+.xp-panel{ margin:0 0 16px; }
+.xp-row{ display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; font-size:0.95rem; }
+.xp-bar{ height:8px; margin:6px 0 10px; border:1px solid var(--gold-dim); border-radius:2px; background:var(--paper-lo); overflow:hidden; }
+.xp-bar > div{ height:100%; background:linear-gradient(90deg, var(--gold-dim), var(--oxblood)); }
