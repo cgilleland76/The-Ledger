@@ -441,3 +441,4 @@ input, textarea, select{ font-family:var(--font-body); font-size:1rem; }
 .map-side .hero-note{ margin-top:0; }
 .map-legend{ font-size:0.92rem; line-height:2; }
 .map-key{ display:inline-flex; align-items:center; justify-content:center; width:24px; height:24px; border-radius:50%; font-family:var(--font-display); font-weight:700; font-size:0.66rem; vertical-align:middle; }
+.map-ally{ background:#3b5f8a; color:#f3e6c6; border-color:#28425f; border-radius:50%; }

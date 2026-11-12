@@ -25,7 +25,7 @@ exports.handler = async function (event) {
     return {
       statusCode: 500,
       headers,
-      body: JSON.stringify({ error: "ANTHROPIC_API_KEY is not set on the server." }),
+      body: (console.error("gm: ANTHROPIC_API_KEY is not set"), JSON.stringify({ error: "The Game Master is unavailable.", reason: "gm_down" })),
     };
   }
 
@@ -38,14 +38,14 @@ exports.handler = async function (event) {
     kind = body.kind === "story" ? "story" : "";
     lore = typeof body.lore === "string" ? body.lore.slice(-6000) : "";
     if (!prompt || typeof prompt !== "string") {
-      return { statusCode: 400, headers, body: JSON.stringify({ error: "Missing 'prompt' string in request body." }) };
+      return { statusCode: 400, headers, body: JSON.stringify({ error: "That request couldn't be read.", reason: "bad_request" }) };
     }
   } catch (e) {
-    return { statusCode: 400, headers, body: JSON.stringify({ error: "Invalid JSON body." }) };
+    return { statusCode: 400, headers, body: JSON.stringify({ error: "That request couldn't be read.", reason: "bad_request" }) };
   }
 
   if (!(await roomExists(roomCode))) {
-    return { statusCode: 403, headers, body: JSON.stringify({ error: "Unknown or missing room code." }) };
+    return { statusCode: 403, headers, body: JSON.stringify({ error: "That table isn't in the ledger.", reason: "room" }) };
   }
 
   // Paywall: spend 1 ink before calling Claude (given back below if the call fails).
@@ -92,9 +92,12 @@ exports.handler = async function (event) {
     });
 
     if (!resp.ok) {
+      // Details (out of credit, overloaded, rate limited...) go to the Netlify function log only;
+      // players get a short reason code and the app shows them an in-world message.
       const errText = await resp.text();
+      console.error(`gm: Anthropic API error ${resp.status}: ${errText.slice(0, 800)}`);
       await billing.refund(playerId, charge);
-      return { statusCode: resp.status, headers, body: JSON.stringify({ error: `Anthropic API error: ${errText}` }) };
+      return { statusCode: 503, headers, body: JSON.stringify({ error: "The Game Master is unavailable.", reason: "gm_down" }) };
     }
 
     const data = await resp.json();
@@ -107,7 +110,8 @@ exports.handler = async function (event) {
     if (!text) await billing.refund(playerId, charge);
     return { statusCode: 200, headers, body: JSON.stringify({ text, wallet }) };
   } catch (err) {
+    console.error("gm: request failed:", err && err.message);
     await billing.refund(playerId, charge);
-    return { statusCode: 500, headers, body: JSON.stringify({ error: err.message }) };
+    return { statusCode: 503, headers, body: JSON.stringify({ error: "The Game Master is unavailable.", reason: "gm_down" }) };
   }
 };

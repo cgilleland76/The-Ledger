@@ -668,7 +668,7 @@ Use sensible 5e-appropriate ability scores for the class (e.g. the standard arra
   } catch (e) {
     if (e.name !== 'AbortError') {
       console.error(e);
-      CHARGEN_ERROR = `Couldn't generate a character: ${e.message}. Try again, or switch to "I'll roll my own."`;
+      CHARGEN_ERROR = `${e.outOfInk ? e.message : friendlyTrouble(e)} Or switch to "I'll roll my own."`;
     }
   } finally {
     CHARGEN_PENDING = false;
@@ -1232,6 +1232,22 @@ function pickOption(btn) {
   submitAction(btn.dataset.act);
 }
 
+/* ---- when something breaks, players get an in-world excuse, never technical text ----
+   (The real reason is in the browser console and the Netlify function log.) */
+const GM_TROUBLE = [
+  "The Game Master knocked over their tankard and is mopping ale out of the dice tray. Give them a few minutes, then ask again.",
+  "The Game Master has nodded off behind the screen, snoring gently. Let them nap a few minutes, then try again.",
+  "A goblin snatched the Game Master's notes and bolted. The chase is on. Try again in a few minutes.",
+  "The Game Master's quill has run dry and they've gone hunting for more ink. Try again in a few minutes.",
+  "The Game Master stepped out to settle a bar tab with the tavern keeper. It's a long tab. Try again in a few minutes.",
+  "The Game Master is consulting a very old, very dusty rulebook. Try again in a few minutes.",
+];
+function friendlyTrouble(e) {
+  if (e && e.name === 'TypeError') return "The road to the Game Master is washed out. Check your connection, then try again.";
+  if (e && e.reason === 'room') return "The Game Master can't find this table in the ledger. Reopen the story with its code and try again.";
+  return GM_TROUBLE[Math.floor(Math.random() * GM_TROUBLE.length)];
+}
+
 // kind 'story' = a Game Master story turn: the server adds its GM playbook and looks up stat blocks
 // for any monsters named in `lore` (the recent log text).
 async function fetchGM(prompt, signal, kind, lore) {
@@ -1241,13 +1257,20 @@ async function fetchGM(prompt, signal, kind, lore) {
     body: JSON.stringify({ prompt, roomCode: ROOM, kind, lore, playerId: playerId() }),
     signal,
   });
-  const data = await resp.json();
+  let data = {};
+  try { data = await resp.json(); } catch (e) { /* a non-JSON error page; handled below */ }
   if (data.wallet) setWallet(data.wallet);
   if (data.outOfInk) {
     openShop(data.error);
-    throw new Error(data.error + ' Tap the ink badge at the top of the page to get more.');
+    const err = new Error(data.error + ' Tap the ink badge at the top of the page to get more.');
+    err.outOfInk = true;
+    throw err;
   }
-  if (!resp.ok || data.error) throw new Error(data.error || `Request failed (${resp.status})`);
+  if (!resp.ok || data.error) {
+    const err = new Error(data.error || `Request failed (${resp.status})`);
+    err.reason = data.reason || 'gm_down';
+    throw err;
+  }
   return data.text || '';
 }
 
@@ -1264,23 +1287,23 @@ async function callGM(prompt, fallbackEntry) {
       entry = { id: uid(6), author: 'The Ledger', type: 'system', text: 'Cancelled — ' + fallbackEntry };
     } else {
       console.error(e);
-      entry = { id: uid(6), author: 'The Ledger', type: 'system', text: `The GM could not be reached: ${e.message}` };
+      entry = { id: uid(6), author: 'The Ledger', type: 'system', text: e.outOfInk ? e.message : friendlyTrouble(e) };
     }
   } finally {
     GM_PENDING = false;
     GM_ABORT = null;
   }
-  const { clean, attacks, heals, gives, uses, damages, mapOps, defeats, successes, rests } = entry.type === 'gm' ? extractFoeAttacks(entry.text)
-    : { clean: entry.text, attacks: [], heals: [], gives: [], uses: [], damages: [], mapOps: [], defeats: [], successes: [], rests: [] };
+  const { clean, attacks, heals, gives, uses, damages, foesAdded, hits, mapOps, defeats, successes, rests } = entry.type === 'gm' ? extractFoeAttacks(entry.text)
+    : { clean: entry.text, attacks: [], heals: [], gives: [], uses: [], damages: [], foesAdded: [], hits: [], mapOps: [], defeats: [], successes: [], rests: [] };
   // A message that was nothing but directives has no story text of its own to log.
-  if (clean || !(attacks.length || heals.length || gives.length || uses.length || damages.length || mapOps.length || defeats.length || successes.length || rests.length)) {
+  if (clean || !(attacks.length || heals.length || gives.length || uses.length || damages.length || foesAdded.length || hits.length || mapOps.length || defeats.length || successes.length || rests.length)) {
     entry.text = clean || entry.text;
     await dbInsertLog(ROOM, entry);
     LOG.push({ ...entry, ts: Date.now() });
   }
   // Damage, healing and items change the sheet itself: save every character that changed.
   // XP is awarded before a rest, so a long rest in the same message can unlock a level-up.
-  const results = [resolveMapOps(mapOps), ...attacks.map(resolveFoeAttack), ...damages.map(resolveDamage), ...heals.map(resolveHeal), ...gives.map(resolveGive), ...uses.map(resolveUse),
+  const results = [resolveMapOps(mapOps), ...foesAdded.map(resolveFoe), ...attacks.map(resolveFoeAttack), ...hits.map(resolveHit), ...damages.map(resolveDamage), ...heals.map(resolveHeal), ...gives.map(resolveGive), ...uses.map(resolveUse),
     ...defeats.map(resolveDefeat), ...successes.map(resolveSuccess), ...rests.map(k => k === 'long' ? resolveLongRest() : resolveShortRest())];
   for (const r of results.filter(Boolean)) {
     const { hpChar, saveAll, saveMeta, ...result } = r;
@@ -1335,7 +1358,7 @@ function resolveMapOps(ops) {
   const notes = [];
   for (const op of ops) {
     const g = META.grid && META.grid.w ? META.grid : null;
-    if (op.kind === 'end-battle') { if (g) { META.grid = null; notes.push('the battle map is cleared'); } continue; }
+    if (op.kind === 'end-battle') { if (META.foes) META.foes = {}; if (g) { META.grid = null; notes.push('the battle map is cleared'); } continue; }
     if (op.kind === 'map') {
       const m = /(\d{1,2})\s*[x×]\s*(\d{1,2})/i.exec(op.body);
       const w = Math.min(MAP_MAX, Math.max(4, m ? parseInt(m[1]) : 12));
@@ -1346,16 +1369,17 @@ function resolveMapOps(ops) {
     }
     if (!g) continue;
     if (op.kind === 'place') {
-      const [who, at] = op.body.split('|').map(s => s.trim());
+      const [who, at, role] = op.body.split('|').map(s => s.trim());
       const p = parseSquare(at);
-      if (!who || !inBounds(g, p) || wallSet(g).has(sq(p.x, p.y))) continue;
+      if (!who) continue;
+      if (!inBounds(g, p) || wallSet(g).has(sq(p.x, p.y))) { notes.push(`couldn't place ${who} at ${at || '?'}`); continue; }
       const hero = findTarget(who);
       const heroId = hero ? charIdOf(hero) : null;
       const name = heroId ? hero.name : who.slice(0, 30);
       const other = tokenAt(g, p.x, p.y);
-      if (other && tokenKey(other.name) !== tokenKey(name)) continue; // square taken
+      if (other && tokenKey(other.name) !== tokenKey(name)) { notes.push(`couldn't move ${name} to ${sq(p.x, p.y)}: ${other.name} is there`); continue; }
       g.tokens = (g.tokens || []).filter(t => tokenKey(t.name) !== tokenKey(name));
-      g.tokens.push({ name, kind: heroId ? 'hero' : 'foe', charId: heroId || undefined, x: p.x, y: p.y });
+      g.tokens.push({ name, kind: heroId ? 'hero' : (/ally|friend/i.test(role || '') ? 'ally' : 'foe'), charId: heroId || undefined, x: p.x, y: p.y });
       notes.push(`${name} at ${sq(p.x, p.y)}`);
       continue;
     }
@@ -1394,7 +1418,7 @@ function mapPromptText() {
   if (!g) return 'Battle map: none right now. If a fight starts, set one up (see the battle map rules).';
   const toks = g.tokens || [];
   const heroes = toks.filter(t => t.kind === 'hero');
-  const foes = toks.filter(t => t.kind !== 'hero');
+  const foes = toks.filter(t => t.kind === 'foe');
   const lines = toks.map(t => `${t.name} (${t.kind}) at ${sq(t.x, t.y)}`);
   const dist = heroes.flatMap(h => foes.map(f => `${h.name} ↔ ${f.name}: ${feetBetween(h, f)} ft`));
   const unplaced = Object.values(ROSTER).filter(c => !heroes.some(h => tokenKey(h.name) === tokenKey(c.name))).map(c => c.name);
@@ -1419,7 +1443,7 @@ function reachable(g) {
   if (!me) return new Map();
   const steps = Math.floor((heroSpeed(ROSTER[MY_CHAR_ID]) - movedThisTurn(g)) / 5);
   const walls = wallSet(g);
-  const foes = new Set((g.tokens || []).filter(t => t.kind !== 'hero').map(t => `${t.x},${t.y}`));
+  const foes = new Set((g.tokens || []).filter(t => t.kind === 'foe').map(t => `${t.x},${t.y}`));
   const out = new Map();
   const seen = new Map([[`${me.x},${me.y}`, 0]]);
   let frontier = [me];
@@ -1460,13 +1484,13 @@ function renderMapTab() {
       const cls = ['map-cell'];
       if (walls.has(sq(x, y))) cls.push('map-wall');
       if (reach.has(k)) cls.push('map-reach');
-      if (t) cls.push(t.kind === 'hero' ? 'map-hero' : 'map-foe');
+      if (t) cls.push(t.kind === 'hero' ? 'map-hero' : t.kind === 'ally' ? 'map-ally' : 'map-foe');
       if (t && me && t === me) cls.push('map-me');
       const label = t ? escapeHtml(t.name.split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase()) : '';
       cells += `<button class="${cls.join(' ')}" onclick="mapTap(${x},${y})" title="${t ? escapeAttr(t.name) + ' — ' : ''}${sq(x, y)}">${label}</button>`;
     }
   }
-  const legend = (g.tokens || []).map(t => `<span class="map-key ${t.kind === 'hero' ? 'map-hero' : 'map-foe'}">${escapeHtml(t.name.split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase())}</span> ${escapeHtml(t.name)} <span class="helptext">${sq(t.x, t.y)}${me && t !== me ? ' · ' + feetBetween(me, t) + ' ft' : ''}</span>`).join('<br>');
+  const legend = (g.tokens || []).map(t => `<span class="map-key ${t.kind === 'hero' ? 'map-hero' : t.kind === 'ally' ? 'map-ally' : 'map-foe'}">${escapeHtml(t.name.split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase())}</span> ${escapeHtml(t.name)} <span class="helptext">${sq(t.x, t.y)}${me && t !== me ? ' · ' + feetBetween(me, t) + ' ft' : ''}${t.kind !== 'hero' && findFoe(t.name) ? ' · ' + findFoe(t.name).hp + '/' + findFoe(t.name).maxhp + ' HP' : ''}</span>`).join('<br>');
   const prevScroll = el('mapScroll') ? el('mapScroll').scrollLeft : null; // keep the view still across redraws
   body.innerHTML = `
     <div class="map-wrap">
@@ -1530,6 +1554,8 @@ const FOE_DIRECTIVE = /\[\[\s*foe-attack:([^\]]*)\]\]/gi;
 const HEAL_DIRECTIVE = /\[\[\s*heal:([^\]]*)\]\]/gi;
 const GIVE_DIRECTIVE = /\[\[\s*give:([^\]]*)\]\]/gi;
 const USE_DIRECTIVE = /\[\[\s*use:([^\]]*)\]\]/gi;
+const FOE_ADD_DIRECTIVE = /\[\[\s*foe:([^\]]*)\]\]/gi;
+const HIT_DIRECTIVE = /\[\[\s*hit:([^\]]*)\]\]/gi;
 const DAMAGE_DIRECTIVE = /\[\[\s*damage:([^\]]*)\]\]/gi;
 const DEFEAT_DIRECTIVE = /\[\[\s*defeat:([^\]]*)\]\]/gi;
 const SUCCESS_DIRECTIVE = /\[\[\s*success:([^\]]*)\]\]/gi;
@@ -1540,6 +1566,8 @@ function extractFoeAttacks(text) {
   const gives = [];
   const uses = [];
   const damages = [];
+  const foesAdded = [];
+  const hits = [];
   const mapOps = [];
   const defeats = [];
   const successes = [];
@@ -1560,6 +1588,14 @@ function extractFoeAttacks(text) {
     const p = body.split('|').map(s => s.trim());
     if (p.length >= 2 && p[1] && uses.length < 4) uses.push({ target: p[0], item: p[1].slice(0, 80) });
     return '';
+  }).replace(FOE_ADD_DIRECTIVE, (_, body) => {
+    const p = body.split('|').map(s => s.trim());
+    if (p[0] && foesAdded.length < 12) foesAdded.push({ target: p[0], hp: p[1] || '' });
+    return '';
+  }).replace(HIT_DIRECTIVE, (_, body) => {
+    const p = body.split('|').map(s => s.trim());
+    if (p[0] && hits.length < 6) hits.push({ target: p[0], hero: p[1] || '' });
+    return '';
   }).replace(MAP_DIRECTIVE, (_, kind, body) => {
     if (mapOps.length < 40) mapOps.push({ kind: kind.toLowerCase(), body: String(body || '').trim() });
     return '';
@@ -1579,7 +1615,7 @@ function extractFoeAttacks(text) {
     if (!rests.length) rests.push(kind.toLowerCase());
     return '';
   }).replace(/\n{3,}/g, '\n\n').trim();
-  return { clean, attacks, heals, gives, uses, damages, mapOps, defeats, successes, rests };
+  return { clean, attacks, heals, gives, uses, damages, foesAdded, hits, mapOps, defeats, successes, rests };
 }
 function findTarget(name) {
   const chars = Object.values(ROSTER);
@@ -1627,18 +1663,28 @@ function resolveFoeAttack(a) {
   const hit = crit || (natural !== 1 && total >= (parseInt(target.ac) || 10));
   let text = `${a.atk ? a.atk + ' → ' : ''}${target.name}: d20(${natural}) ${fmtMod(bonus)} = ${total} vs AC ${target.ac} — ${crit ? 'CRITICAL HIT' : hit ? 'HIT' : 'miss'}`;
   let hpChar;
+  let foeTouched = false;
   if (hit) {
     const dmg = rollSpec(dice, crit ? 2 : 1);
     text += `: ${dmg.total} damage (${dmg.text})`;
     if (target.enemy) {
-      text += ` — ${target.name}'s HP is the GM's to track`;
+      const foe = findFoe(target.name) || addFoe(target.name);
+      if (foe) {
+        const before = foe.hp;
+        foe.hp = Math.max(0, foe.hp - dmg.total);
+        text += ` — ${foe.name}: HP ${before} → ${foe.hp}/${foe.maxhp}${foe.hp === 0 ? ' (down!)' : ''}`;
+        foeTouched = true;
+        if (foe.hp === 0) text += ' ' + foeFell(foe).text;
+      } else {
+        text += ` — ${target.name}'s HP is the GM's to track`;
+      }
     } else {
       const { before, after, max } = changeHP(target, -dmg.total);
       hpChar = charIdOf(target);
       text += ` — ${target.name}: HP ${before} → ${after}/${max}${after === 0 ? ' (down!)' : ''}`;
     }
   }
-  return { id: uid(6), author: a.who, type: 'roll', text, hpChar };
+  return { id: uid(6), author: a.who, type: 'roll', text, hpChar, saveMeta: foeTouched, saveAll: foeTouched };
 }
 // Targets for damage and healing: one name, a list ("Brannoc, Sera half", "Brannoc and Sera"), or everyone
 // ("party", "all", "everyone"). A trailing "half" / "(half)" on a name means that character made their save.
@@ -1798,6 +1844,7 @@ ${MODE === 'solo' ? 'Character' : 'Party'}:
 ${party}
 
 ${mapPromptText()}
+${foesPromptText()}
 
 Recent table log:
 ${recent}
@@ -1814,7 +1861,8 @@ Roll resolution rules — follow these exactly:
 - For any d20 check or save, the bonus in your /roll command must be one of that character's Sheet modifiers listed above, and the command should name it, e.g. "/roll +3 Dexterity" or "/roll +7 Stealth". Never add a proficiency bonus, expertise, or any other bonus that isn't on the sheet. If the right skill or tool isn't listed, use the matching ability's modifier as-is (and say that's what you're using). Weapon attack rolls use the listed "Attack (STR)" or "Attack (DEX)" modifier, e.g. "/roll +5 Attack (DEX)". Damage rolls use dice notation for the weapon or spell, e.g. "/roll 1d8+3".
 - Players never roll for monsters. For each attack a foe makes, write it in the fiction and put this directive on its own line: [[foe-attack: Goblin B | scimitar | +4 | 1d6+2 | Telilin]] (attacker | attack name | to-hit bonus from its stat block | damage dice | the target's exact character name). When an ally NPC attacks an enemy, add the enemy's AC as a sixth field, e.g. [[foe-attack: Scout | longbow | +4 | 1d8+2 | Goblin A | AC 15]]; the result tells you what happened and you track the enemy's HP. The game rolls the attack against the target's AC and the damage if it hits, and posts the result to the log; use one directive per attack (max 4). Then stop: don't say whether it hit and don't state the AC. Narrate the outcome next turn, once the result is in the log. The game subtracts the damage from the target's HP itself, so never ask players to take it off their HP. For damage that isn't a foe's attack (a trap, a fall, poison, fire, a failed save), put [[damage: <their name> | <dice or a number> | <source>]] on its own line and the game rolls it and takes it off their HP; when a successful save halves it, ask for the save first and add "| half" if they made it. Area effects roll once for everyone: list every character caught in it and mark those who made their save, e.g. [[damage: Brannoc, Sera half | 8d6 | fireball]], or use "party" for everyone at the table. Healing that reaches several characters works the same way: [[heal: Brannoc, Sera | 1d4+3 | mass healing word]]. Players can't change their own HP, so never ask them to. For any healing (a potion, a spell) put [[heal: Telilin | 2d4+2 | potion of healing]] on its own line (the character's exact name | dice or a flat number | source); the game rolls it and raises their HP up to their maximum. One per healing, max 4. Never use [[heal]] to stabilise a dying character: stabilising (a healer's kit, a Medicine check, spare the dying) restores no HP, it only ends their death saves, so ask the player for a Medicine check (DC 10, or a healer's kit with no roll) and narrate them stable at 0 HP. When a player's own character is doing the healing (their spell or potion), ask that player to /roll it; once that roll is in the log, put [[heal: <their name> | <that roll's total> | <source>]] with the total as a plain number, and the game adds it. Never state anyone's new HP total yourself (the game posts it), and never work HP out from older log lines: a character's current HP is only the "HP x/y (current, from the sheet)" in the party list above.
 - Items: each character's inventory above is what they really carry. Items "written in by the player" were typed in by the player and never given in the story: they are NOT owned. If a player tries to use one, it isn't in their pack, and say so plainly. When the story gives a character an item (found, bought, looted, handed over), put [[give: <their name> | <item>]] on its own line and the game adds it. When a character uses up a consumable (drinks a potion, reads a scroll, spends a charge item), put [[use: <their name> | <item>]] on its own line and the game removes one. Max 4 of each per message.
-- Battle map: when a fight starts, lay out a map before the first attack: [[map: 12x10]] (columns A-L, rows 1-10; at most 20x20), then [[place: <name> | <square>]] for every hero and foe, and [[wall: D2-D5, H7]] for walls or heavy cover. On later turns move foes with [[place]], use [[remove: <name>]] when one flees, and [[end-battle]] when the fight is over. Players move their own heroes on the map, so never move a hero yourself unless the story forces it (a shove, a fall). Use the map's distances: a melee attack needs 5 ft (10 ft with reach); a ranged attack past normal range has disadvantage and can't go past long range; an area spell hits everyone within its radius of the square it's centred on. With no battle map, give each foe's distance in the Foes line, e.g. **Foes:** Goblin A 4/7 HP, 30 ft.
+- Battle map: when a fight starts, lay out a map before the first attack: [[map: 12x10]] (columns A-L, rows 1-10; at most 20x20), then [[place: <name> | <square>]] for every hero and foe (add "| ally" for a friendly NPC, e.g. [[place: Woman | E5 | ally]]), and [[wall: D2-D5, H7]] for walls or heavy cover. On later turns move foes with [[place]], use [[remove: <name>]] when one flees, and [[end-battle]] when the fight is over. Players move their own heroes on the map, so never move a hero yourself unless the story forces it (a shove, a fall). Use the map's distances: a melee attack needs 5 ft (10 ft with reach); a ranged attack past normal range has disadvantage and can't go past long range; an area spell hits everyone within its radius of the square it's centred on. With no battle map, give each foe's distance in the Foes line, e.g. **Foes:** Goblin A 4/7 HP, 30 ft.
+- Foe hit points belong to the game. When foes enter a fight, put [[foe: <name> | <hp>]] for each, with unique names (Goblin A, Goblin B); leave out the number for an SRD creature and the game uses its stat block. Never decide how much damage a hero deals: when a hero's attack hits, ask that player to /roll the damage, and once that roll is in the log put [[hit: <foe> | <hero>]]; the game takes exactly that roll off the foe. A hero's area spell works the same way: the player rolls the damage once, then [[hit: Goblin A, Goblin B half | <hero>]] (half for foes that made their save). [[damage]] is only for harm to heroes. The game posts each foe's HP and defeats it at 0 (no [[defeat]] needed then); copy its numbers into your Foes line.
 - XP, levels and rests are the game's job: never announce XP, levels or level-ups yourself. When the party kills or defeats a foe, put [[defeat: <creature>]] on its own line, one per creature (for a creature you invented, add its CR: [[defeat: Cave Wyrm | CR 2]]). When a character succeeds at a check you set a DC for, once their roll is in the log, put [[success: <their name> | <skill> | DC <n>]]. When the party actually rests in the story, put [[short-rest]] (about an hour) or [[long-rest]] (about 8 hours somewhere safe, at most once per in-game day) on its own line; the game restores HP and hit dice, so never use [[heal]] for a rest. A rest in danger gets interrupted instead.
 - Do not roll dice yourself or invent results under any circumstance.`;
 
@@ -1979,7 +2027,9 @@ async function onPortraitFile(input) {
     portraitPendingSince = 0;
   } catch (e) {
     console.error(e);
-    PORTRAIT_UPLOAD.error = 'Upload failed: ' + (e.message || e) + '. Try again.';
+    PORTRAIT_UPLOAD.error = e && e.name === 'TypeError'
+      ? "Your picture got lost on the road. Check your connection and try again."
+      : "The court painter fumbled your picture on the way to the gallery. Try again.";
   } finally {
     PORTRAIT_UPLOAD.busy = false;
     if (ROOM === room) render();
@@ -2244,7 +2294,7 @@ async function loadPackages() {
   } catch (e) {
     console.error(e);
     SHOP_PACKAGES = [];
-    SHOP_STATUS = 'Could not reach Google Play: ' + (e.message || e);
+    SHOP_STATUS = "The ink merchant's stall is closed right now. Try again in a few minutes.";
   }
   if (el('shopOverlay')) renderShop();
 }
@@ -2319,7 +2369,7 @@ async function buyPack(i) {
     let added = 0;
     for (let attempt = 0; attempt < 4 && !added; attempt++) {
       if (attempt) await new Promise(r => setTimeout(r, 1500 * attempt));
-      added = (await refreshWallet('redeem')).added || 0;
+      try { added = (await refreshWallet('redeem')).added || 0; } catch (e) { console.warn('redeem after purchase failed:', e.message); }
     }
     SHOP_STATUS = added ? `Added ${added} ink. Thank you!` : 'Your purchase went through. The ink will appear within a few minutes (reopen the app if it doesn\'t).';
     SHOP_REASON = '';
@@ -2327,7 +2377,7 @@ async function buyPack(i) {
     // Raw native errors (no RevenueCat JS wrapper here): code "1" is PURCHASE_CANCELLED.
     const d = (e && e.data) || {};
     const cancelled = e && (e.userCancelled || d.userCancelled || String(e.code) === '1' || String(d.code) === '1' || /cancel/i.test(String(e.message || '')));
-    SHOP_STATUS = cancelled ? 'Purchase cancelled.' : 'The purchase didn\'t go through: ' + (e.message || e);
+    SHOP_STATUS = cancelled ? 'Purchase cancelled.' : "The purchase didn't go through, and you weren't charged for anything you didn't receive. Try again in a moment.";
   } finally {
     SHOP_BUSY = false;
     renderShop();
@@ -2350,7 +2400,7 @@ async function useInkKey() {
     try { const P = await purchasesReady; await P.logIn({ appUserID: key }); } catch (e) { purchasesReady = null; }
   }
   SHOP_STATUS = 'This device now uses that ink key.';
-  try { await refreshWallet(IS_APP ? 'redeem' : 'balance'); } catch (e) { SHOP_STATUS = e.message; }
+  try { await refreshWallet(IS_APP ? 'redeem' : 'balance'); } catch (e) { SHOP_STATUS = "The ink ledger is being re-bound. Your balance will show in a few minutes."; }
   renderShop();
 }
 
@@ -2623,6 +2673,97 @@ function hitDieFor(klass) {
 }
 const profFor = lvl => 2 + Math.floor((Math.max(1, lvl) - 1) / 4);
 function levelUpGain(c) { return Math.max(1, hitDieFor(c.klass) / 2 + 1 + abilityMod(c.con)); }
+/* ---- foe hit points are kept by the game, not the GM ----
+   META.foes = { "goblin a (blade)": { name, hp, maxhp } }, shared live through the room like the map.
+   - [[foe: Goblin A | 7]] adds a foe; an SRD creature's HP comes from its stat block (srd-xp.js) if no number is given.
+   - [[hit: Goblin A, Goblin B half | Brannoc]] applies the HERO'S OWN damage roll: the game finds that hero's latest
+     unused, un-voided damage roll since the previous GM message and takes exactly its total off each foe (half for
+     foes marked half, as for a made save). No roll in the log, no damage. Players always roll their own damage.
+   - NPC allies' attacks ([[foe-attack]] with an AC) are rolled by the game and come off tracked foes too.
+   - At 0 HP a foe is defeated: XP is awarded and it leaves the map. */
+function creatureBase(name) {
+  return String(name || '').toLowerCase().replace(/\s*\([^)]*\)\s*/g, ' ').trim().replace(/^(the|a|an)\s+/, '').replace(/\s+(#?\d+|[a-z])$/, '').trim();
+}
+function srdHp(name) {
+  const t = window.SRD_HP || {};
+  const n = creatureBase(name);
+  return t[n] ?? t[n.replace(/s$/, '')] ?? t[n.replace(/es$/, '')];
+}
+function foeTable() { if (!META) return {}; if (!META.foes || typeof META.foes !== 'object') META.foes = {}; return META.foes; }
+function findFoe(name) {
+  const foes = foeTable();
+  const k = String(name || '').trim().toLowerCase();
+  if (!k) return null;
+  if (foes[k]) return foes[k];
+  const list = Object.values(foes);
+  return list.find(f => f.name.toLowerCase().replace(/\s*\([^)]*\)/g, '').trim() === k.replace(/\s*\([^)]*\)/g, '').trim())
+    || list.find(f => f.name.toLowerCase().startsWith(k) || k.startsWith(f.name.toLowerCase()))
+    || null;
+}
+function addFoe(name, hpText) {
+  const clean = String(name || '').trim().slice(0, 40);
+  if (!clean) return null;
+  const existing = findFoe(clean);
+  const given = parseInt(String(hpText || '').replace(/[^0-9]/g, ''));
+  const hp = Number.isFinite(given) && given > 0 ? Math.min(999, given) : srdHp(clean);
+  if (existing) { if (Number.isFinite(given) && given > 0) { existing.maxhp = hp; existing.hp = Math.min(existing.hp, hp); } return existing; }
+  if (!hp) return null;
+  const foe = { name: clean, hp, maxhp: hp };
+  foeTable()[clean.toLowerCase()] = foe;
+  return foe;
+}
+function dropFoe(foe) { const t = foeTable(); for (const k of Object.keys(t)) if (t[k] === foe) delete t[k]; }
+function foesPromptText() {
+  const list = Object.values(foeTable());
+  return list.length ? `Foes (hit points tracked by the game; copy these into your Foes line, never change them yourself): ${list.map(f => `${f.name} ${f.hp}/${f.maxhp} HP`).join(' · ')}` : 'Foes tracked by the game: none.';
+}
+// When a foe reaches 0: defeat it (XP, off the map) and fold that into the caller's log line.
+function foeFell(foe) {
+  dropFoe(foe);
+  return resolveDefeat({ target: foe.name, cr: '' });
+}
+// [[foe: Goblin A | 7]]
+function resolveFoe(f) {
+  const foe = addFoe(f.target, f.hp);
+  if (!foe) return { id: uid(6), author: 'The Ledger', type: 'system', text: `${f.target}: the game doesn't know its hit points, so give a number, e.g. [[foe: ${f.target} | 20]].` };
+  return { id: uid(6), author: 'The Ledger', type: 'system', text: `⚔ ${foe.name} joins the fight (${foe.hp}/${foe.maxhp} HP).`, saveMeta: true };
+}
+// [[hit: Goblin A, Goblin B half | Brannoc]]
+function resolveHit(h) {
+  const fail = text => ({ id: uid(6), author: 'The Ledger', type: 'system', text });
+  const hero = h.hero ? findTarget(h.hero) : (Object.keys(ROSTER).length === 1 ? Object.values(ROSTER)[0] : null);
+  if (!hero) return fail(`A hit on ${h.target} was called, but the game couldn't tell whose roll it was.`);
+  // The hero's newest damage roll since the GM message before this one (the current GM message is already in LOG).
+  const gmIdx = LOG.map((e, i) => e.type === 'gm' ? i : -1).filter(i => i >= 0);
+  const from = gmIdx.length >= 2 ? gmIdx[gmIdx.length - 2] + 1 : 0;
+  const used = new Set(Array.isArray(META.usedRolls) ? META.usedRolls : []);
+  const voided = rerollIds();
+  const roll = LOG.slice(from).filter(e => e.type === 'roll' && String(e.author).toLowerCase() === hero.name.toLowerCase()
+    && !/d20\(/.test(e.text) && !used.has(e.id) && !voided.has(e.id)).pop();
+  if (!roll) return fail(`No damage to ${h.target}: ${hero.name} hasn't rolled damage for it yet. Roll it with /roll (e.g. /roll 1d8+3).`);
+  const total = parseInt((/=\s*(-?\d+)/.exec(roll.text) || [])[1]);
+  if (!(total >= 0)) return fail(`No damage to ${h.target}: the game couldn't read ${hero.name}'s roll.`);
+  META.usedRolls = [...used, roll.id].slice(-100);
+  const parts = [];
+  const fell = [];
+  let saveAll = false;
+  for (let raw of String(h.target).split(/\s*(?:,|;|&|\band\b)\s*/i)) {
+    raw = raw.trim(); if (!raw) continue;
+    const half = /\s*\(?\bhalf\b\)?$/i.test(raw);
+    const name = raw.replace(/\s*\(?\bhalf\b\)?$/i, '').trim();
+    const foe = findFoe(name) || addFoe(name);
+    if (!foe) { parts.push(`${name}: not a foe the game is tracking`); continue; }
+    const dmg = half ? Math.floor(total / 2) : total;
+    const before = foe.hp;
+    foe.hp = Math.max(0, foe.hp - dmg);
+    parts.push(`${foe.name} ${dmg}${half ? ' (halved by the save)' : ''} — HP ${before} → ${foe.hp}/${foe.maxhp}${foe.hp === 0 ? ' (down!)' : ''}`);
+    if (foe.hp === 0) fell.push(foe);
+  }
+  let text = `🗡 ${hero.name}'s roll (${total}): ${parts.join('; ')}`;
+  for (const foe of fell) { const d = foeFell(foe); text += ` ${d.text}`; saveAll = saveAll || !!d.saveAll; }
+  return { id: uid(6), author: 'The Ledger', type: 'system', text, saveMeta: true, saveAll };
+}
+
 /* ---- levelling: XP earned in play, level-ups at a long rest ----
    Characters can't level just by pressing Advance Session. XP comes only from things the game can check:
    - kills: [[defeat: Goblin]] -> XP from the SRD monster list (srd-xp.js), split across the party.
@@ -2650,7 +2791,7 @@ function addXp(c, amount) {
 // XP for a creature by name: SRD table first ("Goblin B" -> goblin, "goblins" -> goblin), then a CR the GM gave.
 function creatureXp(name, crText) {
   const table = window.SRD_XP || {};
-  let n = String(name || '').toLowerCase().replace(/^(the|a|an)\s+/, '').replace(/\s+(#?\d+|[a-z])$/, '').trim();
+  let n = creatureBase(name);
   let xp = table[n] ?? table[n.replace(/s$/, '')] ?? table[n.replace(/es$/, '')];
   let cr = null;
   if (xp === undefined) {
@@ -2668,7 +2809,9 @@ function resolveDefeat(d) {
   const cs = Object.values(ROSTER);
   const { xp, known, capped } = creatureXp(d.target, d.cr);
   if (!known) { const off = removeTokenNamed(d.target); return sysEntry(`⚔ ${d.target} is defeated (no XP: the game doesn't know that creature's challenge rating).`, { saveMeta: off }); }
-  const offMap = removeTokenNamed(d.target);
+  const tracked = findFoe(d.target);
+  if (tracked) dropFoe(tracked);
+  const offMap = removeTokenNamed(d.target) || !!tracked;
   const each = Math.floor(xp / Math.max(cs.length, 1));
   const ready = [];
   cs.forEach(c => { if (addXp(c, each)) ready.push(c.name); });
@@ -2819,12 +2962,12 @@ async function saveHeroToMini(quiet) {
     const resp = await fetch(api('/api/hero-save'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true });
     const data = await resp.json().catch(() => ({}));
     if (resp.status === 429) { MINI_SAVE.again = true; MINI_SAVE.msg = quiet === true ? MINI_SAVE.msg : 'Saving to your mini in a few seconds...'; return; }
-    if (!resp.ok || data.error) throw new Error(data.error || `Request failed (${resp.status})`);
+    if (!resp.ok || data.error) throw new Error(data.error || "Your mini's record is out of reach right now. It'll save next time.");
     MINI_SAVE.msg = `Saved to your mini: level ${data.saved.level}, ${data.saved.maxhp} max HP, ${data.saved.items} item${data.saved.items === 1 ? '' : 's'}.` +
       (data.claimed ? ' This mini is now bound to your ink key.' : '');
   } catch (e) {
     console.warn('Saving to the mini failed:', e.message);
-    MINI_SAVE.msg = e.message;
+    MINI_SAVE.msg = e && e.name === 'TypeError' ? "Couldn't reach your mini's record. Check your connection; it'll save next time." : e.message;
   } finally {
     MINI_SAVE.busy = false;
     showSheet();

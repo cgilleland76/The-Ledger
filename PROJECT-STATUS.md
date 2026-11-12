@@ -21,6 +21,8 @@ Work from either Claude session starts here.
 - HP only changes through the game: no manual HP buttons. GM directives `[[damage]]` (traps, falls, saves; `| half`), `[[heal]]`, area effects with several targets or `party` rolled once, `[[give]]`/`[[use]]` items; typed-in items are marked and not owned.
 - XP from SRD kills (`[[defeat]]`, capped at party level) and verified skill rolls (`[[success]]`); `[[short-rest]]` (hit dice) and `[[long-rest]]` (full HP, unlocks Level Up). Level-ups need XP plus a long rest.
 - Battle map (Battle Map tab, `rooms.meta.grid`): GM uses `[[map]]`, `[[place]]`, `[[wall]]`, `[[remove]]`, `[[end-battle]]`; players tap to move within their speed per GM turn; the GM prompt gets squares and distances. With no map, the Foes line gives distances.
+- Foe HP is tracked by the game (`rooms.meta.foes`): `[[foe: name | hp]]` (SRD HP from `srd-xp.js` when no number), `[[hit: foe(s) | hero]]` applies the hero's own unused damage roll (half per foe for saves), NPC ally attacks are game-rolled, foes defeat at 0 with XP. `[[place: name | sq | ally]]` marks friendly NPCs.
+- GM and other failures show in-world messages to players; details go to the Netlify function log only.
 - Upload your own portrait on the Sheet tab (cropped to 640px square in the browser, stored in the `portraits` bucket, no ink).
 - Ink paywall is deployed but OFF (`BILLING_ENFORCED` unset). `billing.sql` and `tags-phase2.sql` have been run; `SUPABASE_SERVICE_ROLE_KEY` is set in Netlify. Google Play / RevenueCat (steps 7–10 in `ANDROID-APP.md`) are on hold until the owner is ready.
 
