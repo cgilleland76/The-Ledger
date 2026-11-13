@@ -4,7 +4,7 @@
 
 **Status:** Phase 1 code written and tested offline, with hero sheets locked after a tap. The `tags` table and 4 test tags are live in Supabase (2026-11-11). The app code still needs to be deployed.
 
-**One-liner:** 3D-printed minis and tokens with an NFC sticker in the base. Tap one to a phone and The Ledger brings that hero, monster or item into your game.
+**One-liner:** 3D-printed minis and tokens with an NFC sticker in the base. Tap one to a phone and The Ledger brings that hero or item into your game; monster minis are physical stand-ins for the foes the AI Game Master creates.
 
 ## Why this is worth doing
 - **No one else combines this.** AI game master apps (Friends & Fables, AI Dungeon) are software only. Doungim pairs an AI game master with physical minis, but uses a camera on a dedicated console (see Competitors). Older mini + app Kickstarters had no AI game master and are long gone. NFC on minis today mostly means "tap to see a stat card".
@@ -45,7 +45,7 @@ Rooms are capped at **20 total, and the oldest is evicted** (`MAX_TOTAL_ROOMS` i
 | Prefix | Tap it and… | Data |
 |---|---|---|
 | `h_` **Hero** | If you're at a table, join as this hero. If not, the app offers to start a solo story or join a code with them. | Name, race, class, level, stats, gear, appearance, portrait. Like an amiibo, the hero moves between campaigns. |
-| `m_` **Monster** | The game master's device adds that SRD monster to the scene and tells the AI it has appeared. | SRD monster name (already in `lib/srd-monsters.json`) |
+| `m_` **Monster** | A **stand-in only**: it never adds a monster. The AI Game Master decides every foe; when it brings one in, players set the matching mini on their grid. Tapping it shows the creature's card and, during a fight at your table, each matching foe's live HP and map square. (Decided 2026-11-12: player summoning would let players pick their own fights. Revisit only for an optional AI-less mode.) | SRD monster name (already in `lib/srd-monsters.json`) |
 | `i_` **Item / loot** | Adds the item to the tapping player's inventory and logs it. | Item name + description |
 | `k_` **Campaign keystone** (later) | Opens a long-running campaign that is **never evicted**. A premium item. | Pointer to a protected room |
 
@@ -112,7 +112,7 @@ Anyone can read and copy an NFC tag in seconds. Each kit therefore includes a **
 ## Build phases
 1. **Proof of concept (about 1 weekend).** `tags` table, a `/t/*` redirect, a `?tag=` handler for **hero** and **monster**, and 3 hand-written test minis. *Done when tapping a hero mini on two phones puts that hero into the same room.*
 2. **Kit-ready (about 1 week).** Item tags, ink-card redemption, hero progress saved back to the tag, an ID/CSV generator script, and a product page on thirdaxiscustoms.
-3. **In-person table mode.** One shared device acts as game master in the middle of the table, players roll physical dice and type results, and monster minis tapped to the table device appear in the scene. Kits become much more useful with this.
+3. **In-person table mode.** One shared device acts as game master in the middle of the table, players roll physical dice and type results, and monster minis stand on the shared grid for the foes the GM creates (tapping one shows its HP). Kits become much more useful with this.
 4. **Polish.** Android App Links, an in-app tag writer, campaign keystones (rooms that are never evicted), and a Kickstarter for a bigger kit run once sales prove demand.
 
 ## Risks / open questions

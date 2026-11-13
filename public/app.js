@@ -2449,7 +2449,7 @@ async function openTag(id) {
   const code = recallCurrentRoom();
   if (TAG && code) {
     const room = await dbGetRoom(code);
-    if (room) TAG_ROOM = { code, name: (room.meta && room.meta.name) || code };
+    if (room) TAG_ROOM = { code, name: (room.meta && room.meta.name) || code, meta: room.meta || {} };
     else forgetCurrentRoom();
   }
   if (VIEW === 'tag') render();
@@ -2477,7 +2477,7 @@ function renderTag() {
   else if (TAG_STATE === 'missing' || !TAG) body = `<h2>Unknown mini</h2><p class="helptext">This mini isn't linked to anything The Ledger knows about. If it came in a kit, contact support.</p>`;
   else if (TAG.kind === 'hero') { eyebrow = 'A Hero Answers'; body = tagHeroHTML(); }
   else if (TAG.kind === 'item') { eyebrow = 'Loot Found'; body = tagItemHTML(); }
-  else { eyebrow = 'A Foe Appears'; body = tagMonsterHTML(); }
+  else { eyebrow = 'Monster Mini'; body = tagMonsterHTML(); }
   el('app').innerHTML = `
     <div class="top-nav"><button class="link-btn" onclick="closeTag()">&larr; The Ledger</button></div>
     <div class="panel" style="max-width:520px;margin:0 auto;">
@@ -2598,40 +2598,42 @@ function tagHeroSolo() {
   startNewCampaign('solo');
 }
 
-/* ---- monster minis ---- */
+/* ---- monster minis: physical stand-ins only ----
+   The AI Game Master decides which foes appear; players never add monsters. A monster mini is a piece for
+   the real table: tapping it shows the creature's card and, if your table's current fight has any of that
+   creature, each one's live HP and map square (from the game's foe tracking). */
 function tagMonsterHTML() {
   const m = TAG.data || {};
+  const name = m.name || 'Unknown creature';
+  const hp = srdHp(name);
+  const meta = (TAG_ROOM && TAG_ROOM.meta) || {};
+  const base = creatureBase(name);
+  const live = Object.values(meta.foes || {}).filter(f => creatureBase(f.name) === base);
+  const tokens = (meta.grid && meta.grid.tokens) || [];
+  const where = f => { const t = tokens.find(t => t.name.toLowerCase() === f.name.toLowerCase()); return t ? ` · square ${sq(t.x, t.y)}` : ''; };
+  const fight = !TAG_ROOM ? `<p class="helptext">Join a table, then tap this mini during a fight to see its foes' hit points.</p>`
+    : live.length ? `<div class="field"><label>In ${escapeHtml(TAG_ROOM.name)} right now</label><ul class="hero-list">${live.map(f => `<li><b>${escapeHtml(f.name)}</b> ${f.hp}/${f.maxhp} HP${where(f)}</li>`).join('')}</ul></div>`
+    : `<p class="helptext">No ${escapeHtml(name)} in the fight at ${escapeHtml(TAG_ROOM.name)} right now.</p>`;
   return `
-    <h2>${escapeHtml(m.name || 'Unknown creature')}</h2>
-    ${m.cr ? `<p class="helptext">Challenge rating ${escapeHtml(String(m.cr))}</p>` : ''}
-    <p class="helptext">Summoning puts it into the scene. Everyone at the table sees it in the story log, and the Game Master gets its full stat block on the next turn.</p>
-    ${TAG_ROOM ? `<button class="btn solid wide" ${TAG_BUSY ? 'disabled' : ''} onclick="tagSummon('${escapeAttr(TAG_ROOM.code)}')">Summon into ${escapeHtml(TAG_ROOM.name)}</button>` : ''}
-    ${tagCodeRow(TAG_ROOM ? 'Or summon into another table' : 'Which table? Enter its room code', 'tagSummonCode()')}`;
+    <h2>${escapeHtml(name)}</h2>
+    <p class="helptext">${m.cr ? `Challenge rating ${escapeHtml(String(m.cr))}` : ''}${m.cr && hp ? ' &middot; ' : ''}${hp ? `${hp} hit points` : ''}</p>
+    <p class="hero-note">A stand-in for the real table: when the Game Master brings ${/^[aeiou]/i.test(name) ? 'an' : 'a'} ${escapeHtml(name)} into the story, set this mini on your grid. Tapping it never adds a monster; the GM decides who you fight.</p>
+    ${fight}
+    ${tagCodeRow(TAG_ROOM ? 'Check another table' : 'Check a table by its code', 'tagMonsterCheckCode()')}`;
 }
-async function tagSummon(code) {
-  code = String(code || '').trim().toUpperCase();
+async function tagMonsterCheckCode() {
+  const code = String(tagCodeInput() || '').trim().toUpperCase();
   if (!code || TAG_BUSY || !TAG) return;
   TAG_BUSY = true; TAG_MSG = ''; render();
   try {
     const room = await dbGetRoom(code);
     if (!room) { TAG_MSG = 'No campaign found with that code.'; return; }
-    const name = String((TAG.data && TAG.data.name) || 'creature').slice(0, 60);
-    const article = /^[aeiou]/i.test(name) ? 'An' : 'A';
-    await dbInsertLog(code, { id: uid(6), author: 'The Ledger', type: 'system', text: `⚔ ${article} ${name} enters the scene! (summoned by a mini)` });
-    // If this device has a character at that table, go straight to the game to watch it arrive.
-    if (recallCharacter(code)) {
-      const err = await enterRoom(code);
-      if (!err && VIEW === 'game') { TAG = null; return; }
-      VIEW = 'tag';
-    }
-    TAG_ROOM = { code, name: (room.meta && room.meta.name) || code };
-    TAG_MSG = `${article} ${name} has entered ${TAG_ROOM.name}. Ask the GM to continue the story and it will join the scene.`;
+    TAG_ROOM = { code, name: (room.meta && room.meta.name) || code, meta: room.meta || {} };
   } finally {
     TAG_BUSY = false;
     if (VIEW === 'tag') render();
   }
 }
-function tagSummonCode() { tagSummon(tagCodeInput()); }
 
 /* ---- loot minis (i_ tags) ----
    Tapping a loot coin puts its item into your character's inventory at your table. Each coin can be
@@ -3005,8 +3007,7 @@ window.closeTag = closeTag;
 window.tagHeroJoin = tagHeroJoin;
 window.tagHeroJoinCode = tagHeroJoinCode;
 window.tagHeroSolo = tagHeroSolo;
-window.tagSummon = tagSummon;
-window.tagSummonCode = tagSummonCode;
+window.tagMonsterCheckCode = tagMonsterCheckCode;
 
 /* ---------------- Boot ---------------- */
 if (checkConfigured()) {
