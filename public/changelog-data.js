@@ -8,6 +8,12 @@
 window.LEDGER_CHANGELOG = [
   {
     date: "2026-11-13",
+    type: "fix",
+    title: "Allies have hit points",
+    detail: "Friendly characters who fight beside you now have hit points the game tracks, shown in a new Allies list on the table display. Their attacks are rolled by the game like everyone else's, damage and healing reach them, and an ally who drops is down, not defeated."
+  },
+  {
+    date: "2026-11-13",
     type: "feature",
     title: "Sign in, private tables and My tables",
     detail: "Signing in is optional: we email you a link and a code, no password. Your ink, hero minis and tables then follow you to any device, even after clearing your browser. Tables you start while signed in are private: only players with the table's code can join, the host can make a new code at any time, and they're listed under My tables. Friends can still join without an account. Guest tables work as before, but are open to anyone with the code and can be removed when space is needed; the host can save one to their account to keep it."

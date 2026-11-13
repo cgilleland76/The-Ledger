@@ -93,7 +93,11 @@
   function draw() {
     const meta = room.meta || {};
     const g = meta.grid && meta.grid.w ? meta.grid : null;
-    const foes = Object.values(meta.foes || {});
+    const tracked = Object.values(meta.foes || {});
+    const foes = tracked.filter(f => !f.ally);
+    const allyNames = (g ? (g.tokens || []) : []).filter(t => t.kind === 'ally').map(t => t.name);
+    const allies = tracked.filter(f => f.ally);
+    for (const n of allyNames) if (!allies.some(a => String(a.name).toLowerCase() === String(n).toLowerCase())) allies.push({ name: n, hp: null });
     const heroes = chars.map(c => ({ ...(c.data || {}), id: c.id, img: safePortrait(c.portrait_url) }));
     const heroImg = name => { const h = heroes.find(h => String(h.name).toLowerCase() === String(name).toLowerCase()); return h ? h.img : ''; };
 
@@ -133,6 +137,7 @@
         <div class="stage${safeScene(room.scene_url) ? ' has-scene' : ''}" id="stage" style="${safeScene(room.scene_url) ? `background-image:url('${safeScene(room.scene_url)}')` : ''}">${stage}</div>
         <div class="side">
           <div class="card"><h2>The Party</h2>${heroes.map(h => hpRow(h.name, parseInt(h.hp) || 0, parseInt(h.maxhp) || 1, 'hero', h.img)).join('') || '<p class="hp">No heroes yet.</p>'}</div>
+          ${allies.length ? `<div class="card"><h2>Allies</h2>${allies.map(a => a.hp == null ? `<div class="row"><div class="dot ally"></div><div class="name">${esc(a.name)} <span class="hp">HP not tracked</span></div></div>` : hpRow(a.name, a.hp, a.maxhp, 'ally', '')).join('')}</div>` : ''}
           ${foes.length ? `<div class="card"><h2>Foes</h2>${foes.map(f => hpRow(f.name, f.hp, f.maxhp, 'foe', '')).join('')}</div>` : ''}
         </div>
       </div>`;

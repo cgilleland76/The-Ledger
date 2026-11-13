@@ -2237,7 +2237,9 @@ function resolveMapOps(ops) {
       const other = tokenAt(g, p.x, p.y);
       if (other && tokenKey(other.name) !== tokenKey(name)) { notes.push(`couldn't move ${name} to ${sq(p.x, p.y)}: ${other.name} is there`); continue; }
       g.tokens = (g.tokens || []).filter(t => tokenKey(t.name) !== tokenKey(name));
-      g.tokens.push({ name, kind: heroId ? 'hero' : (/ally|friend/i.test(role || '') ? 'ally' : 'foe'), charId: heroId || undefined, x: p.x, y: p.y });
+      const kind = heroId ? 'hero' : (/ally|friend/i.test(role || '') ? 'ally' : 'foe');
+      g.tokens.push({ name, kind, charId: heroId || undefined, x: p.x, y: p.y });
+      if (kind === 'ally' && !findFoe(name)) addFoe(name, '', true);
       notes.push(`${name} at ${sq(p.x, p.y)}`);
       continue;
     }
@@ -2463,7 +2465,7 @@ function extractFoeAttacks(text) {
     return '';
   }).replace(FOE_ADD_DIRECTIVE, (_, body) => {
     const p = body.split('|').map(s => s.trim());
-    if (p[0] && foesAdded.length < 12) foesAdded.push({ target: p[0], hp: p[1] || '' });
+    if (p[0] && foesAdded.length < 12) foesAdded.push({ target: p[0], hp: p[1] || '', ally: /ally|friend/i.test(p[2] || '') });
     return '';
   }).replace(HIT_DIRECTIVE, (_, body) => {
     const p = body.split('|').map(s => s.trim());
@@ -2571,7 +2573,8 @@ function parseTargets(spec) {
     if (!raw) continue;
     const half = /\s*\(?\bhalf\b\)?$/i.test(raw);
     const name = raw.replace(/\s*\(?\bhalf\b\)?$/i, '').trim();
-    const list = PARTY_WORDS.test(name) ? Object.values(ROSTER) : [findTarget(name)];
+    let list = PARTY_WORDS.test(name) ? Object.values(ROSTER) : [findTarget(name)];
+    if (!list[0]) { const a = findFoe(name); if (a && a.ally) list = [a]; }
     if (!list[0]) { missing.push(name); continue; }
     for (const c of list) { if (!seen.has(c)) { seen.add(c); out.push({ c, half }); } }
   }
@@ -2593,11 +2596,12 @@ function resolveDamage(d) {
     const { before, after, max } = changeHP(c, -dmg);
     return `${c.name} ${dmg}${halved ? ' (halved by the save)' : ''} — HP ${before} → ${after}/${max}${after === 0 ? ' (down!)' : ''}`;
   });
+  const allyHit = targets.some(({ c }) => c.ally);
   const rolled = dice.flat === undefined ? ` (${r.text} = ${r.total})` : '';
   const text = targets.length === 1
     ? `🩸 ${d.src} → ${parts[0].replace(/^(.+?) (\d+)/, `$1: $2 damage${dice.flat === undefined ? ' (' + r.text + ')' : ''}`)}`
     : `🩸 ${d.src}${rolled || ` (${r.total})`}: ${parts.join('; ')}`;
-  return { id: uid(6), author: 'The Ledger', type: 'system', text: text + (missing.length ? ` (couldn't find: ${missing.join(', ')})` : ''), saveAll: true };
+  return { id: uid(6), author: 'The Ledger', type: 'system', text: text + (missing.length ? ` (couldn't find: ${missing.join(', ')})` : ''), saveAll: true, saveMeta: allyHit };
 }
 // [[heal: Telilin | 2d4+2 | potion of healing]], [[heal: Brannoc, Sera | 1d4+3 | mass healing word]], [[heal: party | 10 | prayer]]
 // Rolled once (or a flat number) and applied to each target, up to their maximum.
@@ -2619,7 +2623,7 @@ function resolveHeal(h) {
   const text = targets.length === 1
     ? `${h.src} → ${targets[0].c.name}: heals ${r.total}${rolled} — ${parts[0].replace(/^.+? HP/, 'HP')}`
     : `${h.src}: heals ${r.total}${rolled} each — ${parts.join('; ')}`;
-  return { id: uid(6), author: 'The Ledger', type: 'system', text: text + (missing.length ? ` (couldn't find: ${missing.join(', ')})` : ''), saveAll: true };
+  return { id: uid(6), author: 'The Ledger', type: 'system', text: text + (missing.length ? ` (couldn't find: ${missing.join(', ')})` : ''), saveAll: true, saveMeta: targets.some(({ c }) => c.ally) };
 }
 
 // ---- items: what the story gave vs. what a player typed in ----
@@ -2737,7 +2741,7 @@ Roll resolution rules — follow these exactly:
 - Players never roll for monsters. For each attack a foe makes, write it in the fiction and put this directive on its own line: [[foe-attack: Goblin B | scimitar | +4 | 1d6+2 | Telilin]] (attacker | attack name | to-hit bonus from its stat block | damage dice | the target's exact character name). When an ally NPC attacks an enemy, add the enemy's AC as a sixth field, e.g. [[foe-attack: Scout | longbow | +4 | 1d8+2 | Goblin A | AC 15]]; the result tells you what happened and you track the enemy's HP. The game rolls the attack against the target's AC and the damage if it hits, and posts the result to the log; use one directive per attack (max 4). Then stop: don't say whether it hit and don't state the AC. Narrate the outcome next turn, once the result is in the log. The game subtracts the damage from the target's HP itself, so never ask players to take it off their HP. For damage that isn't a foe's attack (a trap, a fall, poison, fire, a failed save), put [[damage: <their name> | <dice or a number> | <source>]] on its own line and the game rolls it and takes it off their HP; when a successful save halves it, ask for the save first and add "| half" if they made it. Area effects roll once for everyone: list every character caught in it and mark those who made their save, e.g. [[damage: Brannoc, Sera half | 8d6 | fireball]], or use "party" for everyone at the table. Healing that reaches several characters works the same way: [[heal: Brannoc, Sera | 1d4+3 | mass healing word]]. Players can't change their own HP, so never ask them to. For any healing (a potion, a spell) put [[heal: Telilin | 2d4+2 | potion of healing]] on its own line (the character's exact name | dice or a flat number | source); the game rolls it and raises their HP up to their maximum. One per healing, max 4. Never use [[heal]] to stabilise a dying character: stabilising (a healer's kit, a Medicine check, spare the dying) restores no HP, it only ends their death saves, so ask the player for a Medicine check (DC 10, or a healer's kit with no roll) and narrate them stable at 0 HP. When a player's own character is doing the healing (their spell or potion), ask that player to /roll it; once that roll is in the log, put [[heal: <their name> | <that roll's total> | <source>]] with the total as a plain number, and the game adds it. Never state anyone's new HP total yourself (the game posts it), and never work HP out from older log lines: a character's current HP is only the "HP x/y (current, from the sheet)" in the party list above.
 - Items: each character's inventory above is what they really carry. Items "written in by the player" were typed in by the player and never given in the story: they are NOT owned. If a player tries to use one, it isn't in their pack, and say so plainly. When the story gives a character an item (found, bought, looted, handed over), put [[give: <their name> | <item>]] on its own line and the game adds it. When a character uses up a consumable (drinks a potion, reads a scroll, spends a charge item), put [[use: <their name> | <item>]] on its own line and the game removes one. Max 4 of each per message.
 - Battle map: when a fight starts, lay out a map before the first attack: [[map: 12x10]] (columns A-L, rows 1-10; at most 20x20), then [[place: <name> | <square>]] for every hero and foe (add "| ally" for a friendly NPC, e.g. [[place: Woman | E5 | ally]]), and [[wall: D2-D5, H7]] for walls or heavy cover. On later turns move foes with [[place]], use [[remove: <name>]] when one flees, and [[end-battle]] when the fight is over. Players move their own heroes on the map, so never move a hero yourself unless the story forces it (a shove, a fall). Use the map's distances: a melee attack needs 5 ft (10 ft with reach); a ranged attack past normal range has disadvantage and can't go past long range; an area spell hits everyone within its radius of the square it's centred on. With no battle map, give each foe's distance in the Foes line, e.g. **Foes:** Goblin A 4/7 HP, 30 ft.
-- Foe hit points belong to the game. When foes enter a fight, put [[foe: <name> | <hp>]] for each, with unique names (Goblin A, Goblin B); leave out the number for an SRD creature and the game uses its stat block. Never decide how much damage a hero deals: when a hero's attack hits, ask that player to /roll the damage, and once that roll is in the log put [[hit: <foe> | <hero>]]; the game takes exactly that roll off the foe. A hero's area spell works the same way: the player rolls the damage once, then [[hit: Goblin A, Goblin B half | <hero>]] (half for foes that made their save). [[damage]] is only for harm to heroes. The game posts each foe's HP and defeats it at 0 (no [[defeat]] needed then); copy its numbers into your Foes line.
+- Foe hit points belong to the game. When foes enter a fight, put [[foe: <name> | <hp>]] for each, with unique names (Goblin A, Goblin B); leave out the number for an SRD creature and the game uses its stat block. Never decide how much damage a hero deals: when a hero's attack hits, ask that player to /roll the damage, and once that roll is in the log put [[hit: <foe> | <hero>]]; the game takes exactly that roll off the foe. A hero's area spell works the same way: the player rolls the damage once, then [[hit: Goblin A, Goblin B half | <hero>]] (half for foes that made their save). [[damage]] is only for harm to heroes. The game posts each foe's HP and defeats it at 0 (no [[defeat]] needed then); copy its numbers into your Foes line. A friendly NPC who fights or can be hurt gets hit points the same way, marked as an ally: [[foe: Pell | 11 | ally]] (an SRD creature placed with "| ally" is tracked automatically). Foe attacks on an ally use [[foe-attack]] with the ally's AC as the sixth field; [[damage]] and [[heal]] work on allies by name. An ally at 0 HP is down, not defeated: never [[defeat]] an ally. Allies never land a blow in narration alone: when an ally NPC attacks (with a weapon, an improvised one, a shove or a spell), describe the attempt, put [[foe-attack: <ally> | <attack> | <to-hit> | <damage dice> | <enemy> | AC <enemy's AC>]] on its own line and stop; don't say it hit, and don't hurt, stun, daze or knock out the enemy until the result is in the log.
 - Field notes: when the party learns something worth remembering (a quest or task, a person and what they want, a place, a clue or piece of lore, how an encounter went, notable loot), put [[note: <Quests|People|Places|Clues|Encounters|Loot> | <one short sentence>]] on its own line; the game adds it to the party's journal. At most 3 per message, and don't repeat anything already in the field notes above.
 - XP, levels and rests are the game's job: never announce XP, levels or level-ups yourself. When the party kills or defeats a foe, put [[defeat: <creature>]] on its own line, one per creature (for a creature you invented, add its CR: [[defeat: Cave Wyrm | CR 2]]). When a character succeeds at a check you set a DC for, once their roll is in the log, put [[success: <their name> | <skill> | DC <n>]]. When the party actually rests in the story, put [[short-rest]] (about an hour) or [[long-rest]] (about 8 hours somewhere safe, at most once per in-game day) on its own line; the game restores HP and hit dice, so never use [[heal]] for a rest. A rest in danger gets interrupted instead.
 - Do not roll dice yourself or invent results under any circumstance.`;
@@ -3598,33 +3602,36 @@ function findFoe(name) {
     || list.find(f => f.name.toLowerCase().startsWith(k) || k.startsWith(f.name.toLowerCase()))
     || null;
 }
-function addFoe(name, hpText) {
+function addFoe(name, hpText, ally) {
   const clean = String(name || '').trim().slice(0, 40);
   if (!clean) return null;
   const existing = findFoe(clean);
   const given = parseInt(String(hpText || '').replace(/[^0-9]/g, ''));
   const hp = Number.isFinite(given) && given > 0 ? Math.min(999, given) : srdHp(clean);
-  if (existing) { if (Number.isFinite(given) && given > 0) { existing.maxhp = hp; existing.hp = Math.min(existing.hp, hp); } return existing; }
+  if (existing) { if (Number.isFinite(given) && given > 0) { existing.maxhp = hp; existing.hp = Math.min(existing.hp, hp); } if (ally) existing.ally = true; return existing; }
   if (!hp) return null;
-  const foe = { name: clean, hp, maxhp: hp };
+  const foe = { name: clean, hp, maxhp: hp, ...(ally ? { ally: true } : {}) };
   foeTable()[clean.toLowerCase()] = foe;
   return foe;
 }
 function dropFoe(foe) { const t = foeTable(); for (const k of Object.keys(t)) if (t[k] === foe) delete t[k]; }
 function foesPromptText() {
-  const list = Object.values(foeTable());
-  return list.length ? `Foes (hit points tracked by the game; copy these into your Foes line, never change them yourself): ${list.map(f => `${f.name} ${f.hp}/${f.maxhp} HP`).join(' · ')}` : 'Foes tracked by the game: none.';
+  const all = Object.values(foeTable());
+  const list = all.filter(f => !f.ally), allies = all.filter(f => f.ally);
+  return (list.length ? `Foes (hit points tracked by the game; copy these into your Foes line, never change them yourself): ${list.map(f => `${f.name} ${f.hp}/${f.maxhp} HP`).join(' · ')}` : 'Foes tracked by the game: none.')
+    + (allies.length ? `\nAllies (friendly NPCs; hit points tracked by the game): ${allies.map(f => `${f.name} ${f.hp}/${f.maxhp} HP${f.hp === 0 ? ' (down)' : ''}`).join(' · ')}` : '');
 }
 // When a foe reaches 0: defeat it (XP, off the map) and fold that into the caller's log line.
 function foeFell(foe) {
+  if (foe.ally) return { text: `${foe.name} is down!` };
   dropFoe(foe);
   return resolveDefeat({ target: foe.name, cr: '' });
 }
 // [[foe: Goblin A | 7]]
 function resolveFoe(f) {
-  const foe = addFoe(f.target, f.hp);
-  if (!foe) return { id: uid(6), author: 'The Ledger', type: 'system', text: `${f.target}: the game doesn't know its hit points, so give a number, e.g. [[foe: ${f.target} | 20]].` };
-  return { id: uid(6), author: 'The Ledger', type: 'system', text: `⚔ ${foe.name} joins the fight (${foe.hp}/${foe.maxhp} HP).`, saveMeta: true };
+  const foe = addFoe(f.target, f.hp, f.ally);
+  if (!foe) return { id: uid(6), author: 'The Ledger', type: 'system', text: `${f.target}: the game doesn't know its hit points, so give a number, e.g. [[foe: ${f.target} | 20${f.ally ? ' | ally' : ''}]].` };
+  return { id: uid(6), author: 'The Ledger', type: 'system', text: foe.ally ? `🛡 ${foe.name} fights alongside you (${foe.hp}/${foe.maxhp} HP).` : `⚔ ${foe.name} joins the fight (${foe.hp}/${foe.maxhp} HP).`, saveMeta: true };
 }
 // [[hit: Goblin A, Goblin B half | Brannoc]]
 function resolveHit(h) {
@@ -3704,6 +3711,8 @@ function creatureXp(name, crText) {
 }
 // [[defeat: Goblin]] — split the creature's XP across everyone at the table.
 function resolveDefeat(d) {
+  const ally = findFoe(d.target);
+  if (ally && ally.ally) return sysEntry(`${ally.name} is an ally, not a foe: no XP for that.`);
   const cs = Object.values(ROSTER);
   const { xp, known, capped } = creatureXp(d.target, d.cr);
   if (!known) { const off = removeTokenNamed(d.target); return sysEntry(`⚔ ${d.target} is defeated (no XP: the game doesn't know that creature's challenge rating).`, { saveMeta: off }); }
