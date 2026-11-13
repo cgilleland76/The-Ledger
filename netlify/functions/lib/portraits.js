@@ -77,21 +77,40 @@ async function checkImage(imageUrl, platform) {
   return { ok: true };
 }
 
-// Saves image bytes to portraits/<room>/<character>-<tag>-<time>.<ext> with the service-role key.
-// Returns the public URL, or throws.
-async function storePortrait(roomCode, characterId, bytes, contentType, tag) {
+const extFor = (contentType) => (contentType === "image/webp" ? "webp" : contentType === "image/png" ? "png" : "jpg");
+// Storage request with the service-role key (new sb_secret keys go in apikey; legacy JWT keys may need Authorization too).
+async function storageCall(method, bucket, objectPath, body, contentType) {
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!key) throw new Error("SUPABASE_SERVICE_ROLE_KEY is not set");
-  const ext = contentType === "image/webp" ? "webp" : contentType === "image/png" ? "png" : "jpg";
-  const objectPath = `${roomCode}/${characterId}-${tag}-${Date.now()}.${ext}`;
-  const url = `${SUPABASE_URL}/storage/v1/object/portraits/${objectPath}`;
-  const send = (headers) => fetch(url, { method: "POST", headers: { ...headers, "Content-Type": contentType, "x-upsert": "false" }, body: bytes });
-  let up = await send({ apikey: key });
-  if (up.status === 400 || up.status === 401 || up.status === 403) up = await send({ apikey: key, Authorization: `Bearer ${key}` });
+  const url = `${SUPABASE_URL}/storage/v1/object/${bucket}/${objectPath}`;
+  const extra = contentType ? { "Content-Type": contentType, "x-upsert": "false" } : {};
+  const send = (headers) => fetch(url, { method, headers: { ...headers, ...extra }, body });
+  let resp = await send({ apikey: key });
+  if (resp.status === 400 || resp.status === 401 || resp.status === 403) resp = await send({ apikey: key, Authorization: `Bearer ${key}` });
+  return resp;
+}
+// Saves image bytes to <bucket>/<objectPath> with the service-role key. Returns the public URL, or throws.
+async function storeImage(bucket, objectPath, bytes, contentType) {
+  const up = await storageCall("POST", bucket, objectPath, bytes, contentType);
   if (!up.ok) throw new Error(`storage upload failed (${up.status})`);
-  return `${SUPABASE_URL}/storage/v1/object/public/portraits/${objectPath}`;
+  return `${SUPABASE_URL}/storage/v1/object/public/${bucket}/${objectPath}`;
+}
+// Deletes a file we stored, given its public URL. Ignores URLs outside that bucket. Never throws.
+async function deleteImageByUrl(bucket, publicUrl) {
+  const prefix = `${SUPABASE_URL}/storage/v1/object/public/${bucket}/`;
+  if (typeof publicUrl !== "string" || !publicUrl.startsWith(prefix)) return false;
+  try {
+    const resp = await storageCall("DELETE", bucket, publicUrl.slice(prefix.length));
+    return resp.ok;
+  } catch (e) {
+    return false;
+  }
+}
+// Saves image bytes to portraits/<room>/<character>-<tag>-<time>.<ext>. Returns the public URL, or throws.
+async function storePortrait(roomCode, characterId, bytes, contentType, tag) {
+  return storeImage("portraits", `${roomCode}/${characterId}-${tag}-${Date.now()}.${extFor(contentType)}`, bytes, contentType);
 }
 
 const REJECTED_MESSAGE = "That picture can't be used. Try a different one.";
 
-module.exports = { PORTRAIT_MAX_RATING, ALWAYS_BLOCKED, checkImage, storePortrait, platformOf, REJECTED_MESSAGE };
+module.exports = { PORTRAIT_MAX_RATING, ALWAYS_BLOCKED, checkImage, storePortrait, storeImage, deleteImageByUrl, extFor, platformOf, REJECTED_MESSAGE };

@@ -13,7 +13,7 @@
 
 const { SUPABASE_URL } = require("./shared");
 
-const COSTS = { gm: 1, portrait: 8 };            // ink per GM reply / per portrait
+const COSTS = { gm: 1, portrait: 8, scene: 10 }; // ink per GM reply / portrait / AI scene background
 const DEFAULT_FREE_PER_MONTH = 40;
 
 // Must match the in-app product IDs created in Google Play Console (and attached in RevenueCat).

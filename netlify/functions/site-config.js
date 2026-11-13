@@ -8,6 +8,8 @@
 const EMAIL_RE = /^[^\s@<>"']+@[^\s@<>"']+\.[^\s@<>"']+$/;
 
 const { corsHeaders } = require("./lib/shared");
+const { sceneImagesEnabled, sceneMaxPerRoom } = require("./lib/scenes");
+const { COSTS, enforced } = require("./lib/billing");
 
 exports.handler = async function (event) {
   // Env var names are case-sensitive, so accept the casing it was likely entered with.
@@ -16,6 +18,8 @@ exports.handler = async function (event) {
   return {
     statusCode: 200,
     headers: { ...corsHeaders(event, "GET, OPTIONS"), "Content-Type": "application/json", "Cache-Control": "public, max-age=300" },
-    body: JSON.stringify({ supportEmail }),
+    // sceneImages: whether AI scene backgrounds are switched on (SCENE_IMAGES_ENABLED); the app hides
+    // the button when they aren't. The generation function checks the switch again itself.
+    body: JSON.stringify({ supportEmail, sceneImages: sceneImagesEnabled(), sceneMaxPerRoom: sceneMaxPerRoom(), sceneInk: enforced() ? COSTS.scene : 0 }),
   };
 };

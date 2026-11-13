@@ -76,6 +76,8 @@ gh repo create the-ledger --private --source=. --push
    - `ANTHROPIC_API_KEY` = your key from step 3
    - `OPENAI_API_KEY` = your OpenAI key (portraits only; without it the rest of the app works and Generate says portraits aren't enabled)
    - optional: `OPENAI_IMAGE_MODEL` (default `gpt-image-2.5-flare`) and `PORTRAIT_MAX_PER_ROOM` (default 10)
+   - optional: `PORTRAIT_MAX_RATING` (JSON) to change the portrait/scene content ceilings (website NC-17, Android R by default; see `netlify/functions/lib/portraits.js`)
+   - optional: `SCENE_IMAGES_ENABLED` = `true` turns on AI-painted scene backgrounds (off by default, so they cost nothing until you opt in; hosts then switch them on per table in Field Notes). `SCENE_MAX_PER_ROOM` (default 3) limits painted scenes per table. Uploading your own background works either way. Needs `supabase/scenes.sql` run once.
 4. Deploy. Netlify will build both the static site and the
    `netlify/functions/gm.js` function automatically.
 

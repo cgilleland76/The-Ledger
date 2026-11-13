@@ -38,6 +38,10 @@
   .bar > div { height: 100%; background: #2f6f5e; transition: width .4s; }
   .bar.low > div { background: var(--oxblood); }
   .hp { font-family: var(--font-display); font-size: 0.85em; color: var(--ink-dim); }
+  .stage.has-scene { background-size: cover; background-position: center; }
+  .stage.has-scene .cell:not(.tok):not(.wall) { background: rgba(255,250,235,0.18); border-color: rgba(40,25,10,0.35); }
+  .stage.has-scene .lbl { color: #fff6e0; text-shadow: 0 1px 3px rgba(0,0,0,0.9); }
+  .stage.has-scene .empty { color: #fff6e0; text-shadow: 0 2px 6px rgba(0,0,0,0.9); align-self: flex-end; }
   .empty { text-align: center; color: var(--ink-dim); font-style: italic; font-size: clamp(1.1rem, 3vh, 2rem); padding: 4vh; }
   .err { color: var(--cream); text-align: center; margin-top: 30vh; font-size: 1.4rem; }
   @media (max-aspect-ratio: 1/1) { .disp-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; } .side { flex-direction: row; flex-wrap: wrap; } .card { flex: 1 1 240px; } }
@@ -61,6 +65,8 @@
   }
   const sb = window.supabase.createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY);
   const PORTRAITS = cfg.SUPABASE_URL.replace(/\/$/, '') + '/storage/v1/object/public/portraits/';
+  const SCENES = cfg.SUPABASE_URL.replace(/\/$/, '') + '/storage/v1/object/public/scenes/';
+  const safeScene = u => typeof u === 'string' && u.startsWith(SCENES) && !/[\s"'<>()]/.test(u) ? u : '';
   const safePortrait = u => typeof u === 'string' && u.startsWith(PORTRAITS) && !/[\s"'<>()]/.test(u) ? u : '';
   const col = x => String.fromCharCode(65 + x);
   const initials = n => String(n || '?').split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase();
@@ -68,7 +74,7 @@
 
   async function load() {
     const [r, c] = await Promise.all([
-      sb.from('rooms').select('code, meta').eq('code', code).maybeSingle(),
+      sb.from('rooms').select('code, meta, scene_url').eq('code', code).maybeSingle(),
       sb.from('characters').select('id, data, portrait_url').eq('room_code', code),
     ]);
     if (!r.data) { root.innerHTML = `<p class="err">No campaign with the code ${esc(code)}.</p>`; return false; }
@@ -112,7 +118,7 @@
       }
       stage = `<div class="board" id="board" style="grid-template-columns: calc(var(--cell) * 0.6) repeat(${g.w}, var(--cell)); grid-template-rows: calc(var(--cell) * 0.6) repeat(${g.h}, var(--cell));">${cells}</div>`;
     } else {
-      stage = `<div class="empty">No battle right now.<br>The map appears here when a fight starts.</div>`;
+      stage = safeScene(room.scene_url) ? '' : `<div class="empty">No battle right now.<br>The map appears here when a fight starts.</div>`;
     }
 
     root.innerHTML = `
@@ -124,7 +130,7 @@
         </div>
       </div>
       <div class="disp-body">
-        <div class="stage" id="stage">${stage}</div>
+        <div class="stage${safeScene(room.scene_url) ? ' has-scene' : ''}" id="stage" style="${safeScene(room.scene_url) ? `background-image:url('${safeScene(room.scene_url)}')` : ''}">${stage}</div>
         <div class="side">
           <div class="card"><h2>The Party</h2>${heroes.map(h => hpRow(h.name, parseInt(h.hp) || 0, parseInt(h.maxhp) || 1, 'hero', h.img)).join('') || '<p class="hp">No heroes yet.</p>'}</div>
           ${foes.length ? `<div class="card"><h2>Foes</h2>${foes.map(f => hpRow(f.name, f.hp, f.maxhp, 'foe', '')).join('')}</div>` : ''}

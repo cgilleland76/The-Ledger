@@ -176,6 +176,7 @@ function subscribeRealtime(code) {
       const strip = m => JSON.stringify({ ...(m || {}), grid: null });
       const onlyMap = strip(META) === strip(r.meta);
       META = r.meta;
+      SCENE = sceneFromRow(r);
       if (VIEW !== 'game') return;
       if (onlyMap && ACTIVE_TAB !== 'map') {
         const tab = document.querySelector('.tab[onclick="setTab(\'map\')"]');
@@ -228,7 +229,10 @@ async function loadSiteConfig() {
   try {
     const resp = await fetch(api('/api/site-config'));
     if (!resp.ok) return;
-    const email = String((await resp.json()).supportEmail || '').trim();
+    const conf = await resp.json();
+    SITE = { sceneImages: conf.sceneImages === true, sceneMax: parseInt(conf.sceneMaxPerRoom) || 3, sceneInk: parseInt(conf.sceneInk) || 0 };
+    if (VIEW === 'game' && (ACTIVE_TAB === 'map' || ACTIVE_TAB === 'help')) render();
+    const email = String(conf.supportEmail || '').trim();
     if (!email || email === CONTACT_EMAIL) return;
     CONTACT_EMAIL = email;
     const app = el('app');
@@ -425,6 +429,7 @@ async function submitCreate() {
       session: 1,
       created: Date.now(),
       openingGenerated: false,
+      host: playerId(),
       ...(isTester() ? { tester: true } : {})
     };
     ROOM = code;
@@ -457,7 +462,7 @@ function renderJoin() {
 async function enterRoom(code) {
   const room = await dbGetRoom(code);
   if (!room) return "No campaign found with that code — double-check it with whoever created the room, or use the code shown when you paused.";
-  ROOM = code; META = room.meta; MODE = room.mode || 'group';
+  ROOM = code; META = room.meta; MODE = room.mode || 'group'; SCENE = sceneFromRow(room);
   ROSTER = rosterFromRows(await dbGetCharacters(code));
   LOG = logFromRows(await dbGetLog(code));
   let mine = recallCharacter(code);
@@ -1344,6 +1349,143 @@ function cancelGM() {
   if (GM_ABORT) GM_ABORT.abort();
 }
 
+/* ---------------- Scene backgrounds ----------------
+   One background per room, shown under the battle map (and on the /display page). It lives in the room's
+   scene_url / scene_status columns (not meta, which the app rewrites wholesale on every map move).
+   - Paint this scene (AI): needs the server switch (site-config.sceneImages), the room's opt-in
+     (META.sceneImages, set by the host in Field Notes), and the host; limited per room; costs ink once
+     billing is on. Runs in scene-background.js, progress arrives through scene_status.
+   - Upload your own background: host only, free, unlimited, works even with painting switched off.
+   Every picture is content-checked on the server before it's stored. */
+let SITE = { sceneImages: false, sceneMax: 3, sceneInk: 0 };
+let SCENE = null; // { url, status, at, count } from the room row
+const SCENE_URL_PREFIX = (cfg.SUPABASE_URL || '').replace(/\/$/, '') + '/storage/v1/object/public/scenes/';
+function sceneFromRow(r) { return r ? { url: r.scene_url || '', status: r.scene_status || '', at: r.scene_updated_at || '', count: r.scene_count || 0 } : null; }
+function safeSceneUrl(u) { return typeof u === 'string' && cfg.SUPABASE_URL && u.startsWith(SCENE_URL_PREFIX) && !/[\s"'<>()]/.test(u) ? u : ''; }
+function isRoomHost() { return !!META && (!META.host || META.host === playerId()); }
+const SCENE_UPLOAD = { busy: false, error: '' };
+let scenePaintRequested = 0;
+function scenePending() {
+  if (!SCENE) return false;
+  const fresh = SCENE.at && Date.now() - Date.parse(SCENE.at) < 4 * 60 * 1000;
+  return (SCENE.status === 'pending' && fresh) || (scenePaintRequested && Date.now() - scenePaintRequested < 20000 && SCENE.status !== 'ready' && !String(SCENE.status).startsWith('error:'));
+}
+function sceneControlsHTML() {
+  const host = isRoomHost();
+  const url = safeSceneUrl(SCENE && SCENE.url);
+  const status = SCENE ? SCENE.status : '';
+  const parts = [];
+  if (scenePending()) parts.push(`<p class="thinking">The painter is at work on the scene<span class="thinking-dots"><span>.</span><span>.</span><span>.</span></span></p>`);
+  else if (String(status).startsWith('error:')) parts.push(`<p class="error-text">${escapeHtml(status.slice(6))}</p>`);
+  if (host) {
+    const btns = [];
+    if (SITE.sceneImages && META.sceneImages === true) {
+      const used = (SCENE && SCENE.count) || 0;
+      const left = Math.max(0, SITE.sceneMax - used);
+      btns.push(`<button class="btn" ${scenePending() || !left ? 'disabled' : ''} onclick="paintScene()" title="${left} of ${SITE.sceneMax} painted scenes left for this table">&#x1F3A8; Paint this scene${SITE.sceneInk ? ` <span class="ink-cost">(${SITE.sceneInk} ink)</span>` : ''}</button>`);
+    }
+    btns.push(SCENE_UPLOAD.busy
+      ? `<span class="thinking">Uploading your background<span class="thinking-dots"><span>.</span><span>.</span><span>.</span></span></span>`
+      : `<button class="btn" onclick="pickSceneUpload()">Upload your own background</button><input type="file" id="sceneFile" accept="image/*" hidden onchange="onSceneFile(this)">`);
+    parts.push(`<div class="portrait-actions">${btns.join('')}</div>`);
+    if (SCENE_UPLOAD.error) parts.push(`<p class="error-text">${escapeHtml(SCENE_UPLOAD.error)}</p>`);
+    if (SITE.sceneImages && META.sceneImages !== true) parts.push(`<p class="helptext">To let the AI paint scenes here, switch it on in <b>Field Notes</b>.</p>`);
+    else if (SITE.sceneImages) parts.push(`<p class="helptext">${Math.max(0, SITE.sceneMax - ((SCENE && SCENE.count) || 0))} of ${SITE.sceneMax} painted scenes left for this table. Your own uploads are free and unlimited.</p>`);
+  } else if (!url) {
+    parts.push(`<p class="helptext">The table's host can set a scene background.</p>`);
+  }
+  return `<div class="scene-controls"><h3 style="font-size:1rem;margin:0 0 8px;">Scene</h3>${parts.join('')}</div>`;
+}
+function rerenderMap() { if (VIEW === 'game' && ACTIVE_TAB === 'map') renderMapTab(); }
+async function paintScene() {
+  if (!ROOM || scenePending()) return;
+  scenePaintRequested = Date.now();
+  if (SCENE) SCENE.status = '';
+  rerenderMap();
+  const body = JSON.stringify({ roomCode: ROOM, playerId: playerId(), platform: IS_APP ? 'android' : 'web' });
+  try {
+    // A background function answers 202 at once; progress arrives through the room's scene_status.
+    await fetch(api('/.netlify/functions/scene-background'), IS_APP
+      ? { method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain' }, body }
+      : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+    // Backup for realtime: re-read the room a few times while painting.
+    for (let i = 0; i < 24 && ROOM; i++) {
+      await new Promise(r => setTimeout(r, 5000));
+      const r = await dbGetRoom(ROOM);
+      if (r) { SCENE = sceneFromRow(r); rerenderMap(); }
+      if (SCENE && (SCENE.status === 'ready' || String(SCENE.status).startsWith('error:')) && Date.now() - scenePaintRequested > 6000) break;
+    }
+  } catch (e) {
+    console.error(e);
+  } finally {
+    scenePaintRequested = 0;
+    rerenderMap();
+  }
+}
+function pickSceneUpload() { SCENE_UPLOAD.error = ''; const f = el('sceneFile'); if (f) f.click(); }
+// Crops to a centred 16:9 frame, at most 1280x720, in the browser (also drops hidden photo data).
+async function sceneBlob(file) {
+  const img = await loadImageFile(file);
+  const w = img.width, h = img.height;
+  if (!w || !h) throw new Error('unreadable');
+  let sw = w, sh = Math.round(w * 9 / 16);
+  if (sh > h) { sh = h; sw = Math.round(h * 16 / 9); }
+  const ow = Math.min(1280, sw), oh = Math.round(ow * 9 / 16);
+  const canvas = document.createElement('canvas');
+  canvas.width = ow; canvas.height = oh;
+  canvas.getContext('2d').drawImage(img, (w - sw) / 2, (h - sh) / 2, sw, sh, 0, 0, ow, oh);
+  if (img.close) img.close();
+  let blob = await canvasBlob(canvas, 'image/webp', 0.82);
+  if (!blob || blob.type !== 'image/webp') blob = await canvasBlob(canvas, 'image/jpeg', 0.82);
+  if (!blob) throw new Error('unreadable');
+  return blob;
+}
+async function onSceneFile(input) {
+  const file = input.files && input.files[0];
+  input.value = '';
+  if (!file || !ROOM || SCENE_UPLOAD.busy) return;
+  if (!/^image\//.test(file.type)) { SCENE_UPLOAD.error = 'Choose a picture file (JPG, PNG or WebP).'; return rerenderMap(); }
+  const room = ROOM;
+  SCENE_UPLOAD.busy = true; SCENE_UPLOAD.error = ''; rerenderMap();
+  try {
+    const blob = await sceneBlob(file);
+    const image = await new Promise((resolve, reject) => { const fr = new FileReader(); fr.onload = () => resolve(fr.result); fr.onerror = () => reject(new Error('read failed')); fr.readAsDataURL(blob); });
+    const resp = await fetch(api('/api/scene-upload'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ roomCode: room, playerId: playerId(), platform: IS_APP ? 'android' : 'web', image }),
+    });
+    let data = {};
+    try { data = await resp.json(); } catch (e) { /* non-JSON error page */ }
+    if (data.reason === 'rejected' || data.reason === 'not_host') { SCENE_UPLOAD.error = data.error; return; }
+    if (!resp.ok || !data.url) throw new Error(data.reason || `HTTP ${resp.status}`);
+    SCENE = { ...(SCENE || {}), url: data.url, status: 'ready', at: new Date().toISOString() };
+  } catch (e) {
+    console.error(e);
+    SCENE_UPLOAD.error = e && e.name === 'TypeError'
+      ? 'Your background got lost on the road. Check your connection and try again.'
+      : 'The scene painter dropped your canvas on the way in. Try again.';
+  } finally {
+    SCENE_UPLOAD.busy = false;
+    if (ROOM === room) rerenderMap();
+  }
+}
+// Field Notes: the host switches AI scene painting on or off for this table.
+async function setSceneImages(on) {
+  if (!ROOM || !isRoomHost()) return;
+  const room = await dbGetRoom(ROOM);
+  if (!room) return;
+  META = room.meta || {};
+  META.sceneImages = !!on;
+  if (!META.host) META.host = playerId(); // older rooms: whoever switches it on becomes the host
+  await dbUpdateRoomMeta(ROOM, META);
+  if (VIEW === 'game' && ACTIVE_TAB === 'help') renderHelpTab();
+}
+window.paintScene = paintScene;
+window.pickSceneUpload = pickSceneUpload;
+window.onSceneFile = onSceneFile;
+window.setSceneImages = setSceneImages;
+
 /* ---------------- Battle map ----------------
    A square grid (1 square = 5 ft) kept in the room's meta.grid, so every player sees it live through the
    rooms realtime channel. The GM sets it up and moves foes with directives:
@@ -1497,7 +1639,9 @@ function renderMapTab() {
   const g = mapState();
   if (!g) {
     body.innerHTML = `<div class="panel" style="max-width:640px;"><h2>Battle map</h2><p class="helptext">No battle map right now. When a fight starts, the GM lays one out here: a grid of 5-foot squares with every hero and foe on it. In the meantime the GM gives each foe's distance in its <b>Foes</b> line.</p>
-      <p class="helptext">Playing around a table? Open the <b>table display</b> on a TV or laptop: it shows the map and everyone's HP, full screen, and updates live.</p>${displayLinkHTML()}</div>`;
+      <p class="helptext">Playing around a table? Open the <b>table display</b> on a TV or laptop: it shows the map and everyone's HP, full screen, and updates live.</p>${displayLinkHTML()}
+      ${safeSceneUrl(SCENE && SCENE.url) ? `<div class="scene-banner" style="background-image:url('${escapeAttr(safeSceneUrl(SCENE.url))}')"></div>` : ''}
+      ${sceneControlsHTML()}</div>`;
     return;
   }
   const me = myToken(g);
@@ -1524,12 +1668,13 @@ function renderMapTab() {
   const prevScroll = el('mapScroll') ? el('mapScroll').scrollLeft : null; // keep the view still across redraws
   body.innerHTML = `
     <div class="map-wrap">
-      <div class="map-scroll" id="mapScroll"><div class="map-grid" style="grid-template-columns:22px repeat(${g.w}, minmax(26px, 1fr));">${cells}</div></div>
+      <div class="map-scroll${safeSceneUrl(SCENE && SCENE.url) ? ' has-scene' : ''}" id="mapScroll" style="${safeSceneUrl(SCENE && SCENE.url) ? `background-image:url('${escapeAttr(safeSceneUrl(SCENE.url))}')` : ''}"><div class="map-grid" style="grid-template-columns:22px repeat(${g.w}, minmax(26px, 1fr));">${cells}</div></div>
       <div class="map-side">
         <p class="helptext">${me ? (MAP_SELECTED ? `Tap a highlighted square to move (${left} ft left this turn), or tap your hero again to cancel.` : `Tap your hero to move. ${left} ft of movement left this turn.`) : 'The GM will place your hero on the map.'} 1 square = 5 ft.</p>
         ${MAP_INFO ? `<p class="hero-note">${escapeHtml(MAP_INFO)}</p>` : ''}
         <div class="map-legend">${legend || '<span class="helptext">No tokens yet.</span>'}</div>
         <div style="margin-top:14px;">${displayLinkHTML()}</div>
+        ${sceneControlsHTML()}
       </div>
     </div>`;
   const box = el('mapScroll');
@@ -2200,6 +2345,9 @@ function renderHelpTab() {
         <li>In the GM's newest message, click the emoji beside an option to choose it, and click a <b>🎲 /roll</b> button to make that roll. Each can be used once.</li>
         <li>The <b>Roll from sheet</b> menu next to the message box lists your ability checks, skills, weapon attacks, and initiative — pick one and it fills in the right modifier and label for you. If a d20 roll uses a bonus higher than your sheet allows, the log tags it <b>⚠ unlisted modifier</b> so the table can see it (legit situational bonuses like Bless will trigger it too — just a heads-up, nothing is blocked).</li>
         <li>In a fight, the game rolls monster attacks and damage for you and posts the result in the log (damage comes off your HP automatically, and so does damage from traps and falls; healing comes from potions, spells and rests, and HP can't be changed by hand). The GM keeps a <b>Foes</b> line with each monster's hit points at the end of its messages.</li>
+        ${SITE.sceneImages ? `<li><b>Painted scenes:</b> the AI can paint the current scene as a background for the battle map and the table display (up to ${SITE.sceneMax} per table${SITE.sceneInk ? `, ${SITE.sceneInk} ink each` : ''}). ${isRoomHost()
+          ? `<label style="cursor:pointer;display:block;margin-top:6px;"><input type="checkbox" ${META && META.sceneImages === true ? 'checked' : ''} onchange="setSceneImages(this.checked)"> Let the AI paint scenes at this table</label>`
+          : `It's ${META && META.sceneImages === true ? 'on' : 'off'} at this table; the host decides.`}</li>` : ''}
         <li><b>Battle map:</b> when a fight starts the GM lays out a grid on the <b>Battle Map</b> tab (1 square = 5 ft) with every hero and foe. Tap your hero, then a highlighted square, to move; you can move up to your speed each turn (30 ft for most, 25 ft for dwarves, halflings and gnomes). Tap anything to see how far away it is.</li>
         <li><b>XP and levels:</b> you earn XP for defeating foes (shared by the table) and for checks you pass against a DC with a real roll. Once you have enough XP, <b>Level Up</b> unlocks on Your Sheet after a <b>long rest</b>. A <b>short rest</b> lets you spend hit dice there to heal.</li>
         <li><label style="cursor:pointer;"><input type="checkbox" ${diceAnimOn() ? 'checked' : ''} onchange="setDiceAnim(this.checked)"> Show the dice-rolling popup when you roll (click it to dismiss early)</label></li>
