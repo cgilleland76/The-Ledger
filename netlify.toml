@@ -16,3 +16,9 @@
 [dev]
   publish = "public"
   functions = "netlify/functions"
+
+# Second-screen table display for a TV or monitor: /display?room=CODE (query string passes through).
+[[redirects]]
+  from = "/display"
+  to = "/display.html"
+  status = 200

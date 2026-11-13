@@ -1487,11 +1487,17 @@ function reachable(g) {
   }
   return out;
 }
+// Opens /display?room=CODE: a read-only, live, full-screen view of the map and HP for a TV or second monitor.
+function displayLinkHTML() {
+  const href = `${IS_APP ? API_BASE : ''}/display?room=${encodeURIComponent(ROOM || '')}`;
+  return `<a class="btn" href="${escapeAttr(href)}" target="_blank" rel="noopener" title="Open this on a TV, laptop or second monitor; it updates live">&#x1F4FA; Table display</a>`;
+}
 function renderMapTab() {
   const body = el('tabBody');
   const g = mapState();
   if (!g) {
-    body.innerHTML = `<div class="panel" style="max-width:640px;"><h2>Battle map</h2><p class="helptext">No battle map right now. When a fight starts, the GM lays one out here: a grid of 5-foot squares with every hero and foe on it. In the meantime the GM gives each foe's distance in its <b>Foes</b> line.</p></div>`;
+    body.innerHTML = `<div class="panel" style="max-width:640px;"><h2>Battle map</h2><p class="helptext">No battle map right now. When a fight starts, the GM lays one out here: a grid of 5-foot squares with every hero and foe on it. In the meantime the GM gives each foe's distance in its <b>Foes</b> line.</p>
+      <p class="helptext">Playing around a table? Open the <b>table display</b> on a TV or laptop: it shows the map and everyone's HP, full screen, and updates live.</p>${displayLinkHTML()}</div>`;
     return;
   }
   const me = myToken(g);
@@ -1523,6 +1529,7 @@ function renderMapTab() {
         <p class="helptext">${me ? (MAP_SELECTED ? `Tap a highlighted square to move (${left} ft left this turn), or tap your hero again to cancel.` : `Tap your hero to move. ${left} ft of movement left this turn.`) : 'The GM will place your hero on the map.'} 1 square = 5 ft.</p>
         ${MAP_INFO ? `<p class="hero-note">${escapeHtml(MAP_INFO)}</p>` : ''}
         <div class="map-legend">${legend || '<span class="helptext">No tokens yet.</span>'}</div>
+        <div style="margin-top:14px;">${displayLinkHTML()}</div>
       </div>
     </div>`;
   const box = el('mapScroll');

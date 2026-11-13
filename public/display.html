@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Table Display — The Ledger</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;500;600;700&family=Cinzel+Decorative:wght@700&family=Crimson+Pro:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<style>
+  /* A read-only second screen for a TV or monitor: the room's battle map, filling the screen, plus HP. */
+  html, body { height: 100%; }
+  body { overflow: hidden; }
+  .disp { position: relative; z-index: 1; height: 100vh; display: grid; grid-template-rows: auto minmax(0, 1fr); padding: 2vh 2vw; box-sizing: border-box; gap: 1.6vh; }
+  .disp-head { display: flex; align-items: baseline; justify-content: space-between; gap: 2vw; color: var(--cream); }
+  .disp-head h1 { margin: 0; font-family: var(--font-display); font-size: clamp(1.4rem, 3.2vh, 2.6rem); letter-spacing: 0.06em; }
+  .disp-head .meta { font-family: var(--font-display); font-size: clamp(0.8rem, 1.8vh, 1.2rem); letter-spacing: 0.14em; text-transform: uppercase; color: var(--gold); }
+  .disp-head button { font-family: var(--font-display); font-size: 0.75rem; letter-spacing: 0.12em; text-transform: uppercase; background: transparent; color: var(--gold); border: 1px solid var(--gold-dim); border-radius: 3px; padding: 6px 12px; cursor: pointer; }
+  .disp-body { display: grid; grid-template-columns: minmax(0, 1fr) clamp(220px, 22vw, 420px); gap: 2vw; min-height: 0; }
+  .stage { min-height: 0; display: flex; align-items: center; justify-content: center; border-radius: 4px;
+    background: var(--grain), linear-gradient(172deg, var(--paper-hi), var(--paper) 60%, var(--paper-lo)); border: 1px solid var(--gold-dim); padding: 1.5vh; box-sizing: border-box; }
+  .board { display: grid; gap: 2px; }
+  .lbl { font-family: var(--font-display); color: var(--ink-dim); display: flex; align-items: center; justify-content: center; font-size: calc(var(--cell) * 0.32); }
+  .cell { width: var(--cell); height: var(--cell); box-sizing: border-box; border: 1px solid rgba(139,104,50,0.45); border-radius: 2px; background: rgba(255,250,235,0.55);
+    display: flex; align-items: center; justify-content: center; font-family: var(--font-display); font-weight: 700; font-size: calc(var(--cell) * 0.34); color: #f3e6c6; transition: background .3s; }
+  .wall { background: #5b4a37; border-color: #3f3226; }
+  .tok { border-radius: 50%; border-width: 2px; background-size: cover; background-position: center; text-shadow: 0 1px 2px rgba(0,0,0,0.7); }
+  .hero { background-color: #2f6f5e; border-color: #1f4f43; }
+  .ally { background-color: #3b5f8a; border-color: #28425f; }
+  .foe { background-color: var(--oxblood); border-color: #4e1712; }
+  .side { min-height: 0; overflow: hidden; display: flex; flex-direction: column; gap: 1.6vh; }
+  .card { border-radius: 4px; padding: 1.4vh 1.2vw; color: var(--ink); background: var(--grain), linear-gradient(172deg, var(--paper-hi), var(--paper)); border: 1px solid var(--gold-dim); }
+  .card h2 { margin: 0 0 1vh; font-family: var(--font-display); font-size: clamp(0.8rem, 1.8vh, 1.15rem); letter-spacing: 0.16em; text-transform: uppercase; color: var(--oxblood); }
+  .row { display: grid; grid-template-columns: auto 1fr; gap: 0.4vh 0.8vw; align-items: center; margin-bottom: 1.1vh; font-size: clamp(0.9rem, 2vh, 1.35rem); }
+  .dot { width: clamp(18px, 2.6vh, 34px); height: clamp(18px, 2.6vh, 34px); border-radius: 50%; grid-row: span 2; background-size: cover; background-position: center; }
+  .name { font-weight: 600; line-height: 1.15; }
+  .bar { height: clamp(6px, 0.9vh, 12px); border-radius: 2px; background: rgba(0,0,0,0.12); overflow: hidden; position: relative; }
+  .bar > div { height: 100%; background: #2f6f5e; transition: width .4s; }
+  .bar.low > div { background: var(--oxblood); }
+  .hp { font-family: var(--font-display); font-size: 0.85em; color: var(--ink-dim); }
+  .empty { text-align: center; color: var(--ink-dim); font-style: italic; font-size: clamp(1.1rem, 3vh, 2rem); padding: 4vh; }
+  .err { color: var(--cream); text-align: center; margin-top: 30vh; font-size: 1.4rem; }
+  @media (max-aspect-ratio: 1/1) { .disp-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; } .side { flex-direction: row; flex-wrap: wrap; } .card { flex: 1 1 240px; } }
+</style>
+</head>
+<body>
+<div class="fog"></div>
+<div class="disp" id="disp"><p class="err">Opening the table display...</p></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="config.js"></script>
+<script>
+(function () {
+  const cfg = window.LEDGER_CONFIG || {};
+  const root = document.getElementById('disp');
+  const code = (new URLSearchParams(location.search).get('room') || '').trim().toUpperCase();
+  const esc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  if (!/^[A-Z0-9]{3,10}$/.test(code) || !window.supabase || !cfg.SUPABASE_URL) {
+    root.innerHTML = '<p class="err">Open this page from a game: Battle Map tab &rarr; Table display.</p>';
+    return;
+  }
+  const sb = window.supabase.createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY);
+  const PORTRAITS = cfg.SUPABASE_URL.replace(/\/$/, '') + '/storage/v1/object/public/portraits/';
+  const safePortrait = u => typeof u === 'string' && u.startsWith(PORTRAITS) && !/[\s"'<>()]/.test(u) ? u : '';
+  const col = x => String.fromCharCode(65 + x);
+  const initials = n => String(n || '?').split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase();
+  let room = null, chars = [];
+
+  async function load() {
+    const [r, c] = await Promise.all([
+      sb.from('rooms').select('code, meta').eq('code', code).maybeSingle(),
+      sb.from('characters').select('id, data, portrait_url').eq('room_code', code),
+    ]);
+    if (!r.data) { root.innerHTML = `<p class="err">No campaign with the code ${esc(code)}.</p>`; return false; }
+    room = r.data; chars = c.data || [];
+    draw();
+    return true;
+  }
+
+  function hpRow(name, hp, max, cls, img) {
+    const pct = max ? Math.max(0, Math.min(100, Math.round(hp / max * 100))) : 0;
+    return `<div class="row"><div class="dot ${cls}" style="${img ? `background-image:url('${img}')` : ''}"></div>
+      <div class="name">${esc(name)} <span class="hp">${hp}/${max}</span></div>
+      <div class="bar ${pct <= 30 ? 'low' : ''}"><div style="width:${pct}%"></div></div></div>`;
+  }
+
+  function draw() {
+    const meta = room.meta || {};
+    const g = meta.grid && meta.grid.w ? meta.grid : null;
+    const foes = Object.values(meta.foes || {});
+    const heroes = chars.map(c => ({ ...(c.data || {}), id: c.id, img: safePortrait(c.portrait_url) }));
+    const heroImg = name => { const h = heroes.find(h => String(h.name).toLowerCase() === String(name).toLowerCase()); return h ? h.img : ''; };
+
+    let stage;
+    if (g) {
+      const walls = new Set(g.walls || []);
+      const at = {};
+      for (const t of g.tokens || []) at[t.x + ',' + t.y] = t;
+      let cells = '<div></div>';
+      for (let x = 0; x < g.w; x++) cells += `<div class="lbl">${col(x)}</div>`;
+      for (let y = 0; y < g.h; y++) {
+        cells += `<div class="lbl">${y + 1}</div>`;
+        for (let x = 0; x < g.w; x++) {
+          const t = at[x + ',' + y];
+          if (t) {
+            const img = t.kind === 'hero' ? heroImg(t.name) : '';
+            cells += `<div class="cell tok ${t.kind === 'hero' ? 'hero' : t.kind === 'ally' ? 'ally' : 'foe'}" title="${esc(t.name)}" style="${img ? `background-image:url('${img}')` : ''}">${img ? '' : esc(initials(t.name))}</div>`;
+          } else {
+            cells += `<div class="cell${walls.has(col(x) + (y + 1)) ? ' wall' : ''}"></div>`;
+          }
+        }
+      }
+      stage = `<div class="board" id="board" style="grid-template-columns: calc(var(--cell) * 0.6) repeat(${g.w}, var(--cell)); grid-template-rows: calc(var(--cell) * 0.6) repeat(${g.h}, var(--cell));">${cells}</div>`;
+    } else {
+      stage = `<div class="empty">No battle right now.<br>The map appears here when a fight starts.</div>`;
+    }
+
+    root.innerHTML = `
+      <div class="disp-head">
+        <h1>${esc(meta.name || 'The Ledger')}</h1>
+        <div style="display:flex;gap:1.5vw;align-items:center;">
+          <span class="meta">Session ${esc(meta.session || 1)}${g ? ' &middot; 1 square = 5 ft' : ''}</span>
+          <button id="fs" title="Fill the screen">Full screen</button>
+        </div>
+      </div>
+      <div class="disp-body">
+        <div class="stage" id="stage">${stage}</div>
+        <div class="side">
+          <div class="card"><h2>The Party</h2>${heroes.map(h => hpRow(h.name, parseInt(h.hp) || 0, parseInt(h.maxhp) || 1, 'hero', h.img)).join('') || '<p class="hp">No heroes yet.</p>'}</div>
+          ${foes.length ? `<div class="card"><h2>Foes</h2>${foes.map(f => hpRow(f.name, f.hp, f.maxhp, 'foe', '')).join('')}</div>` : ''}
+        </div>
+      </div>`;
+    document.getElementById('fs').onclick = () => { const d = document.documentElement; if (d.requestFullscreen) d.requestFullscreen().catch(() => {}); };
+    fit();
+  }
+
+  // Size the squares so the whole map fits the stage, whatever the screen.
+  function fit() {
+    const stage = document.getElementById('stage'), board = document.getElementById('board');
+    const g = room && room.meta && room.meta.grid;
+    if (!stage || !board || !g || !g.w) return;
+    const pad = 24;
+    const cell = Math.floor(Math.min((stage.clientWidth - pad) / (g.w + 0.6), (stage.clientHeight - pad) / (g.h + 0.6))) - 2;
+    board.style.setProperty('--cell', Math.max(14, cell) + 'px');
+  }
+  window.addEventListener('resize', fit);
+
+  load().then(ok => {
+    if (!ok) return;
+    // Live updates: map, foes and session from the room; HP and portraits from the characters.
+    sb.channel('display-' + code)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'rooms', filter: `code=eq.${code}` }, load)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'characters', filter: `room_code=eq.${code}` }, load)
+      .subscribe();
+    // Backup in case the realtime connection drops (TVs sleep, Wi-Fi blips).
+    setInterval(load, 20000);
+  });
+})();
+</script>
+</body>
+</html>
