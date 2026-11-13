@@ -33,12 +33,15 @@ function corsHeaders(event, methods = "POST, OPTIONS") {
 const ROOM_CODE_RE = /^[A-Z0-9]{3,10}$/i;
 
 // Minimal PostgREST helper. `path` is e.g. "rooms?code=eq.ABC12&select=code".
+// Uses the service-role key when the server has it: account (private) tables are hidden from the public
+// key by their row rules, and the functions check room codes and players themselves.
 async function sbRest(path, { method = "GET", body, headers = {} } = {}) {
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || SUPABASE_ANON_KEY;
   const resp = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     method,
     headers: {
-      apikey: SUPABASE_ANON_KEY,
-      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      apikey: key,
+      ...(key === SUPABASE_ANON_KEY || key.startsWith("eyJ") ? { Authorization: `Bearer ${key}` } : {}),
       ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
       ...(method !== "GET" ? { Prefer: "return=minimal" } : {}),
       ...headers,

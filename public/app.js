@@ -43,7 +43,7 @@ const el = id => document.getElementById(id);
 // picking from 32 slots used to produce an empty character about 1 time in 32 (short codes/IDs).
 const ID_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789";
 const uid = (n = 8) => Array.from({ length: n }, () => ID_ALPHABET[Math.floor(Math.random() * ID_ALPHABET.length)]).join('');
-const roomCode = () => uid(5).toUpperCase();
+const roomCode = () => uid(8).toUpperCase(); // older rooms have 5-character codes; both work
 
 /* ---------------- Android app + ink (the paywall) ----------------
    In the Android app (Capacitor) the pages are bundled inside the app, so server calls go to the
@@ -69,6 +69,19 @@ function playerId() {
     return memoryPlayerId || (memoryPlayerId = newPlayerId());
   }
 }
+
+// Table hosts are stored as a hash of the ink key (rooms are readable by everyone at the table).
+let MY_HASH = { key: '', hash: '' };
+async function refreshMyHash() {
+  const key = playerId();
+  try {
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(key));
+    MY_HASH = { key, hash: Array.from(new Uint8Array(buf), b => b.toString(16).padStart(2, '0')).join('') };
+  } catch (e) { MY_HASH = { key, hash: '' }; }
+  return MY_HASH.hash;
+}
+const myHostId = () => (MY_HASH.key === playerId() && MY_HASH.hash) || playerId();
+const isMyHostId = v => !!v && (v === playerId() || (MY_HASH.key === playerId() && v === MY_HASH.hash));
 
 // Opening the site with ?tester=1 tags every story this browser creates as a test (?tester=0 turns it off),
 // so the owner's own test rooms can be told apart from real players' stories when counting.
@@ -107,12 +120,11 @@ async function dbCountRooms() {
   if (error) { console.error(error); return 0; }
   return count || 0;
 }
+// Guest tables are capped site-wide; the database removes the least recently played guest table to make
+// space (supabase/accounts.sql, make_room_space). Account tables are never removed for space.
 async function dbEvictOldestRoomIfAtCapacity() {
-  const total = await dbCountRooms();
-  if (total < MAX_TOTAL_ROOMS) return;
-  const { data, error } = await supabase.from('rooms').select('code').order('created_at', { ascending: true }).limit(1);
-  if (error || !data || !data.length) { console.error(error); return; }
-  await supabase.from('rooms').delete().eq('code', data[0].code);
+  const { error } = await supabase.rpc('make_room_space');
+  if (error) console.error(error);
 }
 async function dbInsertRoom(code, mode, meta) {
   const { error } = await supabase.from('rooms').insert({ code, mode, meta });
@@ -191,6 +203,9 @@ function subscribeRealtime(code) {
 /* ---------------- Local persistence (real browser, real localStorage) ---------------- */
 function rememberCharacter(code, charId) {
   try { localStorage.setItem(`ledger:${code}`, JSON.stringify({ characterId: charId })); } catch (e) {}
+  if (ROOM_INFO && ROOM_INFO.kind === 'account' && code === ROOM && supabase && supabase.rpc) {
+    supabase.rpc('claim_seat', { p_room: code, p_character: charId }).then(() => {}, () => {});
+  }
 }
 function recallCharacter(code) {
   try { const raw = localStorage.getItem(`ledger:${code}`); return raw ? JSON.parse(raw) : null; } catch (e) { return null; }
@@ -216,6 +231,7 @@ function renderView() {
   if (VIEW === 'game') return renderGame();
   if (VIEW === 'tag') return renderTag();
   if (VIEW === 'minis') return renderMinis();
+  if (VIEW === 'account') return renderAccount();
 }
 
 /* ---------------- Feedback / contact / support ---------------- */
@@ -311,7 +327,9 @@ function renderLanding() {
       </div>
       ${isTester() ? '<p class="helptext" style="text-align:center;">Tester mode is on: stories you create in this browser are tagged as tests.</p>' : ''}
       ${pausedNote()}
-      <p style="text-align:center;margin:10px 0 0;"><button class="link-btn" onclick="openMyMinis()">My minis</button></p>
+      ${ACCT.msg && !ACCT.merge ? `<p class="${ACCT.ok ? 'hero-note' : 'error-text'}" style="text-align:center;">${escapeHtml(ACCT.msg)}</p>` : ''}
+      ${myTablesHTML()}
+      ${accountChipHTML()}
       ${whatsNewHTML()}
     </div>
   `;
@@ -399,6 +417,7 @@ function renderCreate() {
         ${createDraft.seedMode === 'custom' ? `<textarea id="seed" placeholder="Describe the opening situation, setting, and hook..." oninput="setCreateSeed(this.value)">${escapeAttr(createDraft.seed)}</textarea>` : `<p class="helptext">Leave this — once you continue, the GM will generate an opening scene from the genre and tone above.</p>`}
       </div>
 
+      <p class="helptext">${signedIn() ? 'This will be a private table on your account: only players you invite with its code can see it.' : 'Guest tables are open to anyone with the code, and can be removed when space is needed. <button class="link-btn" onclick="openAccount()">Sign in</button> to make a private table.'}</p>
       <button class="btn solid wide" onclick="submitCreate()">${MODE === 'solo' ? 'Create My Story' : 'Create Room'}</button>
     </div>
   `;
@@ -431,12 +450,22 @@ async function submitCreate() {
       session: 1,
       created: Date.now(),
       openingGenerated: false,
-      host: playerId(),
+      host: myHostId(),
       ...(isTester() ? { tester: true } : {})
     };
-    ROOM = code;
-    await dbEvictOldestRoomIfAtCapacity();
-    await dbInsertRoom(code, MODE, META);
+    if (signedIn()) {
+      const { data: r, error } = await supabase.rpc('create_account_room', { p_mode: MODE, p_meta: META });
+      if (error || !r || !r.ok) { alert("The table couldn't be made just now. Try again in a moment."); return; }
+      ROOM = r.room;
+      ROOM_INFO = { kind: 'account', join_code: r.join_code, allow_guests: true, role: 'host', archived: false };
+      TABLES = null;
+      ACCT.notice = r.archived && r.archived.length ? 'To make room, the table you played least recently was archived. Restore it from My tables.' : '';
+    } else {
+      ROOM = code;
+      ROOM_INFO = { kind: 'guest' };
+      await dbEvictOldestRoomIfAtCapacity();
+      await dbInsertRoom(code, MODE, META);
+    }
     VIEW = 'charsetup';
     render();
   } finally {
@@ -462,12 +491,25 @@ function renderJoin() {
 }
 // Opens an existing room by code: a friend's table, or a solo story you paused. Returns an error message, or '' on success.
 async function enterRoom(code) {
-  const room = await dbGetRoom(code);
-  if (!room) return "No campaign found with that code — double-check it with whoever created the room, or use the code shown when you paused.";
+  const notFound = "No campaign found with that code — double-check it with whoever created the room, or use the code shown when you paused.";
+  let room = await dbGetRoom(code);
+  if (!room) {
+    const j = await joinByCode(code); // an account table's join code (or a table that was saved to an account)
+    if (j.error) return j.error;
+    if (!j.room) return notFound;
+    code = j.room;
+    room = await dbGetRoom(code);
+    if (!room) return notFound;
+  }
+  ROOM_INFO = room.kind === 'account' ? await dbRoomInfo(code) : { kind: 'guest' };
   ROOM = code; META = room.meta; MODE = room.mode || 'group'; SCENE = sceneFromRow(room);
   ROSTER = rosterFromRows(await dbGetCharacters(code));
   LOG = logFromRows(await dbGetLog(code));
   let mine = recallCharacter(code);
+  if (!(mine && ROSTER[mine.characterId]) && ROOM_INFO.character_id && ROSTER[ROOM_INFO.character_id]) {
+    mine = { characterId: ROOM_INFO.character_id }; // your hero at an account table, from any device
+    rememberCharacter(code, mine.characterId);
+  }
   // A solo story has exactly one character, so resuming from a new device (no saved link) picks it back up.
   if (!(mine && ROSTER[mine.characterId]) && MODE === 'solo' && Object.keys(ROSTER).length === 1) {
     mine = { characterId: Object.keys(ROSTER)[0] };
@@ -758,20 +800,26 @@ async function submitCharacter() {
 }
 
 function copyCode() {
-  navigator.clipboard?.writeText(ROOM);
+  navigator.clipboard?.writeText(inviteCode());
   const b = event.target; const old = b.innerText; b.innerText = 'Copied!'; setTimeout(() => b.innerText = old, 1200);
 }
 
 // The story code is the room code: it is what lets you (or a friend) come back to the same room later.
 function codeBadge() {
   return MODE === 'solo'
-    ? `<span class="badge">Solo Story</span> <span class="badge">Story code <span class="room-code">${ROOM}</span></span>`
-    : `<span class="badge">Room <span class="room-code">${ROOM}</span></span>`;
+    ? `<span class="badge">Solo Story</span> <span class="badge">Story code <span class="room-code">${escapeHtml(inviteCode())}</span></span>${privacyBadge()}`
+    : `<span class="badge">Room <span class="room-code">${escapeHtml(inviteCode())}</span></span>${privacyBadge()}`;
+}
+function privacyBadge() {
+  if (!ROOM_INFO) return '';
+  return ROOM_INFO.kind === 'account'
+    ? ' <span class="badge" title="Only members can see this table">Private</span>'
+    : ' <span class="badge" title="Guest tables are open to anyone with the code, and can be removed when space is needed. Sign in to make a private table.">Guest table</span>';
 }
 let pausedStory = null;   // { code, name, error? } shown on the landing page right after pausing
 function pauseStory() {
-  pausedStory = { code: ROOM, name: META.name };
-  try { navigator.clipboard?.writeText(ROOM); } catch (e) {}
+  pausedStory = { code: inviteCode(), name: META.name };
+  try { navigator.clipboard?.writeText(inviteCode()); } catch (e) {}
   leaveTable();
 }
 function pausedNote() {
@@ -790,9 +838,10 @@ function leaveTable() {
   if (GM_ABORT) GM_ABORT.abort();
   if (CHARGEN_ABORT) CHARGEN_ABORT.abort();
   forgetCurrentRoom();
-  ROOM = null; META = null; ROSTER = {}; LOG = []; MY_CHAR_ID = null; draftChar = null;
+  ROOM = null; META = null; ROSTER = {}; LOG = []; MY_CHAR_ID = null; draftChar = null; ROOM_INFO = null;
   MODE = 'group'; ACTIVE_TAB = 'story';
   VIEW = 'landing';
+  if (signedIn()) { TABLES = null; loadTables(); }
   render();
 }
 
@@ -814,6 +863,7 @@ function renderGame() {
       </div>
       <div style="display:flex;gap:8px;">
         <button class="btn" onclick="copyCode()">${MODE === 'solo' ? 'Copy Story Code' : 'Copy Invite Code'}</button>
+        ${tableButtonHTML()}
         <button class="btn rust" onclick="advanceSession()">Advance Session</button>
         ${MODE === 'solo' ? '<button class="btn" onclick="pauseStory()" title="Save your place and come back later with your story code">Pause Story</button>' : '<button class="btn" onclick="leaveTable()">Leave Table</button>'}
       </div>
@@ -1366,7 +1416,7 @@ let SCENE = null; // { url, status, at, count } from the room row
 const SCENE_URL_PREFIX = (cfg.SUPABASE_URL || '').replace(/\/$/, '') + '/storage/v1/object/public/scenes/';
 function sceneFromRow(r) { return r ? { url: r.scene_url || '', status: r.scene_status || '', at: r.scene_updated_at || '', count: r.scene_count || 0 } : null; }
 function safeSceneUrl(u) { return typeof u === 'string' && cfg.SUPABASE_URL && u.startsWith(SCENE_URL_PREFIX) && !/[\s"'<>()]/.test(u) ? u : ''; }
-function isRoomHost() { return !!META && (!META.host || META.host === playerId()); }
+function isRoomHost() { return !!META && (!META.host || isMyHostId(META.host)); }
 const SCENE_UPLOAD = { busy: false, error: '' };
 let scenePaintRequested = 0;
 function scenePending() {
@@ -1481,7 +1531,7 @@ async function setSceneImages(on) {
   if (!room) return;
   META = room.meta || {};
   META.sceneImages = !!on;
-  if (!META.host) META.host = playerId(); // older rooms: whoever switches it on becomes the host
+  if (!META.host) META.host = myHostId(); // older rooms: whoever switches it on becomes the host
   await dbUpdateRoomMeta(ROOM, META);
   if (VIEW === 'game' && ACTIVE_TAB === 'help') renderHelpTab();
 }
@@ -1584,6 +1634,330 @@ async function addPlayerNote() {
 window.setNotesFilter = setNotesFilter;
 window.NOTE_DRAFT_SET = NOTE_DRAFT_SET;
 window.addPlayerNote = addPlayerNote;
+
+/* ---------------- Accounts, account tables, guest tables (see supabase/accounts.sql) ----------------
+   Signing in is optional. It uses Supabase Auth in the browser: an emailed link (website) or the code in
+   the same email (typed in; works in the Android app too). The account remembers this player's ink key,
+   so ink, minis and hosted tables come back on any device. Signed-in players make account tables: only
+   members can see them, friends join with the join code (as guests, via an anonymous session, unless the
+   host turns that off), and the host can rotate the code. Everyone else plays guest tables as before. */
+const AUTH = { session: null, user: null, ready: false };
+const LINKED_KEY = 'ledger:linkedUser'; // which account this device's ink key was last linked to
+const ACCT = { step: 'email', email: '', busy: false, msg: '', ok: false, merge: null, linking: false, notice: '' };
+let TABLES = null;      // My tables (null = not loaded)
+let ROOM_INFO = null;   // { kind, join_code, allow_guests, role, archived, character_id } for the room we're in
+const signedIn = () => !!(AUTH.user && !AUTH.user.anonymous);
+function setAuthFrom(s) {
+  AUTH.session = s || null;
+  const u = s && s.user;
+  AUTH.user = u ? { id: u.id, email: u.email || '', anonymous: !!u.is_anonymous } : null;
+}
+function linkedUser() { try { return localStorage.getItem(LINKED_KEY) || ''; } catch (e) { return ''; } }
+function markLinked(id) { try { id ? localStorage.setItem(LINKED_KEY, id) : localStorage.removeItem(LINKED_KEY); } catch (e) {} }
+async function initAuth() {
+  if (!supabase || !supabase.auth) { AUTH.ready = true; return; }
+  try { const { data } = await supabase.auth.getSession(); setAuthFrom(data && data.session); } catch (e) {}
+  AUTH.ready = true;
+  supabase.auth.onAuthStateChange((event, session) => {
+    setAuthFrom(session);
+    if (signedIn() && linkedUser() !== AUTH.user.id) afterSignIn(); // a new sign-in (link, code, or another tab)
+  });
+  if (signedIn() && linkedUser() !== AUTH.user.id) await afterSignIn();
+  if (signedIn()) loadTables();
+  if (VIEW === 'landing' || VIEW === 'account') render();
+}
+async function accountCall(action) {
+  let token = AUTH.session && AUTH.session.access_token;
+  try { const { data } = await supabase.auth.getSession(); token = (data && data.session && data.session.access_token) || token; } catch (e) {}
+  const resp = await fetch(api('/api/account'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action, accessToken: token, playerId: playerId() }),
+  });
+  let data = {};
+  try { data = await resp.json(); } catch (e) {}
+  if (!resp.ok || data.error) throw new Error(data.error || 'Accounts are unavailable right now. Try again in a minute.');
+  return data;
+}
+// Points this device at another ink key (the account's), here and in Google Play purchases.
+async function switchInkKey(key) {
+  if (!PLAYER_ID_RE.test(key) || key === playerId()) return;
+  try { localStorage.setItem(PLAYER_KEY, key); } catch (e) { memoryPlayerId = key; }
+  if (IS_APP && purchasesReady) {
+    try { const P = await purchasesReady; await P.logIn({ appUserID: key }); } catch (e) { purchasesReady = null; }
+  }
+  await refreshMyHash();
+  refreshWallet(IS_APP ? 'redeem' : 'balance').catch(() => {});
+}
+async function afterSignIn() {
+  if (ACCT.linking || !signedIn()) return;
+  ACCT.linking = true;
+  try {
+    const r = await accountCall('link');
+    if (r.status === 'needs_merge') {
+      ACCT.merge = { device: r.device || {}, inkKey: r.inkKey, oldKey: playerId() };
+      VIEW = 'account'; render();
+      return;
+    }
+    await switchInkKey(r.inkKey);
+    markLinked(AUTH.user.id);
+    ACCT.ok = true;
+    ACCT.msg = r.status === 'new' ? 'Signed in. Your ink, minis and tables now stay with your account.' : 'Signed in. Your ink, minis and tables are here.';
+    TABLES = null; loadTables();
+    if (VIEW === 'account' || VIEW === 'landing') render();
+  } catch (e) {
+    ACCT.ok = false; ACCT.msg = niceError(e);
+    if (VIEW === 'account' || VIEW === 'landing') render();
+  } finally { ACCT.linking = false; }
+}
+async function mergeYes() {
+  if (ACCT.busy) return;
+  ACCT.busy = true; render();
+  try {
+    const r = await accountCall('merge');
+    await switchInkKey(r.inkKey);
+    markLinked(AUTH.user.id);
+    const m = r.moved || {};
+    ACCT.merge = null; ACCT.ok = true;
+    ACCT.msg = `Moved into your account: ${m.ink || 0} ink, ${m.minis || 0} mini${m.minis === 1 ? '' : 's'} and ${m.tables || 0} hosted table${m.tables === 1 ? '' : 's'}.`;
+    TABLES = null; loadTables();
+  } catch (e) { ACCT.ok = false; ACCT.msg = niceError(e); }
+  finally { ACCT.busy = false; render(); }
+}
+async function mergeNo() {
+  const m = ACCT.merge;
+  if (!m) return;
+  if (!confirm(`Leave them on this device's old ink key? You'll stop seeing them here. To get them back later, enter this key in the Ink Pot:\n\n${m.oldKey}`)) return;
+  await switchInkKey(m.inkKey);
+  markLinked(AUTH.user.id);
+  ACCT.merge = null; ACCT.ok = true; ACCT.msg = 'Signed in. Your old ink key was left as it was.';
+  TABLES = null; loadTables(); render();
+}
+
+function openAccount() { closeShop(); VIEW = 'account'; ACCT.msg = ''; if (!signedIn()) ACCT.step = ACCT.step === 'code' ? 'code' : 'email'; render(); }
+async function accountSend() {
+  const email = ((el('acctEmail') || {}).value || '').trim();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { ACCT.ok = false; ACCT.msg = 'Enter a valid email address.'; return render(); }
+  ACCT.busy = true; ACCT.msg = ''; render();
+  try {
+    const { error } = await supabase.auth.signInWithOtp({ email, options: { shouldCreateUser: true, emailRedirectTo: IS_APP ? undefined : location.origin + '/' } });
+    if (error) throw new Error(/rate|seconds/i.test(error.message || '') ? 'A sign-in email was sent a moment ago. Wait a minute, then try again.' : "We couldn't send the email just now. Try again in a minute.");
+    ACCT.email = email; ACCT.step = 'code'; ACCT.ok = true;
+    ACCT.msg = IS_APP ? 'Check your email and type the code here.' : 'Check your email: tap the link, or type the code here.';
+  } catch (e) { ACCT.ok = false; ACCT.msg = niceError(e); }
+  finally { ACCT.busy = false; render(); }
+}
+async function accountVerify() {
+  const token = ((el('acctCode') || {}).value || '').replace(/\s+/g, '');
+  if (!/^\d{6,10}$/.test(token)) { ACCT.ok = false; ACCT.msg = 'Enter the code from the email (numbers only).'; return render(); }
+  ACCT.busy = true; ACCT.msg = ''; render();
+  try {
+    const { data, error } = await supabase.auth.verifyOtp({ email: ACCT.email, token, type: 'email' });
+    if (error || !data || !data.session) throw new Error("That code didn't work. It may have expired: ask for a new one.");
+    setAuthFrom(data.session);
+    ACCT.step = 'email';
+    await afterSignIn();
+  } catch (e) { ACCT.ok = false; ACCT.msg = niceError(e); }
+  finally { ACCT.busy = false; render(); }
+}
+// Signing out leaves nothing behind: this device starts over as a new guest (a shared phone keeps nothing).
+async function accountSignOut() {
+  if (!confirm('Sign out on this device? Your ink, minis and tables stay safe in your account; this device starts fresh.')) return;
+  if (ROOM) leaveTable();
+  try { await supabase.auth.signOut(); } catch (e) {}
+  try {
+    const keep = new Set(['ledger:diceAnim', 'ledger:tester']);
+    Object.keys(localStorage).filter(k => k.startsWith('ledger:') && !keep.has(k)).forEach(k => localStorage.removeItem(k));
+  } catch (e) {}
+  memoryPlayerId = '';
+  setAuthFrom(null); TABLES = null; ACCT.merge = null; ACCT.step = 'email';
+  const fresh = playerId();
+  if (IS_APP && purchasesReady) { try { const P = await purchasesReady; await P.logIn({ appUserID: fresh }); } catch (e) { purchasesReady = null; } }
+  await refreshMyHash();
+  refreshWallet('balance').catch(() => {});
+  ACCT.ok = true; ACCT.msg = 'Signed out.';
+  VIEW = 'landing'; render();
+}
+async function accountDelete() {
+  if (!confirm('Delete your account? Your email is removed and this device keeps its ink key and the ink on it. Tables you own stay playable by their other members. This cannot be undone.')) return;
+  ACCT.busy = true; render();
+  try {
+    await accountCall('delete');
+    try { await supabase.auth.signOut(); } catch (e) {}
+    setAuthFrom(null); markLinked(''); TABLES = null;
+    ACCT.ok = true; ACCT.msg = 'Your account was deleted.';
+  } catch (e) { ACCT.ok = false; ACCT.msg = niceError(e); }
+  finally { ACCT.busy = false; render(); }
+}
+
+function renderAccount() {
+  const msg = ACCT.msg ? `<p class="${ACCT.ok ? 'hero-note' : 'error-text'}">${escapeHtml(ACCT.msg)}</p>` : '';
+  let body;
+  if (ACCT.merge) {
+    const d = ACCT.merge.device;
+    body = `<h2>Move this device's things into your account?</h2>
+      <p class="helptext">This device has things on its own ink key that aren't in your account yet:</p>
+      <ul class="helptext"><li>${d.ink || 0} bought ink</li><li>${d.minis || 0} hero mini${d.minis === 1 ? '' : 's'}</li><li>${d.tables || 0} table${d.tables === 1 ? '' : 's'} you host</li></ul>
+      <p class="helptext">Moving them is a one-time step. Free monthly ink isn't moved.</p>
+      <button class="btn solid wide" ${ACCT.busy ? 'disabled' : ''} onclick="mergeYes()">Move them into my account</button>
+      <button class="btn wide" style="margin-top:8px;" ${ACCT.busy ? 'disabled' : ''} onclick="mergeNo()">Leave them on this device's old key</button>`;
+  } else if (signedIn()) {
+    body = `<h2>Your account</h2>
+      <p>Signed in as <b>${escapeHtml(AUTH.user.email || 'your email')}</b>.</p>
+      <p class="helptext">Your ink, hero minis and tables are kept with your account. Sign in with the same email on any device, or after clearing this browser or reinstalling the app, and they come back.</p>
+      <p class="helptext">New tables you create are private: only players you invite with the table's code can see them. Find them under <b>My tables</b> on the home page.</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">
+        <button class="btn" onclick="accountSignOut()">Sign out</button>
+        <button class="btn rust" ${ACCT.busy ? 'disabled' : ''} onclick="accountDelete()">Delete account</button>
+      </div>`;
+  } else if (ACCT.step === 'code') {
+    body = `<h2>Check your email</h2>
+      <p class="helptext">We sent a sign-in email to <b>${escapeHtml(ACCT.email)}</b>.${IS_APP ? '' : ' Tap its link, or'} type the code from it here:</p>
+      <div class="notes-add-row"><input type="text" id="acctCode" inputmode="numeric" autocomplete="one-time-code" placeholder="Code from the email" maxlength="12"><button class="btn solid" ${ACCT.busy ? 'disabled' : ''} onclick="accountVerify()">Sign in</button></div>
+      <p style="margin-top:10px;"><button class="link-btn" onclick="ACCT_back()">Use a different email</button> &middot; <button class="link-btn" ${ACCT.busy ? 'disabled' : ''} onclick="accountResend()">Send it again</button></p>`;
+  } else {
+    body = `<h2>Sign in</h2>
+      <p class="helptext">Optional. Signing in keeps your ink, hero minis and tables safe if you clear this browser, reinstall the app or switch devices, and lets you make private tables. No password: we email you a sign-in link and code.</p>
+      <div class="notes-add-row"><input type="email" id="acctEmail" autocomplete="email" placeholder="you@example.com" value="${escapeAttr(ACCT.email)}"><button class="btn solid" ${ACCT.busy ? 'disabled' : ''} onclick="accountSend()">Email me a sign-in code</button></div>
+      <p class="helptext" style="margin-top:12px;">You can keep playing without an account. Guest tables are open to anyone with the code, and can be removed when space is needed.</p>`;
+  }
+  el('app').innerHTML = `
+    <div class="top-nav"><button class="link-btn" onclick="goToLanding()">&larr; The Ledger</button></div>
+    <div class="panel" style="max-width:560px;margin:0 auto;">
+      <div class="eyebrow">Account</div>
+      ${msg}
+      ${body}
+    </div>`;
+}
+function ACCT_back() { ACCT.step = 'email'; ACCT.msg = ''; render(); }
+async function accountResend() { ACCT.step = 'email'; render(); const box = el('acctEmail'); if (box) { box.value = ACCT.email; await accountSend(); } }
+
+// ---- My tables (landing page) ----
+async function loadTables() {
+  if (!signedIn()) { TABLES = null; return; }
+  try {
+    const { data, error } = await supabase.rpc('my_tables');
+    TABLES = error ? [] : (data || []);
+  } catch (e) { TABLES = []; }
+  if (VIEW === 'landing') render();
+}
+function accountChipHTML() {
+  if (!AUTH.ready) return '';
+  return signedIn()
+    ? `<p style="text-align:center;margin:10px 0 0;" class="helptext">Signed in as ${escapeHtml(AUTH.user.email)} &middot; <button class="link-btn" onclick="openAccount()">Account</button> &middot; <button class="link-btn" onclick="openMyMinis()">My minis</button></p>`
+    : `<p style="text-align:center;margin:10px 0 0;"><button class="link-btn" onclick="openAccount()">Sign in</button> &middot; <button class="link-btn" onclick="openMyMinis()">My minis</button></p>
+       <p class="helptext" style="text-align:center;margin:6px 0 0;">Guest tables are open to anyone with the code, and can be removed when space is needed. Sign in to make a private table and keep your ink.</p>`;
+}
+function myTablesHTML() {
+  if (!signedIn()) return '';
+  const notice = ACCT.notice ? `<p class="hero-note">${escapeHtml(ACCT.notice)}</p>` : '';
+  if (TABLES === null) return `<div class="panel my-tables">${notice}<h3>My tables</h3><p class="thinking">Opening your tables...</p></div>`;
+  if (!TABLES.length) return `<div class="panel my-tables">${notice}<h3>My tables</h3><p class="helptext">No tables yet. Start a story above and it's saved here.</p></div>`;
+  const rows = TABLES.map(t => `<div class="mini-row"><div class="mini-row-head">
+      <div><b>${escapeHtml(t.name)}</b> <span class="helptext">${t.mode === 'solo' ? 'Solo' : 'Group'}${t.character ? ' &middot; ' + escapeHtml(t.character) : ''}${t.role === 'guest' ? ' &middot; guest' : ''}</span>
+        <div class="notes-meta">${t.archived ? 'Archived &middot; ' : ''}last played ${timeAgo(t.last_played)}</div></div>
+      <div style="display:flex;gap:6px;">
+        <button class="btn solid" onclick="resumeTable('${escapeAttr(t.room)}')">Resume</button>
+        ${t.owner ? `<button class="btn" onclick="archiveTable('${escapeAttr(t.room)}', ${t.archived ? 'false' : 'true'})">${t.archived ? 'Restore' : 'Archive'}</button>` : ''}
+      </div></div></div>`).join('');
+  return `<div class="panel my-tables">${notice}<h3>My tables</h3>
+    <p class="helptext">Private: only members can see them. You can keep ${5} active; starting another archives the one you played least recently.</p>${rows}</div>`;
+}
+async function resumeTable(room) {
+  const t = (TABLES || []).find(x => x.room === room);
+  if (t && t.archived) { await archiveTable(room, false, true); }
+  if (t && t.character_id && !recallCharacter(room)) rememberCharacter(room, t.character_id);
+  const err = await enterRoom(room);
+  if (err) { ACCT.ok = false; ACCT.notice = err; render(); }
+}
+async function archiveTable(room, archive, quiet) {
+  const { data, error } = await supabase.rpc('archive_room', { p_room: room, p_archive: archive });
+  if (error || !data || !data.ok) { ACCT.notice = "That table couldn't be changed. Try again."; }
+  else if (!archive && data.archived && data.archived.length) ACCT.notice = 'To make room, the table you played least recently was archived.';
+  else if (!quiet) ACCT.notice = '';
+  TABLES = null; await loadTables();
+}
+
+// ---- joining by code: guest rooms, and account tables' join codes ----
+const JOIN_ERRORS = {
+  private: 'This table is private: its host only lets signed-in players join. Sign in, then enter the code again.',
+  sign_in: 'This is a private table. Sign in to join it.',
+};
+async function joinByCode(code) {
+  if (!supabase || !supabase.rpc) return { error: '' };
+  const prev = recallCharacter(code);
+  const call = () => supabase.rpc('join_room', { p_code: code, p_character: (prev && prev.characterId) || null });
+  let { data: r, error } = await call();
+  if (!error && r && r.code === 'sign_in' && supabase.auth && supabase.auth.signInAnonymously) {
+    // A friend without an account joins as a guest: an anonymous session the table's rules can recognise.
+    const a = await supabase.auth.signInAnonymously();
+    if (!a.error) { setAuthFrom(a.data && a.data.session); ({ data: r, error } = await call()); }
+  }
+  if (error || !r) return { error: '' };
+  if (!r.ok) return { error: JOIN_ERRORS[r.code] || '' };
+  if (prev && r.room !== code) rememberCharacter(r.room, prev.characterId);
+  return { room: r.room };
+}
+async function dbRoomInfo(code) {
+  if (!supabase || !supabase.rpc) return { kind: 'guest' };
+  try { const { data } = await supabase.rpc('room_info', { p_room: code }); return data || { kind: 'guest' }; } catch (e) { return { kind: 'guest' }; }
+}
+const inviteCode = () => (ROOM_INFO && ROOM_INFO.kind === 'account' && ROOM_INFO.join_code) || ROOM;
+
+// ---- in a game: save a guest table to the account, and the account table's settings ----
+function tableButtonHTML() {
+  if (!ROOM_INFO) return '';
+  if (ROOM_INFO.kind === 'guest') return signedIn() && isRoomHost() ? `<button class="btn" onclick="upgradeTable()" title="Make this a private table on your account">Save to my account</button>` : '';
+  return `<button class="btn" onclick="openTableSettings()">Table</button>`;
+}
+async function upgradeTable() {
+  if (!confirm('Save this table to your account? It becomes private: only players with its code can join, and it shows in My tables. Players already here keep their heroes.')) return;
+  const { data, error } = await supabase.rpc('upgrade_room', { p_room: ROOM, p_character: MY_CHAR_ID });
+  if (error || !data || !data.ok) {
+    const why = data && data.code === 'not_host' ? "Only the table's host can save it to an account." : "That didn't work. Try again.";
+    return alert(why);
+  }
+  ROOM_INFO = await dbRoomInfo(ROOM);
+  TABLES = null;
+  const note = data.archived && data.archived.length ? ' To make room, the table you played least recently was archived.' : '';
+  alert('Saved. This table is now private on your account. The code still works for your players.' + note);
+  render();
+}
+function openTableSettings() {
+  let o = el('shopOverlay');
+  if (!o) { o = document.createElement('div'); o.id = 'shopOverlay'; o.className = 'dice-overlay shop-overlay'; o.onclick = e => { if (e.target === o) closeShop(); }; document.body.appendChild(o); }
+  const i = ROOM_INFO || {};
+  const host = i.role === 'host';
+  o.innerHTML = `<div class="dice-card shop-card" role="dialog" aria-label="Table settings">
+    <div class="dice-title">This table</div>
+    <p class="helptext">A private table: only its members can see the story. Friends join with this code.</p>
+    <div class="shop-balance"><span class="room-code">${escapeHtml(i.join_code || '')}</span></div>
+    ${host ? `
+      <p class="helptext">New code: the old code and old invite links stop working. Everyone already at the table stays.</p>
+      <button class="btn wide" onclick="rotateTableCode()">Make a new code</button>
+      <label class="helptext" style="display:flex;gap:8px;align-items:center;margin-top:12px;"><input type="checkbox" ${i.allow_guests ? 'checked' : ''} onchange="setTableGuests(this.checked)"> Let friends without an account join as guests</label>`
+      : `<p class="helptext">You're ${i.role === 'guest' ? 'a guest' : 'a player'} at this table.</p>`}
+    <button class="btn wide" style="margin-top:14px;" onclick="closeShop()">Close</button>
+  </div>`;
+}
+async function rotateTableCode() {
+  if (!confirm('Make a new code? The old code and links stop working.')) return;
+  const { data } = await supabase.rpc('rotate_room_code', { p_room: ROOM });
+  if (data && data.ok) { ROOM_INFO.join_code = data.join_code; openTableSettings(); render(); }
+}
+async function setTableGuests(on) {
+  const { data } = await supabase.rpc('set_room_guests', { p_room: ROOM, p_allow: !!on });
+  if (data && data.ok) ROOM_INFO.allow_guests = !!on;
+  openTableSettings();
+}
+function accountNudgeHTML() {
+  return signedIn() ? '' : `<p class="helptext">Clearing this browser or reinstalling the app loses your ink key. <button class="link-btn" onclick="openAccount()">Sign in to keep your ink and minis</button></p>`;
+}
+
+window.openAccount = openAccount; window.accountSend = accountSend; window.accountVerify = accountVerify;
+window.accountSignOut = accountSignOut; window.accountDelete = accountDelete; window.ACCT_back = ACCT_back; window.accountResend = accountResend;
+window.mergeYes = mergeYes; window.mergeNo = mergeNo; window.resumeTable = resumeTable; window.archiveTable = archiveTable;
+window.upgradeTable = upgradeTable; window.openTableSettings = openTableSettings; window.rotateTableCode = rotateTableCode; window.setTableGuests = setTableGuests;
 
 /* ---------------- Hero minis: forge, My minis, backups, moves, recovery ----------------
    All of it goes through /api/minis (netlify/functions/minis.js); nothing here is trusted by the server. */
@@ -1697,6 +2071,7 @@ function renderMinis() {
       <div class="eyebrow">Your Collection</div>
       <h2>My minis</h2>
       <p class="helptext">Heroes on minis that belong to your ink key: <code class="ink-key">${escapeHtml(playerId())}</code>. Keep it private. If you lose it, a mini's original claim code can recover it below.</p>
+      ${accountNudgeHTML()}
       ${MINIS.msg ? `<p class="${MINIS.ok ? 'hero-note' : 'error-text'}">${escapeHtml(MINIS.msg)}</p>` : ''}
       ${MINIS.backupText ? `<div class="field"><label>Your backup (copy and keep it somewhere safe)</label><textarea readonly style="min-height:120px;" onclick="this.select()">${escapeHtml(MINIS.backupText)}</textarea></div>` : ''}
       ${rows}
@@ -2858,6 +3233,7 @@ function renderShop() {
       <p class="helptext">A Game Master reply costs ${costs.gm} ink. A character portrait costs ${costs.portrait}. Rolls, sheets and the story log are always free.</p>
       <div class="shop-packs">${store}</div>
       ${SHOP_STATUS ? `<p class="helptext shop-status">${escapeHtml(SHOP_STATUS)}</p>` : ''}
+      ${accountNudgeHTML()}
       <details class="shop-key">
         <summary>Your ink key (to move your ink to another device)</summary>
         <p class="helptext">Ink belongs to this key. Keep a copy somewhere safe: if you reinstall the app or switch phones, enter it there to keep your ink.</p>
@@ -2908,11 +3284,13 @@ async function useInkKey() {
   const key = (box ? box.value : '').trim().toLowerCase();
   if (!PLAYER_ID_RE.test(key)) { SHOP_STATUS = 'That doesn\'t look like an ink key.'; return renderShop(); }
   if (key === playerId()) { SHOP_STATUS = 'That is already this device\'s key.'; return renderShop(); }
+  if (signedIn()) { SHOP_STATUS = 'You\'re signed in, so your account keeps your ink key. Sign out first to use a different key.'; return renderShop(); }
   if (!confirm('Switch this device to that ink key? Ink on the current key stays with the current key, so copy it first if it has ink left.')) return;
   try { localStorage.setItem(PLAYER_KEY, key); } catch (e) { memoryPlayerId = key; }
   if (IS_APP && purchasesReady) {
     try { const P = await purchasesReady; await P.logIn({ appUserID: key }); } catch (e) { purchasesReady = null; }
   }
+  await refreshMyHash();
   SHOP_STATUS = 'This device now uses that ink key.';
   try { await refreshWallet(IS_APP ? 'redeem' : 'balance'); } catch (e) { SHOP_STATUS = "The ink ledger is being re-bound. Your balance will show in a few minutes."; }
   renderShop();
@@ -3516,6 +3894,7 @@ if (checkConfigured()) {
     render();
   }
   loadSiteConfig();
+  refreshMyHash().then(() => initAuth()).catch(() => {});
   // In the app, "redeem" also credits any purchase whose confirmation was interrupted last time.
   refreshWallet(IS_APP ? 'redeem' : 'balance').catch(() => {});
 }

@@ -26,7 +26,8 @@ async function loadRoom(code) {
 // The room's host is the ink key that created it (meta.host); rooms from before hosts existed accept anyone.
 function isHost(room, playerId) {
   const host = room && room.meta && room.meta.host;
-  return !host || host === playerId;
+  // Hosts are stored as a hash of the ink key (supabase/accounts.sql); older rooms may still hold the raw key.
+  return !host || host === playerId || host === require("./heroes").ownerHash(playerId);
 }
 function setScene(code, patch) {
   return sbRest(`rooms?code=eq.${encodeURIComponent(code)}`, { method: "PATCH", body: patch });

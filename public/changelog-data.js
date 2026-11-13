@@ -9,6 +9,12 @@ window.LEDGER_CHANGELOG = [
   {
     date: "2026-11-13",
     type: "feature",
+    title: "Sign in, private tables and My tables",
+    detail: "Signing in is optional: we email you a link and a code, no password. Your ink, hero minis and tables then follow you to any device, even after clearing your browser. Tables you start while signed in are private: only players with the table's code can join, the host can make a new code at any time, and they're listed under My tables. Friends can still join without an account. Guest tables work as before, but are open to anyone with the code and can be removed when space is needed; the host can save one to their account to keep it."
+  },
+  {
+    date: "2026-11-13",
+    type: "feature",
     title: "Blank hero minis, backups and moving",
     detail: "Forge your own hero onto a blank mini for free with the claim code from its card. My minis lists your heroes and keeps the last 10 versions of each so you can roll back, download a backup, or move a hero to a new mini if the old one is lost or broken. Lost your ink key? The mini's claim code gets it back."
   },

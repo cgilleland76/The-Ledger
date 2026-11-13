@@ -77,7 +77,7 @@
       sb.from('rooms').select('code, meta, scene_url').eq('code', code).maybeSingle(),
       sb.from('characters').select('id, data, portrait_url').eq('room_code', code),
     ]);
-    if (!r.data) { root.innerHTML = `<p class="err">No campaign with the code ${esc(code)}.</p>`; return false; }
+    if (!r.data) { root.innerHTML = `<p class="err">No campaign with the code ${esc(code)}. If it's a private table, open the display on a device that's signed in to it (or has joined it).</p>`; return false; }
     room = r.data; chars = c.data || [];
     draw();
     return true;

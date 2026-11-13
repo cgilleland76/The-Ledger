@@ -33,11 +33,12 @@ const freePerMonth = () => {
 const validPlayer = (id) => typeof id === "string" && PLAYER_ID_RE.test(id);
 
 // PostgREST call with the service-role (secret) key.
-async function sbAdmin(path, { method = "GET", body } = {}) {
+async function sbAdmin(path, { method = "GET", body, prefer } = {}) {
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!key) throw new Error("SUPABASE_SERVICE_ROLE_KEY is not set on the server.");
   const headers = { apikey: key, "Content-Type": "application/json" };
   if (key.startsWith("eyJ")) headers.Authorization = `Bearer ${key}`; // legacy JWT-style key
+  if (prefer) headers.Prefer = prefer;
   const resp = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     method,
     headers,

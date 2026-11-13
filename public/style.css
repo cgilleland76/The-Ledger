@@ -471,3 +471,7 @@ input, textarea, select{ font-family:var(--font-body); font-size:1rem; }
 .mini-row{ border-top:1px dashed rgba(139,104,50,0.45); padding:12px 0; }
 .mini-row-head{ display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; }
 .mini-row-body h3{ font-size:1rem; margin:12px 0 6px; }
+
+/* My tables */
+.my-tables{ max-width:720px; margin:18px auto 0; }
+.my-tables h3{ margin:0 0 6px; }
