@@ -466,3 +466,8 @@ input, textarea, select{ font-family:var(--font-body); font-size:1rem; }
 .notes-add-row{ display:flex; gap:8px; flex-wrap:wrap; }
 .notes-add-row select{ flex:0 0 auto; }
 .notes-add-row input{ flex:1 1 220px; min-width:0; }
+
+/* My minis */
+.mini-row{ border-top:1px dashed rgba(139,104,50,0.45); padding:12px 0; }
+.mini-row-head{ display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; }
+.mini-row-body h3{ font-size:1rem; margin:12px 0 6px; }

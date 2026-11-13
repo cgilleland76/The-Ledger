@@ -215,6 +215,7 @@ function renderView() {
   if (VIEW === 'charsetup') return renderCharSetup();
   if (VIEW === 'game') return renderGame();
   if (VIEW === 'tag') return renderTag();
+  if (VIEW === 'minis') return renderMinis();
 }
 
 /* ---------------- Feedback / contact / support ---------------- */
@@ -310,6 +311,7 @@ function renderLanding() {
       </div>
       ${isTester() ? '<p class="helptext" style="text-align:center;">Tester mode is on: stories you create in this browser are tagged as tests.</p>' : ''}
       ${pausedNote()}
+      <p style="text-align:center;margin:10px 0 0;"><button class="link-btn" onclick="openMyMinis()">My minis</button></p>
       ${whatsNewHTML()}
     </div>
   `;
@@ -1583,6 +1585,224 @@ window.setNotesFilter = setNotesFilter;
 window.NOTE_DRAFT_SET = NOTE_DRAFT_SET;
 window.addPlayerNote = addPlayerNote;
 
+/* ---------------- Hero minis: forge, My minis, backups, moves, recovery ----------------
+   All of it goes through /api/minis (netlify/functions/minis.js); nothing here is trusted by the server. */
+async function minisCall(action, extra) {
+  const resp = await fetch(api('/api/minis'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action, playerId: playerId(), platform: IS_APP ? 'android' : 'web', ...(extra || {}) }),
+  });
+  let data = {};
+  try { data = await resp.json(); } catch (e) { /* non-JSON error page */ }
+  if (!resp.ok || data.error) {
+    const err = new Error(data.error || "The mini records are out of reach right now. Try again in a moment.");
+    err.reason = data.reason; err.problems = data.problems;
+    throw err;
+  }
+  return data;
+}
+const niceError = e => (e && e.name === 'TypeError') ? 'The road to the mini records is washed out. Check your connection and try again.' : (e && e.message) || 'That didn\'t work. Try again.';
+
+// ---- forging a hero onto a blank mini (Your Sheet, or tapping the blank mini) ----
+const FORGE = { busy: false, msg: '', ok: false };
+function forgePanelHTML(c, tagId) {
+  if (!c || c.heroTag) return '';
+  return `<div class="mini-panel">
+    <p class="helptext"><b>Have a blank mini from a kit?</b> Enter the claim code from its card to forge ${escapeHtml(c.name)} onto it. The first hero on a blank mini is free. From then on, a tap of the mini brings ${escapeHtml(c.name)} back, and progress saves to it.</p>
+    <div class="notes-add-row">
+      <input type="text" id="forgeCode" placeholder="Claim code, e.g. LDGR-7K2M-9QXP-4TRC" autocomplete="off" spellcheck="false" style="text-transform:uppercase;">
+      <button class="btn" ${FORGE.busy ? 'disabled' : ''} onclick="forgeHero(${tagId ? `'${escapeAttr(tagId)}'` : ''})">Forge into a mini</button>
+    </div>
+    ${FORGE.msg ? `<p class="${FORGE.ok ? 'hero-note' : 'error-text'}">${escapeHtml(FORGE.msg)}</p>` : ''}
+  </div>`;
+}
+async function forgeHero(tagId) {
+  const box = el('forgeCode');
+  const code = box ? box.value.trim() : '';
+  if (!code || FORGE.busy || !ROOM || !MY_CHAR_ID) return;
+  FORGE.busy = true; FORGE.msg = ''; render();
+  try {
+    const r = await minisCall('forge', { claimCode: code, roomCode: ROOM, characterId: MY_CHAR_ID, tagId: tagId || undefined });
+    const c = ROSTER[MY_CHAR_ID];
+    if (c) c.heroTag = r.tag_id;
+    FORGE.ok = true; FORGE.msg = `Forged! ${c ? c.name : 'Your hero'} now lives on that mini (kit ${r.batch}, #${r.serial}). Tap it any time to bring them back.`;
+  } catch (e) {
+    FORGE.ok = false; FORGE.msg = niceError(e);
+  } finally {
+    FORGE.busy = false;
+    if (VIEW === 'tag') { VIEW = 'game'; ACTIVE_TAB = 'sheet'; }
+    render();
+  }
+}
+window.forgeHero = forgeHero;
+
+// Tapped a blank mini: forge the hero this device is playing at its current table.
+function tagBlankHTML() {
+  const code = TAG_ROOM && TAG_ROOM.code;
+  const mine = code ? recallCharacter(code) : null;
+  return `<h2>A blank mini</h2>
+    <p class="helptext">This mini doesn't have a hero yet. Forge one of yours onto it with the claim code from the card in your kit. The first hero is free.</p>
+    ${code && mine
+      ? `<button class="btn solid wide" onclick="tagGoForge('${escapeAttr(code)}')">Forge my hero from ${escapeHtml(TAG_ROOM.name)}</button>`
+      : `<p class="helptext">Join a table and make (or bring) your hero first, then tap this mini again.</p>`}
+    <p class="helptext">Have a backup file instead? Open <a href="#" onclick="openMyMinis();return false;">My minis</a> and use <b>Import a backup</b> with this mini's claim code.</p>`;
+}
+async function tagGoForge(code) {
+  const err = await enterRoom(code);
+  if (err) { VIEW = 'tag'; TAG_MSG = err; return render(); }
+  FORGE.msg = ''; FORGE.ok = false;
+  FORGE_TAG = TAG ? TAG.id : null;
+  VIEW = 'game'; ACTIVE_TAB = 'sheet'; render();
+}
+let FORGE_TAG = null; // the blank mini that was just tapped, so the forge checks the code belongs to it
+window.tagGoForge = tagGoForge;
+
+// ---- My minis ----
+const MINIS = { list: null, open: null, snaps: {}, msg: '', ok: false, busy: false, backupText: '' };
+function openMyMinis() { VIEW = 'minis'; MINIS.msg = ''; MINIS.list = null; render(); loadMyMinis(); }
+async function loadMyMinis() {
+  try { MINIS.list = (await minisCall('list')).minis || []; }
+  catch (e) { MINIS.list = []; MINIS.ok = false; MINIS.msg = niceError(e); }
+  if (VIEW === 'minis') render();
+}
+const timeAgo = t => { if (!t) return 'never'; const d = (Date.now() - Date.parse(t)) / 86400000; return d < 1 ? 'today' : d < 2 ? 'yesterday' : `${Math.floor(d)} days ago`; };
+function renderMinis() {
+  const list = MINIS.list;
+  const rows = list === null ? '<p class="thinking">Opening your collection...</p>'
+    : !list.length ? '<p class="helptext">No minis yet. Forge a hero onto a blank mini from <b>Your Sheet</b>, or save progress to a mini you play.</p>'
+    : list.map(m => {
+      const open = MINIS.open === m.id;
+      const snaps = MINIS.snaps[m.id];
+      return `<div class="mini-row">
+        <div class="mini-row-head">
+          <div><b>${escapeHtml(m.name)}</b> <span class="helptext">Lv${m.level} ${escapeHtml([m.race, m.klass].filter(Boolean).join(' '))}</span>
+            <div class="notes-meta">${m.status === 'moved' ? 'Moved to a new mini' : m.status === 'active' ? 'Active' : escapeHtml(m.status)} &middot; last played ${timeAgo(m.last_played)}</div></div>
+          ${m.status === 'active' ? `<button class="btn" onclick="toggleMini('${escapeAttr(m.id)}')">${open ? 'Close' : 'Manage'}</button>` : ''}
+        </div>
+        ${open ? `<div class="mini-row-body">
+          <h3>Backups</h3>
+          ${snaps === undefined ? '<p class="thinking">Loading...</p>' : !snaps.length ? '<p class="helptext">No saved versions yet.</p>'
+            : `<ul class="notes-list">${snaps.map(s => `<li>Level ${s.level}, ${s.maxhp} max HP, ${s.items} items <span class="notes-meta">${new Date(s.saved_at).toLocaleString()}</span> <button class="link-btn" ${MINIS.busy ? 'disabled' : ''} onclick="restoreMini('${escapeAttr(m.id)}', ${Number(s.id)})">Restore this</button></li>`).join('')}</ul>`}
+          <button class="btn" onclick="downloadMini('${escapeAttr(m.id)}')">Download backup</button>
+          <h3 style="margin-top:14px;">Move to a new mini</h3>
+          <p class="helptext">Lost or broken mini? Enter a new blank mini's claim code. ${escapeHtml(m.name)} moves to it, and the old mini will only say it has moved.</p>
+          <div class="notes-add-row"><input type="text" id="moveCode" placeholder="New mini's claim code" autocomplete="off" style="text-transform:uppercase;"><button class="btn" ${MINIS.busy ? 'disabled' : ''} onclick="moveMini('${escapeAttr(m.id)}')">Move</button></div>
+        </div>` : ''}
+      </div>`;
+    }).join('');
+  el('app').innerHTML = `
+    <div class="top-nav"><button class="link-btn" onclick="goToLanding()">&larr; The Ledger</button></div>
+    <div class="panel" style="max-width:720px;margin:0 auto;">
+      <div class="eyebrow">Your Collection</div>
+      <h2>My minis</h2>
+      <p class="helptext">Heroes on minis that belong to your ink key: <code class="ink-key">${escapeHtml(playerId())}</code>. Keep it private. If you lose it, a mini's original claim code can recover it below.</p>
+      ${MINIS.msg ? `<p class="${MINIS.ok ? 'hero-note' : 'error-text'}">${escapeHtml(MINIS.msg)}</p>` : ''}
+      ${MINIS.backupText ? `<div class="field"><label>Your backup (copy and keep it somewhere safe)</label><textarea readonly style="min-height:120px;" onclick="this.select()">${escapeHtml(MINIS.backupText)}</textarea></div>` : ''}
+      ${rows}
+      <div class="notes-add">
+        <h3>Import a backup</h3>
+        <p class="helptext">Restores a hero from a backup file. An unchanged backup brings back its mini exactly; to put it on a <b>new blank mini</b>, add that mini's claim code. Files that were edited can only make a new level 1 hero.</p>
+        <input type="file" id="importFile" accept=".json,application/json" onchange="readImportFile(this)">
+        <textarea id="importText" placeholder="...or paste the backup text here" style="min-height:70px;margin-top:8px;"></textarea>
+        <div class="notes-add-row" style="margin-top:8px;"><input type="text" id="importCode" placeholder="Blank mini's claim code (optional)" autocomplete="off" style="text-transform:uppercase;"><button class="btn" ${MINIS.busy ? 'disabled' : ''} onclick="importMini()">Import</button></div>
+      </div>
+      <div class="notes-add">
+        <h3>Recover a mini</h3>
+        <p class="helptext">Lost your ink key (new phone, cleared browser)? Enter the mini's link or tap address and its <b>original claim code</b> to make it yours again here.</p>
+        <div class="notes-add-row"><input type="text" id="recoverTag" placeholder="Mini link, e.g. thedndledger.com/t/h_..." autocomplete="off"><input type="text" id="recoverCode" placeholder="Original claim code" autocomplete="off" style="text-transform:uppercase;"><button class="btn" ${MINIS.busy ? 'disabled' : ''} onclick="recoverMini()">Recover</button></div>
+      </div>
+    </div>`;
+}
+async function minisAction(fn) {
+  if (MINIS.busy) return;
+  MINIS.busy = true; MINIS.msg = ''; render();
+  try { await fn(); } catch (e) { MINIS.ok = false; MINIS.msg = niceError(e); }
+  finally { MINIS.busy = false; if (VIEW === 'minis') render(); }
+}
+async function toggleMini(id) {
+  MINIS.open = MINIS.open === id ? null : id;
+  MINIS.backupText = '';
+  render();
+  if (MINIS.open === id) {
+    try { MINIS.snaps[id] = (await minisCall('snapshots', { tagId: id })).snapshots || []; }
+    catch (e) { MINIS.snaps[id] = []; MINIS.ok = false; MINIS.msg = niceError(e); }
+    if (VIEW === 'minis') render();
+  }
+}
+function restoreMini(id, snapshotId) {
+  if (!confirm('Restore this saved version? Your current version is kept as a backup too.')) return;
+  minisAction(async () => {
+    await minisCall('restore', { tagId: id, snapshotId });
+    MINIS.ok = true; MINIS.msg = 'Restored. The next tap of that mini brings this version back.';
+    MINIS.snaps[id] = (await minisCall('snapshots', { tagId: id })).snapshots || [];
+    await loadMyMinis();
+  });
+}
+function downloadMini(id) {
+  minisAction(async () => {
+    const { file } = await minisCall('export', { tagId: id });
+    const text = JSON.stringify(file, null, 2);
+    if (IS_APP) { MINIS.backupText = text; MINIS.ok = true; MINIS.msg = 'Here is your backup. Copy it and keep it somewhere safe.'; return; }
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+    a.download = `${(file.hero && file.hero.name || 'hero').replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-backup.json`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    MINIS.ok = true; MINIS.msg = 'Backup downloaded.';
+  });
+}
+function moveMini(id) {
+  const code = (el('moveCode') || {}).value || '';
+  if (!code.trim()) return;
+  if (!confirm('Move this hero to the new mini? The old mini will stop working and only say it has moved.')) return;
+  minisAction(async () => {
+    const r = await minisCall('move', { tagId: id, claimCode: code.trim() });
+    MINIS.ok = true; MINIS.msg = 'Moved. Tap the new mini to keep playing; the old one now says it has moved.';
+    MINIS.open = null;
+    await loadMyMinis();
+    return r;
+  });
+}
+function readImportFile(input) {
+  const f = input.files && input.files[0];
+  if (!f) return;
+  const fr = new FileReader();
+  fr.onload = () => { const t = el('importText'); if (t) t.value = String(fr.result || ''); };
+  fr.readAsText(f);
+}
+function importMini() {
+  const text = ((el('importText') || {}).value || '').trim();
+  const code = ((el('importCode') || {}).value || '').trim();
+  if (!text) return;
+  let file;
+  try { file = JSON.parse(text); } catch (e) { MINIS.ok = false; MINIS.msg = "That isn't a Ledger hero backup."; return render(); }
+  minisAction(async () => {
+    await minisCall('import', { file, claimCode: code || undefined });
+    MINIS.ok = true; MINIS.msg = code ? 'Imported onto the new mini. Tap it to play.' : 'Backup restored onto its mini.';
+    await loadMyMinis();
+  });
+}
+function recoverMini() {
+  const raw = ((el('recoverTag') || {}).value || '').trim();
+  const code = ((el('recoverCode') || {}).value || '').trim();
+  const m = /(h_[a-z0-9]{10,40})/.exec(raw);
+  if (!m || !code) { MINIS.ok = false; MINIS.msg = 'Enter the mini\'s link and its claim code.'; return render(); }
+  minisAction(async () => {
+    await minisCall('recover', { tagId: m[1], claimCode: code });
+    MINIS.ok = true; MINIS.msg = 'Recovered. That mini belongs to this ink key now.';
+    await loadMyMinis();
+  });
+}
+window.openMyMinis = openMyMinis;
+window.toggleMini = toggleMini;
+window.restoreMini = restoreMini;
+window.downloadMini = downloadMini;
+window.moveMini = moveMini;
+window.readImportFile = readImportFile;
+window.importMini = importMini;
+window.recoverMini = recoverMini;
+
 /* ---------------- Battle map ----------------
    A square grid (1 square = 5 ft) kept in the room's meta.grid, so every player sees it live through the
    rooms realtime channel. The GM sets it up and moves foes with directives:
@@ -2392,6 +2612,7 @@ function renderSheetTab() {
       ${progressHTML(c)}
       ${levelUpHTML(c)}
       ${miniPanelHTML(c)}
+      ${forgePanelHTML(c, FORGE_TAG)}
       ${abilityGridHTML(c)}
       <p class="helptext" style="margin:-4px 0 20px;">HP only changes through the game: damage from attacks, traps and falls; healing from potions, spells and rests.</p>
 
@@ -2711,7 +2932,8 @@ let TAG_ROOM = null;   // { code, name } of the table this device is at, if it s
 async function openTag(id) {
   VIEW = 'tag'; TAG = null; TAG_STATE = 'loading'; TAG_MSG = ''; TAG_ROOM = null;
   render();
-  const { data, error } = await supabase.from('tags').select('id, kind, data').eq('id', id).maybeSingle();
+  const { data, error } = await supabase.from('tags').select('id, kind, data, status, moved_to').eq('id', id).maybeSingle();
+  minisCall('tap', { tagId: id }).catch(() => {}); // every tap is logged, so copied stickers show up
   if (error) { console.error(error); TAG_STATE = 'error'; }
   else if (!data || !['hero', 'monster', 'item'].includes(data.kind)) TAG_STATE = 'missing';
   else { TAG = data; TAG_STATE = ''; }
@@ -2744,6 +2966,9 @@ function renderTag() {
   if (TAG_STATE === 'loading') body = `<p class="thinking">Reading your mini...</p>`;
   else if (TAG_STATE === 'error') body = `<p class="error-text">Couldn't read this mini right now. Check your connection and tap it again.</p>`;
   else if (TAG_STATE === 'missing' || !TAG) body = `<h2>Unknown mini</h2><p class="helptext">This mini isn't linked to anything The Ledger knows about. If it came in a kit, contact support.</p>`;
+  else if (TAG.status === 'moved') body = `<h2>This mini has moved</h2><p class="helptext">Its hero now lives on a different mini. Tap that one to play.</p>`;
+  else if (TAG.status === 'disabled') body = `<h2>This mini has been retired</h2><p class="helptext">If you think that's a mistake, contact support.</p>`;
+  else if (TAG.kind === 'hero' && TAG.status === 'blank') { eyebrow = 'Blank Mini'; body = tagBlankHTML(); }
   else if (TAG.kind === 'hero') { eyebrow = 'A Hero Answers'; body = tagHeroHTML(); }
   else if (TAG.kind === 'item') { eyebrow = 'Loot Found'; body = tagItemHTML(); }
   else { eyebrow = 'Monster Mini'; body = tagMonsterHTML(); }
@@ -3241,6 +3466,7 @@ function miniPanelHTML(c) {
   return `<div class="mini-panel">
     <p class="helptext"><b>${escapeHtml(c.name)} came from your mini.</b> Their level, max HP, gear and notes are saved back to it when you level up, advance the session or leave, so the next tap brings them back as they are now.</p>
     <button class="btn" ${MINI_SAVE.busy ? 'disabled' : ''} onclick="saveHeroToMini()">Save to my mini now</button>
+    <button class="link-btn" onclick="openMyMinis()">Backups and moving: My minis</button>
     ${MINI_SAVE.msg ? `<p class="helptext mini-save-msg">${escapeHtml(MINI_SAVE.msg)}</p>` : ''}
   </div>`;
 }

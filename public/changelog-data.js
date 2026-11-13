@@ -9,6 +9,12 @@ window.LEDGER_CHANGELOG = [
   {
     date: "2026-11-13",
     type: "feature",
+    title: "Blank hero minis, backups and moving",
+    detail: "Forge your own hero onto a blank mini for free with the claim code from its card. My minis lists your heroes and keeps the last 10 versions of each so you can roll back, download a backup, or move a hero to a new mini if the old one is lost or broken. Lost your ink key? The mini's claim code gets it back."
+  },
+  {
+    date: "2026-11-13",
+    type: "feature",
     title: "Field Notes: your party's journal",
     detail: "A new Field Notes tab keeps everything your party has learned: quests, people, places, clues, encounters and loot. The GM writes notes as the story unfolds, anyone at the table can add their own, and it's all searchable. The GM also reads the journal every turn, so it remembers what happened sessions ago. The old guide is now the How to Play tab."
   },

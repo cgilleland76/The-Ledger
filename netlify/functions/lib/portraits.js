@@ -77,6 +77,38 @@ async function checkImage(imageUrl, platform) {
   return { ok: true };
 }
 
+// Same rating rules for text (a hero's name, description, notes and gear before it goes on a mini).
+async function checkText(text, platform) {
+  const key = process.env.OPENAI_API_KEY;
+  if (!key) return { ok: false, code: "moderation_failed:no_key" };
+  if (!String(text || "").trim()) return { ok: true };
+  let scores;
+  try {
+    const resp = await fetch("https://api.openai.com/v1/moderations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+      body: JSON.stringify({ model: "omni-moderation-latest", input: String(text).slice(0, 8000) }),
+    });
+    if (!resp.ok) return { ok: false, code: `moderation_failed:http_${resp.status}` };
+    const data = await resp.json();
+    scores = data && data.results && data.results[0] && data.results[0].category_scores;
+    if (!scores) return { ok: false, code: "moderation_failed:no_scores" };
+  } catch (e) {
+    return { ok: false, code: "moderation_failed:network" };
+  }
+  return verdictFor(scores, platform);
+}
+function verdictFor(scores, platform) {
+  for (const [cat, limit] of Object.entries(ALWAYS_BLOCKED)) {
+    if ((scores[cat] || 0) >= limit) return { ok: false, code: `always_blocked:${cat}` };
+  }
+  const ceiling = ceilings()[platformOf(platform)];
+  for (const [cat, limit] of Object.entries(ceiling.max)) {
+    if ((scores[cat] || 0) > limit) return { ok: false, code: `over_${ceiling.label}:${cat}` };
+  }
+  return { ok: true };
+}
+
 const extFor = (contentType) => (contentType === "image/webp" ? "webp" : contentType === "image/png" ? "png" : "jpg");
 // Storage request with the service-role key (new sb_secret keys go in apikey; legacy JWT keys may need Authorization too).
 async function storageCall(method, bucket, objectPath, body, contentType) {
@@ -113,4 +145,4 @@ async function storePortrait(roomCode, characterId, bytes, contentType, tag) {
 
 const REJECTED_MESSAGE = "That picture can't be used. Try a different one.";
 
-module.exports = { PORTRAIT_MAX_RATING, ALWAYS_BLOCKED, checkImage, storePortrait, storeImage, deleteImageByUrl, extFor, platformOf, REJECTED_MESSAGE };
+module.exports = { PORTRAIT_MAX_RATING, ALWAYS_BLOCKED, checkImage, checkText, storePortrait, storeImage, deleteImageByUrl, extFor, platformOf, REJECTED_MESSAGE };

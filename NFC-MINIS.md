@@ -75,6 +75,19 @@ Players will want to turn **their own character** into a mini. Allow it **only t
 
 Columns to add when building this: `owner text`, `status text default 'active'`, `source jsonb` (room code and character it was forged from), and `checked_at timestamptz`.
 
+## Blank minis, claim codes and the register (built 2026-11-13)
+- **Making a batch:** `node scripts/make-blank-minis.js KIT1 20` writes `kits/KIT1.sql` (run once in Supabase) and `kits/KIT1.csv` (serial, sticker link, claim code). `kits/` is git-ignored; the CSV is the only copy of the codes. The database keeps only `sha256("claim:" + code)`.
+- **Register:** `tag_batches` (one row per print run, `active` switch) and `tag_claims` (tag, batch, serial, code hash, claimed at/by). A code works once, only if registered and its batch is active. Set `active = false` to kill a leaked batch.
+- **Log:** `tag_events` records every tap, forge, bad code, save, restore, move and recovery with a hashed player key. The `tag_copy_watch` view lists minis tapped by 5+ different players in 24 hours (a likely cloned sticker).
+- **Owners** are stored as `sha256(ink key)`, never the raw key (tags are publicly readable).
+- **Free first claim:** forging onto a blank mini costs no ink. Server checks: `lib/heroes.js` stat limits plus the text content check; at most `MINIS_MAX_PER_DAY` (3) a day and `MINIS_MAX_PER_KEY` (25) in total.
+- **Snapshots:** the last 10 saves per hero (`tag_snapshots`), restorable from **My minis**.
+- **Move:** `tag_move` makes the new mini active and marks the old one `moved` (with `moved_to`) in one transaction. The old mini shows "This mini has moved".
+- **Backups:** server-signed files (`HERO_BACKUP_SECRET`, else the service-role key). A signed, unchanged file restores exactly; an unsigned or edited one can only forge a new level-1 hero and must pass the stat checks.
+- **Recovery:** the original claim code moves a mini to a new ink key; 5 wrong codes per mini per hour, all logged.
+- **Copy-proofing:** plain NTAG213 stickers only hold a link and can be cloned. The defences are single-use codes, server-side ownership and the copy watch. Truly unclonable minis need NTAG 424 DNA (SUN signed links), a later upgrade.
+- All writes run through `security definer` functions (`tag_save`, `tag_forge`, `tag_move`, `tag_restore`, `tag_recover`) callable only by the service role, via `/api/minis` and `/api/hero-save`.
+
 ## Data model (new table)
 ```sql
 create table tags (

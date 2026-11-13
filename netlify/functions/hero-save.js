@@ -15,6 +15,7 @@
 
 const { ROOM_CODE_RE, sbRest, corsHeaders } = require("./lib/shared");
 const { validPlayer, sbAdmin } = require("./lib/billing");
+const { ownerHash } = require("./lib/heroes");
 
 const TAG_ID_RE = /^h_[a-z0-9]{10,40}$/;
 const CHAR_ID_RE = /^[a-z0-9]{4,20}$/i;
@@ -77,10 +78,14 @@ exports.handler = async function (event) {
 
   try {
     const enc = encodeURIComponent;
-    const tags = await sbAdmin(`tags?id=eq.${enc(tagId)}&kind=eq.hero&select=data,claimed_by,updated_at`);
+    const tags = await sbAdmin(`tags?id=eq.${enc(tagId)}&kind=eq.hero&select=data,claimed_by,updated_at,status`);
     if (!tags || !tags.length) return reply(404, { error: "That mini isn't a hero The Ledger knows." });
     const tag = tags[0];
-    if (tag.claimed_by && tag.claimed_by !== playerId) {
+    const owner = ownerHash(playerId); // owners are stored as a hash of the ink key, never the key
+    if (tag.status && tag.status !== "active") {
+      return reply(409, { error: tag.status === "moved" ? "This hero has moved to a new mini. Tap the new one to keep playing." : "This mini isn't active." });
+    }
+    if (tag.claimed_by && tag.claimed_by !== owner) {
       return reply(403, { error: "This mini is bound to another player, so its progress can only be saved from their device. You can still play it." });
     }
     if (tag.updated_at && Date.now() - Date.parse(tag.updated_at) < MIN_SAVE_GAP_MS) {
@@ -92,10 +97,9 @@ exports.handler = async function (event) {
     if (!ch || ch.heroTag !== tagId) return reply(404, { error: "That character didn't come from this mini." });
 
     const data = progressFrom(tag.data, ch);
-    await sbAdmin(`tags?id=eq.${enc(tagId)}`, {
-      method: "PATCH",
-      body: { data, claimed_by: tag.claimed_by || playerId, updated_at: new Date().toISOString() },
-    });
+    // One database function: saves, keeps a snapshot (last 10), logs it, and claims an unowned mini.
+    const r = await sbAdmin("rpc/tag_save", { method: "POST", body: { p_tag: tagId, p_data: data, p_owner: owner, p_event: "save" } });
+    if (!r || !r.ok) return reply(409, { error: r && r.code === "not_owner" ? "This mini is bound to another player, so its progress can only be saved from their device. You can still play it." : "This mini can't be saved right now." });
     return reply(200, { saved: { level: data.level, maxhp: data.maxhp, items: data.inventory.length }, claimed: !tag.claimed_by });
   } catch (e) {
     console.error("hero-save error:", e.message);

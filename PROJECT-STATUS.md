@@ -25,6 +25,7 @@ Work from either Claude session starts here.
 - GM and other failures show in-world messages to players; details go to the Netlify function log only.
 - Portrait content check: every portrait (uploaded or AI-generated) goes through `lib/portraits.js` — OpenAI `omni-moderation-latest` against `PORTRAIT_MAX_RATING` (website NC-17, Android R; missing/unknown platform = Android; env var `PORTRAIT_MAX_RATING` overrides), `sexual/minors` and illegal categories always blocked, fail closed, reason codes in the Netlify function log only. Stored with the service-role key via `/api/portrait-upload` and `portrait-background`.
 - Scene backgrounds (`scenes` bucket, `rooms.scene_url/scene_status/scene_updated_at/scene_count`): host uploads its own background for free (`/api/scene-upload`); AI painting (`scene-background`) needs `SCENE_IMAGES_ENABLED=true` plus the room's opt-in in Field Notes, limit `SCENE_MAX_PER_ROOM` (3), 60 s cooldown, 10 ink when billing is on. Same content check as portraits; one file per room, old one deleted. Shown under the battle map and on `/display`. AI painting not yet tried live (switch is off).
+- Blank hero minis (`supabase/minis.sql`, `/api/minis`, `lib/heroes.js`, `scripts/make-blank-minis.js`): claim codes registered by batch and serial (hashes only), free first forge with server stat and content checks, tap/claim log with `tag_copy_watch`, last 10 snapshots, My minis screen, one-transaction move, signed backups (edited files forge level 1 only), recovery by claim code. Owners stored as sha256 of the ink key. See `NFC-MINIS.md`.
 - Upload your own portrait on the Sheet tab (cropped to 640px square in the browser, stored in the `portraits` bucket, no ink).
 - Ink paywall is deployed but OFF (`BILLING_ENFORCED` unset). `billing.sql` and `tags-phase2.sql` have been run; `SUPABASE_SERVICE_ROLE_KEY` is set in Netlify. Google Play / RevenueCat (steps 7–10 in `ANDROID-APP.md`) are on hold until the owner is ready.
 
@@ -46,3 +47,4 @@ Work from either Claude session starts here.
 - Real portrait generation and the click chips on the live site.
 - Portrait upload on a real phone (Android camera/gallery picker) and against the real storage bucket.
 - Loot coins and level-up saving with real stickers (tested only against a fake database).
+- Blank minis with a real printed batch and real stickers (forge, move, recover).
