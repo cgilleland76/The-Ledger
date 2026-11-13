@@ -930,9 +930,70 @@ function sheetMiniHTML() {
     ${portraitHeader(c, `<div class="rname"><b>${escapeHtml(c.name)}</b><span class="rclass">Lv${c.level} ${escapeHtml(c.race)} ${escapeHtml(c.klass)}</span></div>`)}
     <div class="hpbar"><div class="hpbar-fill ${pct < 30 ? 'low' : ''}" style="width:${pct}%"></div></div>
     <div class="hprow"><span>HP ${c.hp}/${c.maxhp}</span><span>AC ${c.ac}</span></div>
+    ${deathSaveHTML(c)}
     ${abilityGridHTML(c)}
   </div>`;
 }
+/* ---------------- Death saves ----------------
+   A hero at 0 HP is dying (c.dying = { s, f }) until three successes (stable), three failures (dead), a
+   natural 20 (back up with 1 HP), healing, or [[stable]]. The dying player rolls with the button (or
+   "/roll d20 death save"); the game counts it. One death save per GM turn. */
+function dyingText(c) {
+  if (c.dead) return 'dead';
+  if (c.stable) return 'unconscious, stable';
+  const d = c.dying || { s: 0, f: 0 };
+  return `death saves ${d.s} success${d.s === 1 ? '' : 'es'} / ${d.f} failure${d.f === 1 ? '' : 's'}`;
+}
+const isDying = c => !!c && (parseInt(c.hp) || 0) <= 0 && !c.dead && !c.stable;
+function deathSaveDue(c) { return isDying(c) && (c.dying || {}).at !== gmCount(); }
+function deathSaveHTML(c) {
+  if (!c || (parseInt(c.hp) || 0) > 0) return '';
+  if (c.dead) return `<p class="error-text" style="margin:8px 0 0;">${escapeHtml(c.name)} has died.</p>`;
+  if (c.stable) return `<p class="helptext" style="margin:8px 0 0;">Unconscious but stable at 0 HP. Any healing wakes ${escapeHtml(c.name)}.</p>`;
+  const d = c.dying || { s: 0, f: 0 };
+  const pips = (n, cls) => [0, 1, 2].map(i => `<span class="ds-pip ${i < n ? cls : ''}"></span>`).join('');
+  const mine = c === ROSTER[MY_CHAR_ID];
+  return `<div class="death-saves">
+    <div><b>Dying</b> &middot; successes ${pips(d.s, 'ok')} failures ${pips(d.f, 'bad')}</div>
+    ${mine ? (deathSaveDue(c)
+      ? `<button class="btn rust wide" onclick="rollDeathSave()">Roll death save</button>`
+      : `<p class="helptext">Death save rolled. Roll the next one on your next turn, after the GM's reply.</p>`) : ''}
+  </div>`;
+}
+async function rollDeathSave() {
+  const c = ROSTER[MY_CHAR_ID];
+  if (!deathSaveDue(c)) return;
+  const n = Math.floor(Math.random() * 20) + 1;
+  const d = c.dying || { s: 0, f: 0 };
+  let outcome;
+  if (n === 20) { c.hp = 1; delete c.dying; outcome = 'natural 20: back on their feet with 1 HP!'; }
+  else {
+    if (n === 1) d.f += 2; else if (n >= 10) d.s += 1; else d.f += 1;
+    d.s = Math.min(3, d.s); d.f = Math.min(3, d.f); d.at = gmCount(); c.dying = d;
+    if (d.f >= 3) { c.dead = true; delete c.dying; outcome = 'three failures: ' + c.name + ' has died.'; }
+    else if (d.s >= 3) { c.stable = true; delete c.dying; outcome = 'three successes: stable, unconscious at 0 HP.'; }
+    else outcome = `${n === 1 ? 'natural 1: two failures' : n >= 10 ? 'success' : 'failure'} (${dyingText(c)})`;
+  }
+  const entry = { id: uid(6), author: c.name, type: 'roll', text: `rolls d20(${n}) = ${n} (death save) — ${outcome}` };
+  heldLogIds.add(entry.id);
+  const shown = showDiceRoll({ sides: 20, dice: [{ v: n, dropped: false }], mod: 0, total: n, flagged: false, title: 'Death save',
+    onReveal: () => { heldLogIds.delete(entry.id); if (VIEW === 'game') render(); } });
+  if (!shown) heldLogIds.delete(entry.id);
+  await dbUpsertCharacter(MY_CHAR_ID, ROOM, c);
+  await dbInsertLog(ROOM, entry);
+  LOG.push({ ...entry, ts: Date.now() });
+  render();
+}
+window.rollDeathSave = rollDeathSave;
+// [[stable: Mira]] — someone stabilised them (Medicine check, healer's kit, spare the dying).
+function resolveStable(t) {
+  const c = findTarget(t.target);
+  if (!c) return sysEntry(`${t.target}: the game couldn't find that character to stabilise.`);
+  if (!isDying(c)) return sysEntry(`${c.name} isn't dying, so there's nothing to stabilise.`);
+  c.stable = true; delete c.dying;
+  return sysEntry(`✚ ${c.name} is stable: unconscious at 0 HP, no more death saves.`, { saveAll: true });
+}
+
 /* ---------------- Roll picker + unlisted-modifier flag ---------------- */
 const UNLISTED_FLAG = '⚠ unlisted modifier';
 
@@ -1233,6 +1294,7 @@ function renderRosterMini() {
       ${portraitHeader(c, `<div class="rname"><b>${escapeHtml(c.name)}</b><span class="rclass">Lv${c.level} ${escapeHtml(c.race)} ${escapeHtml(c.klass)}</span></div>`)}
       <div class="hpbar"><div class="hpbar-fill ${pct < 30 ? 'low' : ''}" style="width:${pct}%"></div></div>
       <div class="hprow"><span>HP ${c.hp}/${c.maxhp}</span><span>AC ${c.ac}</span></div>
+      ${deathSaveHTML(c)}
       ${abilityGridHTML(c)}
     </div>`;
   }).join('');
@@ -1247,6 +1309,7 @@ async function submitAction(override) {
   if (!fromChip) { input.value = ''; composerDraft = ''; }
   const me = ROSTER[MY_CHAR_ID];
   const authorName = me ? me.name : 'Player';
+  if (/^\/roll\b.*\bdeath\b/i.test(text) && isDying(me)) return deathSaveDue(me) ? rollDeathSave() : null;
 
   // Matches "/roll +5", "/roll 1d20+4", "/roll 2d6+3 adv", "/roll d20", "/roll 1d4", and an
   // optional label after the dice, e.g. "/roll +7 Stealth" or "/roll +7 adv Stealth".
@@ -1376,10 +1439,10 @@ async function callGM(prompt, fallbackEntry) {
     GM_PENDING = false;
     GM_ABORT = null;
   }
-  const { clean, attacks, heals, gives, uses, damages, notes, foesAdded, hits, mapOps, defeats, successes, rests } = entry.type === 'gm' ? extractFoeAttacks(entry.text)
-    : { clean: entry.text, attacks: [], heals: [], gives: [], uses: [], damages: [], notes: [], foesAdded: [], hits: [], mapOps: [], defeats: [], successes: [], rests: [] };
+  const { clean, attacks, heals, gives, uses, damages, notes, foesAdded, hits, mapOps, defeats, successes, rests, stables } = entry.type === 'gm' ? extractFoeAttacks(entry.text)
+    : { clean: entry.text, attacks: [], heals: [], gives: [], uses: [], damages: [], notes: [], foesAdded: [], hits: [], mapOps: [], defeats: [], successes: [], rests: [], stables: [] };
   // A message that was nothing but directives has no story text of its own to log.
-  if (clean || !(attacks.length || heals.length || gives.length || uses.length || damages.length || notes.length || foesAdded.length || hits.length || mapOps.length || defeats.length || successes.length || rests.length)) {
+  if (clean || !(attacks.length || heals.length || gives.length || uses.length || damages.length || notes.length || foesAdded.length || hits.length || mapOps.length || defeats.length || successes.length || rests.length || stables.length)) {
     entry.text = clean || entry.text;
     await dbInsertLog(ROOM, entry);
     LOG.push({ ...entry, ts: Date.now() });
@@ -1387,7 +1450,7 @@ async function callGM(prompt, fallbackEntry) {
   // Damage, healing and items change the sheet itself: save every character that changed.
   // XP is awarded before a rest, so a long rest in the same message can unlock a level-up.
   const results = [resolveMapOps(mapOps), ...foesAdded.map(resolveFoe), ...attacks.map(resolveFoeAttack), ...hits.map(resolveHit), ...damages.map(resolveDamage), ...heals.map(resolveHeal), ...gives.map(resolveGive), ...uses.map(resolveUse),
-    ...defeats.map(resolveDefeat), ...successes.map(resolveSuccess), ...notes.map(resolveNote), ...rests.map(k => k === 'long' ? resolveLongRest() : resolveShortRest())];
+    ...defeats.map(resolveDefeat), ...successes.map(resolveSuccess), ...notes.map(resolveNote), ...rests.map(k => k === 'long' ? resolveLongRest() : resolveShortRest()), ...stables.map(resolveStable)];
   for (const r of results.filter(Boolean)) {
     const { hpChar, saveAll, saveMeta, ...result } = r;
     await dbInsertLog(ROOM, result);
@@ -2429,6 +2492,7 @@ const HIT_DIRECTIVE = /\[\[\s*hit:([^\]]*)\]\]/gi;
 const DAMAGE_DIRECTIVE = /\[\[\s*damage:([^\]]*)\]\]/gi;
 const DEFEAT_DIRECTIVE = /\[\[\s*defeat:([^\]]*)\]\]/gi;
 const SUCCESS_DIRECTIVE = /\[\[\s*success:([^\]]*)\]\]/gi;
+const STABLE_DIRECTIVE = /\[\[\s*stable:([^\]]*)\]\]/gi;
 const REST_DIRECTIVE = /\[\[\s*(short|long)[- ]rest\s*(?::[^\]]*)?\]\]/gi;
 function extractFoeAttacks(text) {
   const attacks = [];
@@ -2443,6 +2507,7 @@ function extractFoeAttacks(text) {
   const defeats = [];
   const successes = [];
   const rests = [];
+  const stables = [];
   const clean = String(text).replace(FOE_DIRECTIVE, (_, body) => {
     const p = body.split('|').map(s => s.trim());
     if (p.length >= 5 && attacks.length < 4) attacks.push({ who: p[0].slice(0, 40), atk: p[1].slice(0, 40), bonus: p[2], dmg: p[3], target: p[4], ac: p[5] });
@@ -2486,11 +2551,15 @@ function extractFoeAttacks(text) {
     const p = body.split('|').map(s => s.trim());
     if (p[0] && successes.length < 4) successes.push({ target: p[0], skill: (p[1] || '').slice(0, 40), dc: p[2] || '' });
     return '';
+  }).replace(STABLE_DIRECTIVE, (_, body) => {
+    const name = body.split('|')[0].trim();
+    if (name && stables.length < 4) stables.push({ target: name });
+    return '';
   }).replace(REST_DIRECTIVE, (_, kind) => {
     if (!rests.length) rests.push(kind.toLowerCase());
     return '';
   }).replace(/\n{3,}/g, '\n\n').trim();
-  return { clean, attacks, heals, gives, uses, damages, notes, foesAdded, hits, mapOps, defeats, successes, rests };
+  return { clean, attacks, heals, gives, uses, damages, notes, foesAdded, hits, mapOps, defeats, successes, rests, stables };
 }
 function findTarget(name) {
   const chars = Object.values(ROSTER);
@@ -2515,10 +2584,22 @@ function rollSpec(d, mult) {
 }
 function charIdOf(c) { return Object.keys(ROSTER).find(k => ROSTER[k] === c); }
 // Moves a character's HP (never below 0 or above max) and reports before/after.
-function changeHP(c, delta) {
+function changeHP(c, delta, crit) {
   const before = parseInt(c.hp) || 0;
   const max = parseInt(c.maxhp) || Math.max(before, 1);
+  if (c.dead && delta > 0) return { before, after: before, max }; // the dead aren't healed by a potion
   c.hp = Math.max(0, Math.min(max, before + delta));
+  if (!c.ally) {
+    if (c.hp > 0) { delete c.dying; delete c.stable; }
+    else if (before > 0) { c.dying = { s: 0, f: 0 }; delete c.stable; }
+    else if (delta < 0 && !c.dead) {
+      // Hurt while already at 0 HP: a failed death save (two on a critical hit), and no longer stable.
+      const d = c.dying || { s: 0, f: 0 };
+      d.f = Math.min(3, d.f + (crit ? 2 : 1));
+      c.dying = d; delete c.stable;
+      if (d.f >= 3) { c.dead = true; delete c.dying; }
+    }
+  }
   return { before, after: c.hp, max };
 }
 // The result's hpChar names the character whose HP changed, so the caller can save it.
@@ -2554,9 +2635,9 @@ function resolveFoeAttack(a) {
         text += ` — ${target.name}'s HP is the GM's to track`;
       }
     } else {
-      const { before, after, max } = changeHP(target, -dmg.total);
+      const { before, after, max } = changeHP(target, -dmg.total, crit);
       hpChar = charIdOf(target);
-      text += ` — ${target.name}: HP ${before} → ${after}/${max}${after === 0 ? ' (down!)' : ''}`;
+      text += ` — ${target.name}: HP ${before} → ${after}/${max}${after === 0 ? (target.dead ? ' — three failed death saves: ' + target.name + ' is dead.' : before === 0 ? ` (a failed death save: ${dyingText(target)})` : ' (down! dying)') : ''}`;
     }
   }
   return { id: uid(6), author: a.who, type: 'roll', text, hpChar, saveMeta: foeTouched, saveAll: foeTouched };
@@ -2594,7 +2675,8 @@ function resolveDamage(d) {
     const halved = half || d.half;
     const dmg = halved ? Math.floor(r.total / 2) : r.total;
     const { before, after, max } = changeHP(c, -dmg);
-    return `${c.name} ${dmg}${halved ? ' (halved by the save)' : ''} — HP ${before} → ${after}/${max}${after === 0 ? ' (down!)' : ''}`;
+    const state = after > 0 ? '' : c.ally ? (before > 0 ? ' (down!)' : '') : c.dead ? ` — ${c.name} is dead` : before === 0 ? ` (a failed death save: ${dyingText(c)})` : ' (down! dying)';
+    return `${c.name} ${dmg}${halved ? ' (halved by the save)' : ''} — HP ${before} → ${after}/${max}${state}`;
   });
   const allyHit = targets.some(({ c }) => c.ally);
   const rolled = dice.flat === undefined ? ` (${r.text} = ${r.total})` : '';
@@ -2712,7 +2794,7 @@ async function askGM() {
   if (GM_PENDING) return;
   const rerolls = rerollIds();
   const recent = LOG.slice(-30).map(e => `${e.author} (${e.type}): ${e.text}${rerolls.has(e.id) ? ' ' + REROLL_TAG : ''}`).join('\n');
-  const party = Object.values(ROSTER).map(c => `${c.name} — Lv${c.level} ${c.race} ${c.klass}, HP ${c.hp}/${c.maxhp} (current, from the sheet), AC ${c.ac}, XP ${xpOf(c)}, inventory: ${earnedItems(c).join(', ') || 'none'}${handItems(c).length ? `; written in by the player, never given in the story (NOT owned): ${handItems(c).join(', ')}` : ''}
+  const party = Object.values(ROSTER).map(c => `${c.name} — Lv${c.level} ${c.race} ${c.klass}, HP ${c.hp}/${c.maxhp} (current, from the sheet)${(parseInt(c.hp) || 0) <= 0 ? ` — ${c.dead ? 'DEAD' : c.stable ? 'UNCONSCIOUS, stable' : `DYING, ${dyingText(c)}${deathSaveDue(c) ? ', death save not yet rolled this turn' : ', death save already rolled this turn'}`}` : ''}, AC ${c.ac}, XP ${xpOf(c)}, inventory: ${earnedItems(c).join(', ') || 'none'}${handItems(c).length ? `; written in by the player, never given in the story (NOT owned): ${handItems(c).join(', ')}` : ''}
   Sheet modifiers (the only d20 bonuses this character has): ${rollOptions(c).map(o => `${o.name} ${fmtMod(o.mod)}`).join(', ')}`).join('\n');
   const prompt = `You are the Game Master for a tabletop RPG ${MODE === 'solo' ? 'solo story' : 'session'} titled "${META.name}".
 Ruleset: ${META.ruleset}. Tone/genre: ${META.tone || 'unspecified — infer something fitting'}. Length: ${lengthLabel[META.length]}.
@@ -2738,7 +2820,7 @@ Roll resolution rules — follow these exactly:
 - If a turn involves multiple attacks or rolls, resolve each one completely — roll, then damage if applicable, then narration — before moving to the next.
 - Always phrase a requested roll using the exact command the player should type, formatted as inline code, e.g. "/roll +5 Attack (DEX)" for an attack, "/roll 2d6+3" for damage, "/roll +5 adv Attack (DEX)" for advantage. Never say "roll a d20" or similar without giving the exact /roll command.
 - For any d20 check or save, the bonus in your /roll command must be one of that character's Sheet modifiers listed above, and the command should name it, e.g. "/roll +3 Dexterity" or "/roll +7 Stealth". Never add a proficiency bonus, expertise, or any other bonus that isn't on the sheet. If the right skill or tool isn't listed, use the matching ability's modifier as-is (and say that's what you're using). Weapon attack rolls use the listed "Attack (STR)" or "Attack (DEX)" modifier, e.g. "/roll +5 Attack (DEX)". Damage rolls use dice notation for the weapon or spell, e.g. "/roll 1d8+3".
-- Players never roll for monsters. For each attack a foe makes, write it in the fiction and put this directive on its own line: [[foe-attack: Goblin B | scimitar | +4 | 1d6+2 | Telilin]] (attacker | attack name | to-hit bonus from its stat block | damage dice | the target's exact character name). When an ally NPC attacks an enemy, add the enemy's AC as a sixth field, e.g. [[foe-attack: Scout | longbow | +4 | 1d8+2 | Goblin A | AC 15]]; the result tells you what happened and you track the enemy's HP. The game rolls the attack against the target's AC and the damage if it hits, and posts the result to the log; use one directive per attack (max 4). Then stop: don't say whether it hit and don't state the AC. Narrate the outcome next turn, once the result is in the log. The game subtracts the damage from the target's HP itself, so never ask players to take it off their HP. For damage that isn't a foe's attack (a trap, a fall, poison, fire, a failed save), put [[damage: <their name> | <dice or a number> | <source>]] on its own line and the game rolls it and takes it off their HP; when a successful save halves it, ask for the save first and add "| half" if they made it. Area effects roll once for everyone: list every character caught in it and mark those who made their save, e.g. [[damage: Brannoc, Sera half | 8d6 | fireball]], or use "party" for everyone at the table. Healing that reaches several characters works the same way: [[heal: Brannoc, Sera | 1d4+3 | mass healing word]]. Players can't change their own HP, so never ask them to. For any healing (a potion, a spell) put [[heal: Telilin | 2d4+2 | potion of healing]] on its own line (the character's exact name | dice or a flat number | source); the game rolls it and raises their HP up to their maximum. One per healing, max 4. Never use [[heal]] to stabilise a dying character: stabilising (a healer's kit, a Medicine check, spare the dying) restores no HP, it only ends their death saves, so ask the player for a Medicine check (DC 10, or a healer's kit with no roll) and narrate them stable at 0 HP. When a player's own character is doing the healing (their spell or potion), ask that player to /roll it; once that roll is in the log, put [[heal: <their name> | <that roll's total> | <source>]] with the total as a plain number, and the game adds it. Never state anyone's new HP total yourself (the game posts it), and never work HP out from older log lines: a character's current HP is only the "HP x/y (current, from the sheet)" in the party list above.
+- Players never roll for monsters. For each attack a foe makes, write it in the fiction and put this directive on its own line: [[foe-attack: Goblin B | scimitar | +4 | 1d6+2 | Telilin]] (attacker | attack name | to-hit bonus from its stat block | damage dice | the target's exact character name). When an ally NPC attacks an enemy, add the enemy's AC as a sixth field, e.g. [[foe-attack: Scout | longbow | +4 | 1d8+2 | Goblin A | AC 15]]; the result tells you what happened and you track the enemy's HP. The game rolls the attack against the target's AC and the damage if it hits, and posts the result to the log; use one directive per attack (max 4). Then stop: don't say whether it hit and don't state the AC. Narrate the outcome next turn, once the result is in the log. The game subtracts the damage from the target's HP itself, so never ask players to take it off their HP. For damage that isn't a foe's attack (a trap, a fall, poison, fire, a failed save), put [[damage: <their name> | <dice or a number> | <source>]] on its own line and the game rolls it and takes it off their HP; when a successful save halves it, ask for the save first and add "| half" if they made it. Area effects roll once for everyone: list every character caught in it and mark those who made their save, e.g. [[damage: Brannoc, Sera half | 8d6 | fireball]], or use "party" for everyone at the table. Healing that reaches several characters works the same way: [[heal: Brannoc, Sera | 1d4+3 | mass healing word]]. Players can't change their own HP, so never ask them to. For any healing (a potion, a spell) put [[heal: Telilin | 2d4+2 | potion of healing]] on its own line (the character's exact name | dice or a flat number | source); the game rolls it and raises their HP up to their maximum. One per healing, max 4. A character at 0 HP is unconscious: never offer them options or actions, and never write choices for them; narrate what happens around them. Death saves belong to the game: when it's a DYING character's turn, ask that player to tap "Roll death save" (the game rolls it and counts it; its count is in the party list above, so never keep your own tally or roll it for them). Three successes leaves them stable, three failures means death, a natural 20 brings them back with 1 HP, and any healing wakes them. Damage to a character at 0 HP is a failed death save; the game counts that too. When someone stabilises a dying character, put [[stable: <their name>]] on its own line. Never use [[heal]] to stabilise a dying character: stabilising (a healer's kit, a Medicine check, spare the dying) restores no HP, it only ends their death saves, so ask the player for a Medicine check (DC 10, or a healer's kit with no roll) and narrate them stable at 0 HP. When a player's own character is doing the healing (their spell or potion), ask that player to /roll it; once that roll is in the log, put [[heal: <their name> | <that roll's total> | <source>]] with the total as a plain number, and the game adds it. Never state anyone's new HP total yourself (the game posts it), and never work HP out from older log lines: a character's current HP is only the "HP x/y (current, from the sheet)" in the party list above.
 - Items: each character's inventory above is what they really carry. Items "written in by the player" were typed in by the player and never given in the story: they are NOT owned. If a player tries to use one, it isn't in their pack, and say so plainly. When the story gives a character an item (found, bought, looted, handed over), put [[give: <their name> | <item>]] on its own line and the game adds it. When a character uses up a consumable (drinks a potion, reads a scroll, spends a charge item), put [[use: <their name> | <item>]] on its own line and the game removes one. Max 4 of each per message.
 - Battle map: when a fight starts, lay out a map before the first attack: [[map: 12x10]] (columns A-L, rows 1-10; at most 20x20), then [[place: <name> | <square>]] for every hero and foe (add "| ally" for a friendly NPC, e.g. [[place: Woman | E5 | ally]]), and [[wall: D2-D5, H7]] for walls or heavy cover. On later turns move foes with [[place]], use [[remove: <name>]] when one flees, and [[end-battle]] when the fight is over. Players move their own heroes on the map, so never move a hero yourself unless the story forces it (a shove, a fall). Use the map's distances: a melee attack needs 5 ft (10 ft with reach); a ranged attack past normal range has disadvantage and can't go past long range; an area spell hits everyone within its radius of the square it's centred on. With no battle map, give each foe's distance in the Foes line, e.g. **Foes:** Goblin A 4/7 HP, 30 ft.
 - Foe hit points belong to the game. When foes enter a fight, put [[foe: <name> | <hp>]] for each, with unique names (Goblin A, Goblin B); leave out the number for an SRD creature and the game uses its stat block. Never decide how much damage a hero deals: when a hero's attack hits, ask that player to /roll the damage, and once that roll is in the log put [[hit: <foe> | <hero>]]; the game takes exactly that roll off the foe. A hero's area spell works the same way: the player rolls the damage once, then [[hit: Goblin A, Goblin B half | <hero>]] (half for foes that made their save). [[damage]] is only for harm to heroes. The game posts each foe's HP and defeats it at 0 (no [[defeat]] needed then); copy its numbers into your Foes line. A friendly NPC who fights or can be hurt gets hit points the same way, marked as an ally: [[foe: Pell | 11 | ally]] (an SRD creature placed with "| ally" is tracked automatically). Foe attacks on an ally use [[foe-attack]] with the ally's AC as the sixth field; [[damage]] and [[heal]] work on allies by name. An ally at 0 HP is down, not defeated: never [[defeat]] an ally. Allies never land a blow in narration alone: when an ally NPC attacks (with a weapon, an improvised one, a shove or a spell), describe the attempt, put [[foe-attack: <ally> | <attack> | <to-hit> | <damage dice> | <enemy> | AC <enemy's AC>]] on its own line and stop; don't say it hit, and don't hurt, stun, daze or knock out the enemy until the result is in the log.
@@ -2984,7 +3066,7 @@ function renderSheetTab() {
       <p class="rclass">${escapeHtml(c.player)} &middot; Lv${c.level} ${escapeHtml(c.race)} ${escapeHtml(c.klass)}</p>
       ${portraitBoxHTML(c)}
       <div class="sheet-grid">
-        <div class="sheet-stat"><div class="label">HP</div><div class="val">${c.hp} / ${c.maxhp}</div></div>
+        <div class="sheet-stat"><div class="label">HP</div><div class="val">${c.hp} / ${c.maxhp}</div>${deathSaveHTML(c)}</div>
         <div class="sheet-stat"><div class="label">AC</div><div class="val">${c.ac}</div></div>
         <div class="sheet-stat"><div class="label">Level</div><div class="val">${c.level}</div></div>
       </div>

@@ -9,6 +9,12 @@ window.LEDGER_CHANGELOG = [
   {
     date: "2026-11-13",
     type: "fix",
+    title: "Death saves are rolled and counted by the game",
+    detail: "A hero at 0 HP now gets a Roll death save button, one per turn, and the game keeps the count: three successes and you're stable, three failures and you die, a natural 20 brings you back with 1 HP. Damage while you're down counts as a failure. The GM no longer offers a downed hero actions; it asks for the death save instead."
+  },
+  {
+    date: "2026-11-13",
+    type: "fix",
     title: "Allies have hit points",
     detail: "Friendly characters who fight beside you now have hit points the game tracks, shown in a new Allies list on the table display. Their attacks are rolled by the game like everyone else's, damage and healing reach them, and an ally who drops is down, not defeated."
   },
