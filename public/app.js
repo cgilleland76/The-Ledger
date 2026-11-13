@@ -2043,16 +2043,24 @@ async function onPortraitFile(input) {
   PORTRAIT_UPLOAD.busy = true; PORTRAIT_UPLOAD.error = ''; rerenderSheet();
   try {
     const blob = await squarePortraitBlob(file);
-    const ext = blob.type === 'image/webp' ? 'webp' : 'jpg';
-    const path = `${room}/${charId}-upload-${Date.now()}.${ext}`;
-    const up = await supabase.storage.from('portraits').upload(path, blob, { contentType: blob.type, upsert: false });
-    if (up.error) throw new Error(up.error.message || 'the picture could not be stored');
-    const url = PORTRAIT_URL_PREFIX + path;
-    const at = new Date().toISOString();
-    const { error } = await supabase.from('characters')
-      .update({ portrait_url: url, portrait_status: 'ready', portrait_updated_at: at })
-      .eq('id', charId).eq('room_code', room);
-    if (error) throw new Error(error.message || 'the character could not be updated');
+    const image = await new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(fr.result);
+      fr.onerror = () => reject(new Error('read failed'));
+      fr.readAsDataURL(blob);
+    });
+    // The server checks the picture (content rating) before it stores anything.
+    const resp = await fetch(api('/api/portrait-upload'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ roomCode: room, characterId: charId, platform: IS_APP ? 'android' : 'web', image }),
+    });
+    let data = {};
+    try { data = await resp.json(); } catch (e) { /* non-JSON error page */ }
+    if (data.reason === 'rejected') { PORTRAIT_UPLOAD.error = data.error || "That picture can't be used. Try a different one."; return; }
+    if (!resp.ok || !data.url) throw new Error(data.reason || `HTTP ${resp.status}`);
+    const url = data.url;
+    const at = data.at || new Date().toISOString();
     const c = ROSTER[charId];
     if (c) { c.portrait = url; c.portraitStatus = 'ready'; c.portraitAt = at; }
     portraitPendingSince = 0;
@@ -2099,7 +2107,7 @@ async function generatePortrait() {
   portraitBaseline = c.portraitAt || '';
   render();
   try {
-    const body = JSON.stringify({ roomCode: ROOM, characterId: MY_CHAR_ID, playerId: playerId() });
+    const body = JSON.stringify({ roomCode: ROOM, characterId: MY_CHAR_ID, playerId: playerId(), platform: IS_APP ? 'android' : 'web' });
     // The app is on a different origin than the server, and background functions can't answer a CORS
     // preflight, so it sends a "simple" request it can't read the reply to. Progress arrives on the row either way.
     const resp = await fetch(api('/.netlify/functions/portrait-background'), IS_APP

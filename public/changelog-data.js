@@ -9,6 +9,12 @@ window.LEDGER_CHANGELOG = [
   {
     date: "2026-11-12",
     type: "feature",
+    title: "Portraits are checked before they're saved",
+    detail: "Every character portrait, uploaded or painted by the AI, is now checked before it's stored. Pictures that aren't allowed are turned away and never saved; just pick a different one."
+  },
+  {
+    date: "2026-11-12",
+    type: "feature",
     title: "Foe HP is tracked by the game",
     detail: "The game now keeps each monster's hit points. Damage to a foe only comes from your own damage roll, allies' attacks are rolled by the game, and a foe is defeated when it reaches 0."
   },

@@ -18,8 +18,9 @@
 //   PORTRAIT_MAX_PER_ROOM   optional, default 10
 
 const crypto = require("crypto");
-const { SUPABASE_URL, SUPABASE_ANON_KEY, ROOM_CODE_RE, sbRest } = require("./lib/shared");
+const { ROOM_CODE_RE, sbRest } = require("./lib/shared");
 const billing = require("./lib/billing");
+const { checkImage, storePortrait, REJECTED_MESSAGE } = require("./lib/portraits");
 
 const COOLDOWN_MS = 60 * 1000;
 const STALE_PENDING_MS = 4 * 60 * 1000;
@@ -86,12 +87,13 @@ exports.handler = async function (event) {
   if (event.httpMethod !== "POST") return;
 
   // The Android app sends this as text/plain (no CORS preflight); it's still JSON.
-  let roomCode, characterId, playerId;
+  let roomCode, characterId, playerId, platform;
   try {
     const body = JSON.parse(event.body || "{}");
     roomCode = body.roomCode;
     characterId = body.characterId;
     playerId = body.playerId;
+    platform = body.platform;
   } catch (e) {
     return;
   }
@@ -174,19 +176,25 @@ exports.handler = async function (event) {
     // Count it now that we've actually been billed for an image.
     await sbRest(`rooms?code=eq.${enc(roomCode)}`, { method: "PATCH", body: { image_count: (room.image_count || 0) + 1 } }).catch(() => {});
 
-    const objectPath = `${roomCode}/${characterId}-${Date.now()}.webp`;
-    const up = await fetch(`${SUPABASE_URL}/storage/v1/object/portraits/${objectPath}`, {
-      method: "POST",
-      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, "Content-Type": "image/webp", "x-upsert": "false" },
-      body: bytes,
-    });
-    if (!up.ok) return report({ portrait_status: "error:The portrait was drawn but couldn't be saved. Try again." });
+    // Same content check as uploaded pictures (lib/portraits.js); nothing unchecked is stored.
+    const verdict = await checkImage(`data:image/webp;base64,${b64}`, platform);
+    if (!verdict.ok) {
+      console.warn(`portrait-background: generated image rejected (${verdict.code}) room=${roomCode} char=${characterId} platform=${platform || "?"}`);
+      return report({ portrait_status: "error:" + (String(verdict.code).startsWith("moderation_failed")
+        ? "The portrait couldn't be checked just now. Try again in a minute."
+        : REJECTED_MESSAGE) });
+    }
+
+    let url;
+    try {
+      url = await storePortrait(roomCode, characterId, bytes, "image/webp", "ai");
+    } catch (e) {
+      console.error("portrait-background: store failed:", e.message);
+      return report({ portrait_status: "error:The portrait was drawn but couldn't be saved. Try again." });
+    }
 
     delivered = true;
-    await report({
-      portrait_url: `${SUPABASE_URL}/storage/v1/object/public/portraits/${objectPath}`,
-      portrait_status: "ready",
-    });
+    await report({ portrait_url: url, portrait_status: "ready" });
   } catch (e) {
     await report({ portrait_status: "error:Something went wrong making the portrait. Try again." });
   } finally {
