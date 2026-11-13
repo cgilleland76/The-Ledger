@@ -32,11 +32,12 @@ Work from either Claude session starts here.
 - Ask before pushing and before changing production data.
 
 ## Open ideas
+- Roadmap on the site (public/changelog-data.js, kept in sync with this list): track spell slots, ammo, rations and gold; scene images; voice narration (free browser version already designed); optional accounts for private tables; session recaps; in-app feedback form; Android app; tap-to-play NFC minis.
 - Safer room eviction: evict the least recently played room, not the oldest, since paused stories now live in rooms.
 - Per-browser anonymous ID to count distinct players.
-- Enemy HP tracking; consumed items leave the inventory; traps, falls and saves apply to HP.
 - Saving invented creatures and items; an SRD lookup tab; a hard client-side roll gate.
-- Roadmap: resource tracking, loot to inventory, scene images, voice narration, optional accounts, session recaps, an in-app feedback form.
+- Content check on uploaded portraits before the app goes public.
+- Google Play and RevenueCat setup, and turning the ink paywall on (on hold).
 
 ## Not yet verified live
 - GM compliance with the newer prompt rules (rolled in error, heal directive, ally AC field, stabilising, stopping for rolls).

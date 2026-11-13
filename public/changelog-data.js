@@ -7,6 +7,48 @@
 
 window.LEDGER_CHANGELOG = [
   {
+    date: "2026-11-12",
+    type: "feature",
+    title: "Foe HP is tracked by the game",
+    detail: "The game now keeps each monster's hit points. Damage to a foe only comes from your own damage roll, allies' attacks are rolled by the game, and a foe is defeated when it reaches 0."
+  },
+  {
+    date: "2026-11-11",
+    type: "feature",
+    title: "Battle map",
+    detail: "A new Battle Map tab shows the fight on a grid. Tap a square to move your hero within your speed each turn (walls are checked), and the GM sees the squares and distances. Without a map, the GM states how far away each foe is."
+  },
+  {
+    date: "2026-11-11",
+    type: "feature",
+    title: "HP only changes through the game",
+    detail: "The manual HP buttons are gone. Hits, traps, falls, area effects (with half damage on a save), potions, spells and rests all change your HP through the game, and healing adds to your current HP, capped at your maximum."
+  },
+  {
+    date: "2026-11-11",
+    type: "feature",
+    title: "XP, rests and leveling up",
+    detail: "Defeating foes and succeeding at real skill checks earns XP. A short rest spends hit dice, a long rest restores your HP, and you level up only with enough XP plus a long rest."
+  },
+  {
+    date: "2026-11-11",
+    type: "feature",
+    title: "Loot and items go into your pack",
+    detail: "When the story gives you something, the game adds it to your inventory, and a used potion or other consumable counts down. Items you typed in yourself are marked and don't count as owned, so the GM won't let you use them."
+  },
+  {
+    date: "2026-11-11",
+    type: "feature",
+    title: "Upload your own portrait",
+    detail: "On the Sheet tab you can upload a picture for your character instead of generating one. It is cropped to a square in your browser and costs no ink."
+  },
+  {
+    date: "2026-11-11",
+    type: "fix",
+    title: "Stabilising a dying character no longer \"heals\"",
+    detail: "Stabilising someone at 0 HP only ends their death saves. The GM now asks for a Medicine check, and if a player's own character is healing, that player rolls it."
+  },
+  {
     date: "2026-10-28",
     type: "feature",
     title: "Pause a solo story and pick it up later",
@@ -124,12 +166,8 @@ window.LEDGER_CHANGELOG = [
 
 window.LEDGER_ROADMAP = [
   {
-    title: "Resource tracking as the story progresses",
-    detail: "Keep track of limited resources as they get used — spell slots, potions, ammo, rations, torches, gold — so your sheet reflects what the story has actually cost you. The GM will propose the change and you confirm it, so nothing on your sheet changes by surprise."
-  },
-  {
-    title: "Loot goes into your inventory",
-    detail: "When the GM describes your character picking something up, the game offers to add it to your inventory with one click, instead of you retyping it on the Sheet tab."
+    title: "Track spell slots, ammo, rations and gold",
+    detail: "Potions and other consumables already count down when used. Next is the rest of the limited resources a story spends: spell slots, ammo, rations, torches and gold, so your sheet reflects what the story has actually cost you."
   },
   {
     title: "Scene images for the GM's descriptions",
@@ -150,5 +188,13 @@ window.LEDGER_ROADMAP = [
   {
     title: "In-app feedback form",
     detail: "Replace the current email-based feedback button with a form that saves directly into the app."
+  },
+  {
+    title: "The Ledger on Android",
+    detail: "A phone app version of The Ledger is built and being tested. It plays the same stories as the website."
+  },
+  {
+    title: "Tap-to-play minis",
+    detail: "Tap a 3D-printed mini with an NFC tag to a phone to bring that hero into your game, with loot and level-ups saved to the mini."
   },
 ];
