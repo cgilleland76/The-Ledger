@@ -32,7 +32,7 @@ Work from either Claude session starts here.
 - Ask before pushing and before changing production data.
 
 ## Open ideas
-- Roadmap on the site (public/changelog-data.js, kept in sync with this list): track spell slots, ammo, rations and gold; scene images; voice narration (free browser version already designed); optional accounts for private tables; session recaps; in-app feedback form; Android app; tap-to-play NFC minis.
+- Roadmap on the site (public/changelog-data.js, kept in sync with this list): track spell slots, ammo, rations and gold; scene images; a second-screen table display (a shareable link or cast to a TV or remote monitor showing the scene background with the battle map grid overlaid, live; builds on scene images and the battle map); voice narration (free browser version already designed); optional accounts for private tables; session recaps; in-app feedback form; Android app; tap-to-play NFC minis.
 - Safer room eviction: evict the least recently played room, not the oldest, since paused stories now live in rooms.
 - Per-browser anonymous ID to count distinct players.
 - Saving invented creatures and items; an SRD lookup tab; a hard client-side roll gate.

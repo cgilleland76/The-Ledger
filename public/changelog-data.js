@@ -174,6 +174,10 @@ window.LEDGER_ROADMAP = [
     detail: "Paint the scene the GM is describing and set it as the table background."
   },
   {
+    title: "Second-screen table display",
+    detail: "Send the table to a second screen, like a TV or a remote monitor. It shows the scene background with the battle map grid on top, with every hero and foe in place, and it updates live as the fight moves."
+  },
+  {
     title: "Voice narration for the GM",
     detail: "Have the GM's messages read aloud, with a distinct voice for each NPC's dialogue. A no-cost, browser-based first version is already designed and ready to build."
   },
