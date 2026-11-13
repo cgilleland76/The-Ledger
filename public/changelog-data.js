@@ -7,6 +7,18 @@
 
 window.LEDGER_CHANGELOG = [
   {
+    date: "2026-11-13",
+    type: "feature",
+    title: "Scene backgrounds",
+    detail: "A table's host can set a background for the current scene. It shows under the battle map and on the table display. Upload your own picture for free, or, where it's switched on, have the scene painted from the GM's latest description (a few per table). Every background is checked before it's saved."
+  },
+  {
+    date: "2026-11-12",
+    type: "feature",
+    title: "Table display for a TV or second screen",
+    detail: "Open the Table display from the Battle Map tab on a TV, laptop or second monitor. It shows the battle map full screen, with every hero and foe in place and everyone's HP, and it updates live as the fight moves."
+  },
+  {
     date: "2026-11-12",
     type: "feature",
     title: "Portraits are checked before they're saved",
@@ -174,14 +186,6 @@ window.LEDGER_ROADMAP = [
   {
     title: "Track spell slots, ammo, rations and gold",
     detail: "Potions and other consumables already count down when used. Next is the rest of the limited resources a story spends: spell slots, ammo, rations, torches and gold, so your sheet reflects what the story has actually cost you."
-  },
-  {
-    title: "Scene images for the GM's descriptions",
-    detail: "Paint the scene the GM is describing and set it as the table background."
-  },
-  {
-    title: "Second-screen table display",
-    detail: "Send the table to a second screen, like a TV or a remote monitor. It shows the scene background with the battle map grid on top, with every hero and foe in place, and it updates live as the fight moves."
   },
   {
     title: "Voice narration for the GM",
