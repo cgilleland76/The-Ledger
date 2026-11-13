@@ -9,6 +9,12 @@ window.LEDGER_CHANGELOG = [
   {
     date: "2026-11-13",
     type: "feature",
+    title: "Field Notes: your party's journal",
+    detail: "A new Field Notes tab keeps everything your party has learned: quests, people, places, clues, encounters and loot. The GM writes notes as the story unfolds, anyone at the table can add their own, and it's all searchable. The GM also reads the journal every turn, so it remembers what happened sessions ago. The old guide is now the How to Play tab."
+  },
+  {
+    date: "2026-11-13",
+    type: "feature",
     title: "Scene backgrounds",
     detail: "A table's host can set a background for the current scene. It shows under the battle map and on the table display. Upload your own picture for free, or, where it's switched on, have the scene painted from the GM's latest description (a few per table). Every background is checked before it's saved."
   },

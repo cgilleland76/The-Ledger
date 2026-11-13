@@ -450,3 +450,19 @@ input, textarea, select{ font-family:var(--font-body); font-size:1rem; }
 .map-scroll.has-scene .map-label{ color:#fff6e0; text-shadow:0 1px 2px rgba(0,0,0,0.8); }
 .scene-controls{ margin-top:16px; padding-top:12px; border-top:1px dashed rgba(139,104,50,0.45); }
 .scene-banner{ aspect-ratio:16/9; width:100%; border-radius:3px; border:1px solid var(--gold-dim); background-size:cover; background-position:center; margin:12px 0; }
+
+/* Field Notes journal */
+.entry.note{ font-size:0.95rem; color:var(--ink-dim); padding-bottom:8px; }
+.entry.note i{ color:var(--sienna); }
+.notes-search{ width:100%; margin:6px 0 4px; }
+.notes-section{ margin-top:18px; }
+.notes-section h3{ font-size:1rem; margin:0 0 6px; display:flex; align-items:center; gap:8px; }
+.notes-count{ font-family:var(--font-display); font-size:0.7rem; color:var(--ink-dim); border:1px solid var(--rule); border-radius:10px; padding:1px 7px; }
+.notes-list{ margin:0; padding-left:20px; }
+.notes-list li{ margin-bottom:8px; line-height:1.45; }
+.notes-meta{ display:block; font-size:0.8rem; color:var(--ink-dim); font-style:italic; }
+.notes-add{ margin-top:22px; padding-top:14px; border-top:1px dashed rgba(139,104,50,0.45); }
+.notes-add h3{ font-size:1rem; margin:0 0 8px; }
+.notes-add-row{ display:flex; gap:8px; flex-wrap:wrap; }
+.notes-add-row select{ flex:0 0 auto; }
+.notes-add-row input{ flex:1 1 220px; min-width:0; }

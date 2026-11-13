@@ -799,8 +799,8 @@ const lengthLabel = { oneshot: 'One-Shot', arc: 'Short Arc', long: 'Long Campaig
 
 function renderGame() {
   const tabs = MODE === 'solo'
-    ? [['story', 'The Ledger (Story)'], ['map', mapState() ? 'Battle Map ⚔' : 'Battle Map'], ['sheet', 'Your Sheet'], ['help', 'Field Notes']]
-    : [['story', 'The Ledger (Story)'], ['map', mapState() ? 'Battle Map ⚔' : 'Battle Map'], ['party', 'The Party'], ['sheet', 'Your Sheet'], ['help', 'Field Notes']];
+    ? [['story', 'The Ledger (Story)'], ['notes', 'Field Notes'], ['map', mapState() ? 'Battle Map ⚔' : 'Battle Map'], ['sheet', 'Your Sheet'], ['help', 'How to Play']]
+    : [['story', 'The Ledger (Story)'], ['notes', 'Field Notes'], ['map', mapState() ? 'Battle Map ⚔' : 'Battle Map'], ['party', 'The Party'], ['sheet', 'Your Sheet'], ['help', 'How to Play']];
   el('app').innerHTML = `
     <div class="game-header">
       <div>
@@ -823,6 +823,7 @@ function renderGame() {
   `;
   if (ACTIVE_TAB === 'story') renderStoryTab();
   else if (ACTIVE_TAB === 'map') renderMapTab();
+  else if (ACTIVE_TAB === 'notes') renderNotesTab();
   else if (ACTIVE_TAB === 'party') renderPartyTab();
   else if (ACTIVE_TAB === 'sheet') renderSheetTab();
   else renderHelpTab();
@@ -1132,6 +1133,7 @@ function renderMarkdown(text, ctx) {
 }
 
 function entryHTML(e) {
+  if (e.type === 'note') return noteEntryHTML(e);
   const cls = e.type === 'gm' ? 'gm' : e.type === 'roll' ? 'roll' : e.type === 'system' ? 'system' : 'action';
   const dot = e.type === 'gm' ? '<span class="glow-dot"></span>' : '';
   const flagged = e.type === 'roll' && (e.text || '').includes(UNLISTED_FLAG);
@@ -1322,10 +1324,10 @@ async function callGM(prompt, fallbackEntry) {
     GM_PENDING = false;
     GM_ABORT = null;
   }
-  const { clean, attacks, heals, gives, uses, damages, foesAdded, hits, mapOps, defeats, successes, rests } = entry.type === 'gm' ? extractFoeAttacks(entry.text)
-    : { clean: entry.text, attacks: [], heals: [], gives: [], uses: [], damages: [], foesAdded: [], hits: [], mapOps: [], defeats: [], successes: [], rests: [] };
+  const { clean, attacks, heals, gives, uses, damages, notes, foesAdded, hits, mapOps, defeats, successes, rests } = entry.type === 'gm' ? extractFoeAttacks(entry.text)
+    : { clean: entry.text, attacks: [], heals: [], gives: [], uses: [], damages: [], notes: [], foesAdded: [], hits: [], mapOps: [], defeats: [], successes: [], rests: [] };
   // A message that was nothing but directives has no story text of its own to log.
-  if (clean || !(attacks.length || heals.length || gives.length || uses.length || damages.length || foesAdded.length || hits.length || mapOps.length || defeats.length || successes.length || rests.length)) {
+  if (clean || !(attacks.length || heals.length || gives.length || uses.length || damages.length || notes.length || foesAdded.length || hits.length || mapOps.length || defeats.length || successes.length || rests.length)) {
     entry.text = clean || entry.text;
     await dbInsertLog(ROOM, entry);
     LOG.push({ ...entry, ts: Date.now() });
@@ -1333,7 +1335,7 @@ async function callGM(prompt, fallbackEntry) {
   // Damage, healing and items change the sheet itself: save every character that changed.
   // XP is awarded before a rest, so a long rest in the same message can unlock a level-up.
   const results = [resolveMapOps(mapOps), ...foesAdded.map(resolveFoe), ...attacks.map(resolveFoeAttack), ...hits.map(resolveHit), ...damages.map(resolveDamage), ...heals.map(resolveHeal), ...gives.map(resolveGive), ...uses.map(resolveUse),
-    ...defeats.map(resolveDefeat), ...successes.map(resolveSuccess), ...rests.map(k => k === 'long' ? resolveLongRest() : resolveShortRest())];
+    ...defeats.map(resolveDefeat), ...successes.map(resolveSuccess), ...notes.map(resolveNote), ...rests.map(k => k === 'long' ? resolveLongRest() : resolveShortRest())];
   for (const r of results.filter(Boolean)) {
     const { hpChar, saveAll, saveMeta, ...result } = r;
     await dbInsertLog(ROOM, result);
@@ -1353,7 +1355,7 @@ function cancelGM() {
    One background per room, shown under the battle map (and on the /display page). It lives in the room's
    scene_url / scene_status columns (not meta, which the app rewrites wholesale on every map move).
    - Paint this scene (AI): needs the server switch (site-config.sceneImages), the room's opt-in
-     (META.sceneImages, set by the host in Field Notes), and the host; limited per room; costs ink once
+     (META.sceneImages, set by the host in How to Play), and the host; limited per room; costs ink once
      billing is on. Runs in scene-background.js, progress arrives through scene_status.
    - Upload your own background: host only, free, unlimited, works even with painting switched off.
    Every picture is content-checked on the server before it's stored. */
@@ -1389,7 +1391,7 @@ function sceneControlsHTML() {
       : `<button class="btn" onclick="pickSceneUpload()">Upload your own background</button><input type="file" id="sceneFile" accept="image/*" hidden onchange="onSceneFile(this)">`);
     parts.push(`<div class="portrait-actions">${btns.join('')}</div>`);
     if (SCENE_UPLOAD.error) parts.push(`<p class="error-text">${escapeHtml(SCENE_UPLOAD.error)}</p>`);
-    if (SITE.sceneImages && META.sceneImages !== true) parts.push(`<p class="helptext">To let the AI paint scenes here, switch it on in <b>Field Notes</b>.</p>`);
+    if (SITE.sceneImages && META.sceneImages !== true) parts.push(`<p class="helptext">To let the AI paint scenes here, switch it on in <b>How to Play</b>.</p>`);
     else if (SITE.sceneImages) parts.push(`<p class="helptext">${Math.max(0, SITE.sceneMax - ((SCENE && SCENE.count) || 0))} of ${SITE.sceneMax} painted scenes left for this table. Your own uploads are free and unlimited.</p>`);
   } else if (!url) {
     parts.push(`<p class="helptext">The table's host can set a scene background.</p>`);
@@ -1470,7 +1472,7 @@ async function onSceneFile(input) {
     if (ROOM === room) rerenderMap();
   }
 }
-// Field Notes: the host switches AI scene painting on or off for this table.
+// How to Play tab: the host switches AI scene painting on or off for this table.
 async function setSceneImages(on) {
   if (!ROOM || !isRoomHost()) return;
   const room = await dbGetRoom(ROOM);
@@ -1485,6 +1487,101 @@ window.paintScene = paintScene;
 window.pickSceneUpload = pickSceneUpload;
 window.onSceneFile = onSceneFile;
 window.setSceneImages = setSceneImages;
+
+/* ---------------- Field Notes: the party's journal ----------------
+   What the party has learned along the way, for reference at the table: quests, people, places, clues,
+   encounters and loot. Notes are log entries of type 'note' (text "Category|session|note"), so they're
+   shared live with everyone and stored with the story. The GM adds them with [[note: People | ...]];
+   players can add their own from the Field Notes tab. The GM gets the whole journal every turn, so it
+   remembers things from long before the last 30 lines of the story. */
+const NOTE_CATEGORIES = ['Quests', 'People', 'Places', 'Clues', 'Encounters', 'Loot'];
+const NOTE_ICONS = { Quests: '&#x1F4DC;', People: '&#x1F464;', Places: '&#x1F5FA;', Clues: '&#x1F50D;', Encounters: '&#x2694;', Loot: '&#x1F48E;' };
+const NOTE_DIRECTIVE = /\[\[\s*note:([^\]]*)\]\]/gi;
+function noteCategory(raw) {
+  const s = String(raw || '').trim().toLowerCase();
+  if (/quest|task|goal|mission|job/.test(s)) return 'Quests';
+  if (/people|person|npc|character|who|ally|enemy|faction/.test(s)) return 'People';
+  if (/place|location|map|where|town|area|site/.test(s)) return 'Places';
+  if (/encounter|fight|battle|combat|foe|monster/.test(s)) return 'Encounters';
+  if (/loot|item|treasure|gold|reward/.test(s)) return 'Loot';
+  return 'Clues';
+}
+function noteText(category, text) { return `${noteCategory(category)}|${(META && META.session) || 1}|${String(text || '').replace(/\|/g, '/').replace(/\s+/g, ' ').trim().slice(0, 300)}`; }
+function parseNote(e) {
+  const [cat, session, ...rest] = String(e.text || '').split('|');
+  return { id: e.id, category: NOTE_CATEGORIES.includes(cat) ? cat : 'Clues', session: parseInt(session) || 1, text: rest.join('|'), author: e.author, ts: e.ts };
+}
+function allNotes() { return LOG.filter(e => e.type === 'note').map(parseNote).filter(n => n.text); }
+// For the GM prompt: the whole journal, newest last, capped.
+function notesPromptText() {
+  const notes = allNotes();
+  if (!notes.length) return 'Field notes (the party\'s journal): none yet.';
+  let lines = notes.map(n => `${n.category}: ${n.text}${n.author && n.author !== 'Game Master' ? ` (noted by ${n.author})` : ''}`);
+  while (lines.join('\n').length > 4000 && lines.length > 10) lines.shift(); // keep the newest
+  return `Field notes (the party's journal so far; stay consistent with it):\n${lines.join('\n')}`;
+}
+// [[note: People | Old Maren is the village herbalist]]
+function resolveNote(n) {
+  const text = String(n.text || '').trim();
+  if (!text) return null;
+  return { id: uid(6), author: 'Game Master', type: 'note', text: noteText(n.category, text) };
+}
+// One note line inside the story log.
+function noteEntryHTML(e) {
+  const n = parseNote(e);
+  return `<div class="entry note" data-id="${escapeAttr(e.id)}"><div class="text">${NOTE_ICONS[n.category] || ''} <i>Added to Field Notes (${escapeHtml(n.category)}):</i> ${escapeHtml(n.text)}</div></div>`;
+}
+
+let NOTES_FILTER = '';
+let NOTE_DRAFT = { category: 'Clues', text: '' };
+function renderNotesTab() {
+  const notes = allNotes();
+  const q = NOTES_FILTER.trim().toLowerCase();
+  const shown = q ? notes.filter(n => (n.text + ' ' + n.category + ' ' + n.author).toLowerCase().includes(q)) : notes;
+  const sections = NOTE_CATEGORIES.map(cat => {
+    const list = shown.filter(n => n.category === cat);
+    if (!list.length) return '';
+    return `<div class="notes-section"><h3>${NOTE_ICONS[cat]} ${cat} <span class="notes-count">${list.length}</span></h3>
+      <ul class="notes-list">${list.slice().reverse().map(n => `<li>${escapeHtml(n.text)}<span class="notes-meta">Session ${n.session}${n.author && n.author !== 'Game Master' ? ' &middot; noted by ' + escapeHtml(n.author) : ''}</span></li>`).join('')}</ul></div>`;
+  }).join('');
+  el('tabBody').innerHTML = `
+    <div class="panel" style="max-width:760px;">
+      <h2>Field Notes</h2>
+      <p class="helptext">Everything your ${MODE === 'solo' ? 'hero has' : 'party has'} learned along the way: quests, people, places, clues, encounters and loot. The Game Master adds notes as the story unfolds${MODE === 'group' ? ', and everyone at the table can add their own' : ', and you can add your own'}.</p>
+      <input type="text" id="notesSearch" class="notes-search" placeholder="Search your notes..." value="${escapeAttr(NOTES_FILTER)}" oninput="setNotesFilter(this.value)">
+      ${sections || `<p class="helptext" style="margin-top:16px;">${q ? 'No notes match that search.' : 'No notes yet. They fill in as the story goes.'}</p>`}
+      <div class="notes-add">
+        <h3>Add a note</h3>
+        <div class="notes-add-row">
+          <select id="noteCategory" onchange="NOTE_DRAFT_SET('category', this.value)">${NOTE_CATEGORIES.map(c => `<option ${NOTE_DRAFT.category === c ? 'selected' : ''}>${c}</option>`).join('')}</select>
+          <input type="text" id="noteText" maxlength="300" placeholder="e.g. The miller swears the wolves came from the old mine" value="${escapeAttr(NOTE_DRAFT.text)}" oninput="NOTE_DRAFT_SET('text', this.value)" onkeydown="if(event.key==='Enter') addPlayerNote()">
+          <button class="btn" onclick="addPlayerNote()">Add</button>
+        </div>
+      </div>
+    </div>`;
+}
+function setNotesFilter(v) {
+  NOTES_FILTER = v;
+  const box = el('notesSearch');
+  const pos = box ? box.selectionStart : null;
+  renderNotesTab();
+  const again = el('notesSearch');
+  if (again) { again.focus(); if (pos !== null) again.setSelectionRange(pos, pos); }
+}
+function NOTE_DRAFT_SET(k, v) { NOTE_DRAFT[k] = v; }
+async function addPlayerNote() {
+  const text = String(NOTE_DRAFT.text || '').trim();
+  if (!text || !ROOM) return;
+  const me = ROSTER[MY_CHAR_ID];
+  const entry = { id: uid(6), author: me ? me.name : 'A player', type: 'note', text: noteText(NOTE_DRAFT.category, text) };
+  NOTE_DRAFT.text = '';
+  await dbInsertLog(ROOM, entry);
+  LOG.push({ ...entry, ts: Date.now() });
+  renderNotesTab();
+}
+window.setNotesFilter = setNotesFilter;
+window.NOTE_DRAFT_SET = NOTE_DRAFT_SET;
+window.addPlayerNote = addPlayerNote;
 
 /* ---------------- Battle map ----------------
    A square grid (1 square = 5 ft) kept in the room's meta.grid, so every player sees it live through the
@@ -1742,6 +1839,7 @@ function extractFoeAttacks(text) {
   const gives = [];
   const uses = [];
   const damages = [];
+  const notes = [];
   const foesAdded = [];
   const hits = [];
   const mapOps = [];
@@ -1763,6 +1861,10 @@ function extractFoeAttacks(text) {
   }).replace(USE_DIRECTIVE, (_, body) => {
     const p = body.split('|').map(s => s.trim());
     if (p.length >= 2 && p[1] && uses.length < 4) uses.push({ target: p[0], item: p[1].slice(0, 80) });
+    return '';
+  }).replace(NOTE_DIRECTIVE, (_, body) => {
+    const i = body.indexOf('|');
+    if (notes.length < 3) notes.push(i >= 0 ? { category: body.slice(0, i), text: body.slice(i + 1) } : { category: 'Clues', text: body });
     return '';
   }).replace(FOE_ADD_DIRECTIVE, (_, body) => {
     const p = body.split('|').map(s => s.trim());
@@ -1791,7 +1893,7 @@ function extractFoeAttacks(text) {
     if (!rests.length) rests.push(kind.toLowerCase());
     return '';
   }).replace(/\n{3,}/g, '\n\n').trim();
-  return { clean, attacks, heals, gives, uses, damages, foesAdded, hits, mapOps, defeats, successes, rests };
+  return { clean, attacks, heals, gives, uses, damages, notes, foesAdded, hits, mapOps, defeats, successes, rests };
 }
 function findTarget(name) {
   const chars = Object.values(ROSTER);
@@ -2019,6 +2121,8 @@ ${META.seed ? 'Opening premise the GM previously established: ' + META.seed : ''
 ${MODE === 'solo' ? 'Character' : 'Party'}:
 ${party}
 
+${notesPromptText()}
+
 ${mapPromptText()}
 ${foesPromptText()}
 
@@ -2039,6 +2143,7 @@ Roll resolution rules — follow these exactly:
 - Items: each character's inventory above is what they really carry. Items "written in by the player" were typed in by the player and never given in the story: they are NOT owned. If a player tries to use one, it isn't in their pack, and say so plainly. When the story gives a character an item (found, bought, looted, handed over), put [[give: <their name> | <item>]] on its own line and the game adds it. When a character uses up a consumable (drinks a potion, reads a scroll, spends a charge item), put [[use: <their name> | <item>]] on its own line and the game removes one. Max 4 of each per message.
 - Battle map: when a fight starts, lay out a map before the first attack: [[map: 12x10]] (columns A-L, rows 1-10; at most 20x20), then [[place: <name> | <square>]] for every hero and foe (add "| ally" for a friendly NPC, e.g. [[place: Woman | E5 | ally]]), and [[wall: D2-D5, H7]] for walls or heavy cover. On later turns move foes with [[place]], use [[remove: <name>]] when one flees, and [[end-battle]] when the fight is over. Players move their own heroes on the map, so never move a hero yourself unless the story forces it (a shove, a fall). Use the map's distances: a melee attack needs 5 ft (10 ft with reach); a ranged attack past normal range has disadvantage and can't go past long range; an area spell hits everyone within its radius of the square it's centred on. With no battle map, give each foe's distance in the Foes line, e.g. **Foes:** Goblin A 4/7 HP, 30 ft.
 - Foe hit points belong to the game. When foes enter a fight, put [[foe: <name> | <hp>]] for each, with unique names (Goblin A, Goblin B); leave out the number for an SRD creature and the game uses its stat block. Never decide how much damage a hero deals: when a hero's attack hits, ask that player to /roll the damage, and once that roll is in the log put [[hit: <foe> | <hero>]]; the game takes exactly that roll off the foe. A hero's area spell works the same way: the player rolls the damage once, then [[hit: Goblin A, Goblin B half | <hero>]] (half for foes that made their save). [[damage]] is only for harm to heroes. The game posts each foe's HP and defeats it at 0 (no [[defeat]] needed then); copy its numbers into your Foes line.
+- Field notes: when the party learns something worth remembering (a quest or task, a person and what they want, a place, a clue or piece of lore, how an encounter went, notable loot), put [[note: <Quests|People|Places|Clues|Encounters|Loot> | <one short sentence>]] on its own line; the game adds it to the party's journal. At most 3 per message, and don't repeat anything already in the field notes above.
 - XP, levels and rests are the game's job: never announce XP, levels or level-ups yourself. When the party kills or defeats a foe, put [[defeat: <creature>]] on its own line, one per creature (for a creature you invented, add its CR: [[defeat: Cave Wyrm | CR 2]]). When a character succeeds at a check you set a DC for, once their roll is in the log, put [[success: <their name> | <skill> | DC <n>]]. When the party actually rests in the story, put [[short-rest]] (about an hour) or [[long-rest]] (about 8 hours somewhere safe, at most once per in-game day) on its own line; the game restores HP and hit dice, so never use [[heal]] for a rest. A rest in danger gets interrupted instead.
 - Do not roll dice yourself or invent results under any circumstance.`;
 
@@ -2337,7 +2442,7 @@ async function saveNotes() {
 function renderHelpTab() {
   el('tabBody').innerHTML = `
     <div class="panel help-panel" style="max-width:680px;">
-      <h2>Field Notes</h2>
+      <h2>How to Play</h2>
       <ul>
         ${MODE === 'group' ? `<li>Everyone in this room shares the same <b>Ledger</b> (story log) and <b>Party</b> roster — anyone can open the room code on their own device.</li>` : `<li>This is your own solo story — only your character and the GM are here.</li>`}
         <li>Type plain text and hit Send to describe what your character says or does. It's narrated ${MODE === 'group' ? 'to the whole table' : 'into the story'}.</li>
@@ -2348,6 +2453,7 @@ function renderHelpTab() {
         ${SITE.sceneImages ? `<li><b>Painted scenes:</b> the AI can paint the current scene as a background for the battle map and the table display (up to ${SITE.sceneMax} per table${SITE.sceneInk ? `, ${SITE.sceneInk} ink each` : ''}). ${isRoomHost()
           ? `<label style="cursor:pointer;display:block;margin-top:6px;"><input type="checkbox" ${META && META.sceneImages === true ? 'checked' : ''} onchange="setSceneImages(this.checked)"> Let the AI paint scenes at this table</label>`
           : `It's ${META && META.sceneImages === true ? 'on' : 'off'} at this table; the host decides.`}</li>` : ''}
+        <li><b>Field Notes:</b> your ${MODE === 'solo' ? '' : "party's "}journal. The GM writes down quests, people, places, clues, encounters and loot as the story goes, and you can add your own notes and search them any time.</li>
         <li><b>Battle map:</b> when a fight starts the GM lays out a grid on the <b>Battle Map</b> tab (1 square = 5 ft) with every hero and foe. Tap your hero, then a highlighted square, to move; you can move up to your speed each turn (30 ft for most, 25 ft for dwarves, halflings and gnomes). Tap anything to see how far away it is.</li>
         <li><b>XP and levels:</b> you earn XP for defeating foes (shared by the table) and for checks you pass against a DC with a real roll. Once you have enough XP, <b>Level Up</b> unlocks on Your Sheet after a <b>long rest</b>. A <b>short rest</b> lets you spend hit dice there to heal.</li>
         <li><label style="cursor:pointer;"><input type="checkbox" ${diceAnimOn() ? 'checked' : ''} onchange="setDiceAnim(this.checked)"> Show the dice-rolling popup when you roll (click it to dismiss early)</label></li>
