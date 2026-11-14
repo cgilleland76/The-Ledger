@@ -14,7 +14,7 @@ Work from either Claude session starts here.
 - Re-rolls of the same check between GM messages are void ("rolled in error"); the GM uses the first roll.
 - Ally NPC attacks on enemies roll against an AC the GM supplies.
 - Foe hits subtract HP automatically; `[[heal: name | dice | source]]` raises it (capped at max).
-- Pause and resume a solo story with its story code (the room code). Rooms are capped at 20, oldest evicted first.
+- Pause and resume a solo story with its story code (the room code). Guest rooms are capped at 20; the least recently played guest room is removed for space (account rooms never are).
 - `?tester=1` tags test rooms (`rooms.meta.tester`); count real stories with `coalesce(meta->>'tester','false') <> 'true'`.
 - Stabilising is not healing: the GM asks for a Medicine check and never uses `[[heal]]` for it; heal lines worded as stabilising are ignored by the game; a player's own healing is rolled by that player.
 - Android app (Capacitor), ink credits paywall, NFC minis and NFC phase 2 (loot coins, level up, heroes save to their mini).
@@ -42,18 +42,17 @@ Work from either Claude session starts here.
 - Ask before pushing and before changing production data.
 
 ## Open ideas
-- Roadmap on the site (public/changelog-data.js, kept in sync with this list): track spell slots, ammo, rations and gold; scene images; a second-screen table display (a shareable link or cast to a TV or remote monitor showing the scene background with the battle map grid overlaid, live; builds on scene images and the battle map); voice narration (free browser version already designed); optional accounts for private tables; session recaps; in-app feedback form; Android app; tap-to-play NFC minis.
-- Safer room eviction: evict the least recently played room, not the oldest, since paused stories now live in rooms.
-- Per-browser anonymous ID to count distinct players.
-- Saving invented creatures and items; an SRD lookup tab; a hard client-side roll gate.
-- Content check on uploaded portraits before the app goes public.
-- Google Play and RevenueCat setup, and turning the ink paywall on (on hold).
+- Roadmap on the site (public/changelog-data.js, kept in sync with this list): voice narration (free browser version already designed), session recaps, an SRD lookup tab (spells, monsters, items), in-app feedback form, the Android app on Google Play, printed mini kits.
+- Saving invented creatures and items so the GM reuses them consistently.
+- Anonymous per-player count, to see real usage.
+- A hard client-side roll gate.
+- Custom SMTP (support@thirdaxiscustoms.com) in Supabase before real players sign in; captcha for anonymous sign-ins.
+- Google Play and RevenueCat setup, then `BILLING_ENFORCED=true` (on hold).
 
 ## Not yet verified live
-- GM compliance with the newer prompt rules (rolled in error, heal directive, ally AC field, stabilising, stopping for rolls).
-- Real portrait generation and the click chips on the live site.
-- Portrait upload on a real phone (Android camera/gallery picker) and against the real storage bucket.
-- Loot coins and level-up saving with real stickers (tested only against a fake database).
-- Blank minis with a real printed batch and real stickers (forge, move, recover).
-- Accounts with real emails, anonymous guests at a private table, and realtime at account tables (tested against a local Postgres with the real rules, not the live site).
-- The TV display for a private table only works on a device signed in to it or that has joined it. The Android app needs a rebuild to see its host role at tables.
+- GM compliance with the directives in real play: [[cast]], [[feature]], [[use]]/[[give]] amounts, ammo via weapon rolls, allies, death saves, [[stable]], [[remove]], rolled in error, stopping for rolls.
+- Accounts with real emails (link and code), anonymous guests at a private table, and realtime at account tables (tested on a local Postgres with the real rules).
+- Spells and class features in a real session (tested with a fake GM).
+- Portrait upload on a real phone, and AI scene painting (switched off so far).
+- Loot coins, level-up saving and blank minis (KIT1) with real stickers.
+- The Android app is several releases behind until it's rebuilt. The TV display for a private table only works on a device signed in to it or that has joined it.

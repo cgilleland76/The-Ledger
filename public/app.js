@@ -1140,8 +1140,9 @@ function featureCardHTML(c) {
       const left = featureLeft(c, ft);
       const count = left === null ? '' : ft.pool || ft.uses > 6 ? ` ${left}/${ft.uses}` : ' ' + pipRow(left, ft.uses);
       const tip = escapeAttr(ft.note + (ft.rest ? ` (refills on a ${ft.rest} rest)` : ''));
-      return mine ? `<button class="spell-chip" title="${tip}" onclick="featureChip('${escapeAttr(ft.name)}')">${escapeHtml(ft.name)}${count}</button>`
-        : `<span class="spell-chip" title="${tip}">${escapeHtml(ft.name)}${count}</span>`;
+      const dot = infoDotHTML(ft.name, ft.rest ? `refills on a ${ft.rest} rest` : (ft.uses === null ? 'always on' : ''), ft.note);
+      return mine ? `<span class="chip-wrap"><button class="spell-chip" onclick="featureChip('${escapeAttr(ft.name)}')">${escapeHtml(ft.name)}${count}</button>${dot}</span>`
+        : `<span class="chip-wrap"><span class="spell-chip">${escapeHtml(ft.name)}${count}</span>${dot}</span>`;
     }).join('')}</div></div>`;
 }
 function featureChip(name) {
@@ -1311,6 +1312,41 @@ function slotLineHTML(c, cs) {
   return s.length ? `<div class="slot-line">${s.map(x => `<span class="slot-group">${x.pact ? 'Pact ' : ''}${ordinal(x.level)} ${pipRow(x.left, x.total)}</span>`).join('')}</div>` : '';
 }
 
+// "!" info bubble: hover on desktop, tap on phones. Clicking it never ticks a checkbox or casts a spell.
+function infoDotHTML(title, sub, text) {
+  if (!text) return '';
+  return `<span class="info-dot" tabindex="0" role="button" aria-label="About ${escapeAttr(title)}" onclick="infoDotTap(event, this)" onmouseenter="infoDotPlace(this)" onfocus="infoDotPlace(this)" onkeydown="if(event.key==='Enter'||event.key===' ')infoDotTap(event, this)">!<span class="info-pop" role="tooltip"><b>${escapeHtml(title)}</b>${sub ? ` &middot; ${escapeHtml(sub)}` : ''}<br>${escapeHtml(text)}</span></span>`;
+}
+function infoDotTap(e, dot) {
+  e.preventDefault(); e.stopPropagation();
+  const open = dot.classList.contains('open');
+  document.querySelectorAll('.info-dot.open').forEach(d => d.classList.remove('open'));
+  if (!open) { dot.classList.add('open'); infoDotPlace(dot); }
+}
+// Centres the bubble over its "!", shifted sideways only as far as needed to stay on screen.
+function infoDotPlace(dot) {
+  const pop = dot.querySelector('.info-pop');
+  if (!pop) return;
+  pop.style.left = ''; pop.style.right = ''; pop.style.transform = '';
+  const shown = getComputedStyle(pop).display !== 'none';
+  if (!shown) pop.style.display = 'block';
+  const r = pop.getBoundingClientRect();
+  const vw = Math.min(window.innerWidth, document.documentElement.clientWidth || window.innerWidth);
+  let shift = 0;
+  if (r.left < 8) shift = 8 - r.left;
+  else if (r.right > vw - 8) shift = (vw - 8) - r.right;
+  if (shift) pop.style.transform = `translateX(calc(-50% + ${Math.round(shift)}px))`;
+  if (!shown) pop.style.display = '';
+}
+window.infoDotPlace = infoDotPlace;
+document.addEventListener('click', e => { if (!e.target.closest || !e.target.closest('.info-dot')) document.querySelectorAll('.info-dot.open').forEach(d => d.classList.remove('open')); });
+window.infoDotTap = infoDotTap;
+function spellInfoHTML(name) {
+  const sp = spellInfo(name);
+  const text = (window.SRD_SPELL_INFO || {})[sp ? sp.name : name];
+  return infoDotHTML(sp ? sp.name : name, sp ? (sp.level ? ordinal(sp.level) + ' level' : 'Cantrip') : '', text);
+}
+
 // The character card (story tab): DC, slots and the chosen spells. Your own spells fill the message box.
 function spellCardHTML(c) {
   const cs = casterOf(c);
@@ -1322,8 +1358,8 @@ function spellCardHTML(c) {
     <div class="spell-head">Spells &middot; save DC ${cs.dc} &middot; ${fmtMod(cs.attack)} to hit</div>
     ${slotLineHTML(c, cs)}
     <div class="spell-names">${list.length ? list.map(s => mine
-      ? `<button class="spell-chip" title="${s.level ? ordinal(s.level) + ' level' : 'Cantrip'}" onclick="castChip('${escapeAttr(s.name)}')">${escapeHtml(s.name)}</button>`
-      : `<span class="spell-chip" title="${s.level ? ordinal(s.level) + ' level' : 'Cantrip'}">${escapeHtml(s.name)}</span>`).join('')
+      ? `<span class="chip-wrap"><button class="spell-chip" onclick="castChip('${escapeAttr(s.name)}')">${escapeHtml(s.name)}</button>${spellInfoHTML(s.name)}</span>`
+      : `<span class="chip-wrap"><span class="spell-chip">${escapeHtml(s.name)}</span>${spellInfoHTML(s.name)}</span>`).join('')
       : `<span class="helptext">${mine ? 'Choose your spells on the Your Sheet tab.' : 'No spells chosen yet.'}</span>`}</div>
   </div>`;
 }
@@ -1347,7 +1383,7 @@ function spellSheetHTML(c) {
   if (!open) {
     const list = mySpells(c);
     return `<div class="panel spell-panel">${head}
-      ${list.length ? [...new Set(list.map(s => s.level))].map(l => `<p><b>${l ? ordinal(l) + ' level' : 'Cantrips'}:</b> ${list.filter(s => s.level === l).map(s => escapeHtml(s.name)).join(', ')}</p>`).join('') : '<p class="helptext">No spells chosen yet.</p>'}
+      ${list.length ? [...new Set(list.map(s => s.level))].map(l => `<p><b>${l ? ordinal(l) + ' level' : 'Cantrips'}:</b> ${list.filter(s => s.level === l).map(s => escapeHtml(s.name) + spellInfoHTML(s.name)).join(', ')}</p>`).join('') : '<p class="helptext">No spells chosen yet.</p>'}
       ${mine ? '<p class="helptext">You can change your spells after a long rest or when a new session begins.</p>' : ''}</div>`;
   }
   if (!SPELL_DRAFT || SPELL_DRAFT.id !== MY_CHAR_ID) SPELL_DRAFT = { id: MY_CHAR_ID, set: new Set(mySpells(c).map(s => s.name)) };
@@ -1358,7 +1394,7 @@ function spellSheetHTML(c) {
   const groups = levels.map(l => {
     const names = Object.keys(t).filter(n => t[n][0] === l && t[n][1].includes(cs.letter)).sort();
     return `<details ${l <= 1 ? 'open' : ''}><summary>${l ? ordinal(l) + ' level' : 'Cantrips'} (${names.length})</summary><div class="spell-options">${names.map(n =>
-      `<label class="spell-option"><input type="checkbox" ${SPELL_DRAFT.set.has(n) ? 'checked' : ''} onchange="toggleSpellDraft('${escapeAttr(n)}', this.checked)"> ${escapeHtml(n)}</label>`).join('')}</div></details>`;
+      `<label class="spell-option"><input type="checkbox" ${SPELL_DRAFT.set.has(n) ? 'checked' : ''} onchange="toggleSpellDraft('${escapeAttr(n)}', this.checked)"> ${escapeHtml(n)}${spellInfoHTML(n)}</label>`).join('')}</div></details>`;
   }).join('');
   return `<div class="panel spell-panel">${head}
     <p class="hero-note">Choose your spells now: you can change them only after a long rest or when a new session begins.</p>

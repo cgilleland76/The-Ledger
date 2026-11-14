@@ -9,6 +9,12 @@ window.LEDGER_CHANGELOG = [
   {
     date: "2026-11-14",
     type: "feature",
+    title: "What does this spell do?",
+    detail: "Every spell and class feature now has a small ! next to it. Hover over it (or tap it on a phone) for a short note: how long it takes to cast, its range and what it does."
+  },
+  {
+    date: "2026-11-14",
+    type: "feature",
     title: "The story is free to play",
     detail: "Everyone gets 30 free story turns a day, refilled at your own midnight. Run out? Pause and pick it up tomorrow, or use ink to keep going. Ink is now for extras: AI-painted portraits and scenes. Setting up stories and characters, uploading your own pictures, maps, spells and everything else stay free."
   },
@@ -256,31 +262,27 @@ window.LEDGER_CHANGELOG = [
 
 window.LEDGER_ROADMAP = [
   {
-    title: "Track spell slots, ammo, rations and gold",
-    detail: "Potions and other consumables already count down when used. Next is the rest of the limited resources a story spends: spell slots, ammo, rations, torches and gold, so your sheet reflects what the story has actually cost you."
-  },
-  {
     title: "Voice narration for the GM",
     detail: "Have the GM's messages read aloud, with a distinct voice for each NPC's dialogue. A no-cost, browser-based first version is already designed and ready to build."
-  },
-  {
-    title: "Optional real accounts for private tables",
-    detail: "Right now anyone with a room code can read/write that room. An opt-in account system would let a table lock things down further."
   },
   {
     title: "Session recaps",
     detail: 'Auto-generate a "previously, on..." summary at the start of a new session.'
   },
   {
+    title: "Spell, monster and item lookup",
+    detail: "A quick reference tab for the SRD: what a spell does, a monster's stat block, what an item is worth."
+  },
+  {
     title: "In-app feedback form",
     detail: "Replace the current email-based feedback button with a form that saves directly into the app."
   },
   {
-    title: "The Ledger on Android",
-    detail: "A phone app version of The Ledger is built and being tested. It plays the same stories as the website."
+    title: "The Ledger on Google Play",
+    detail: "The Android app is built and being tested. It plays the same stories as the website and will be on Google Play soon."
   },
   {
-    title: "Tap-to-play minis",
-    detail: "Tap a 3D-printed mini with an NFC tag to a phone to bring that hero into your game, with loot and level-ups saved to the mini."
+    title: "Tap-to-play mini kits",
+    detail: "Tapping a mini already works. Next: printed kits of blank hero minis you can forge your own hero onto, with monsters and loot coins."
   },
 ];
