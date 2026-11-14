@@ -499,12 +499,15 @@ button.spell-chip:hover{ background:rgba(217,180,90,0.35); }
 
 /* "!" info bubbles (spells, class features) */
 .chip-wrap{ display:inline-flex; align-items:center; gap:2px; }
-.info-dot{ position:relative; display:inline-flex; align-items:center; justify-content:center; width:16px; height:16px; margin-left:4px; border-radius:50%; border:1px solid #8b6832; color:#8b6832; background:rgba(217,180,90,0.18); font:700 11px/1 Georgia, serif; cursor:help; vertical-align:middle; flex:none; user-select:none; }
-.info-dot:hover, .info-dot:focus, .info-dot.open{ background:#8b6832; color:#f6ecd4; outline:none; }
+.info-dot{ position:relative; display:inline-flex; align-items:center; justify-content:center; width:13px; height:13px; margin-left:3px; border-radius:50%; color:#8b6832; background:rgba(139,104,50,0.14); font:700 9px/1 Georgia, serif; cursor:help; vertical-align:super; flex:none; user-select:none; opacity:0.65; }
+.info-dot:hover, .info-dot:focus, .info-dot.open{ background:#8b6832; color:#f6ecd4; outline:none; opacity:1; }
+.info-term{ position:relative; cursor:help; border-bottom:1px dotted rgba(139,104,50,0.6); }
+.info-term:hover, .info-term:focus, .info-term.open{ border-bottom-color:#8b6832; color:#7a4a12; outline:none; }
 .info-pop{ display:none; position:absolute; bottom:calc(100% + 8px); left:50%; transform:translateX(-50%); width:260px; max-width:78vw; padding:8px 10px; border-radius:6px; background:#2b1d10; color:#f3e6c8; font:400 0.84rem/1.45 Georgia, serif; letter-spacing:0; text-transform:none; text-align:left; white-space:normal; box-shadow:0 6px 18px rgba(0,0,0,0.35); z-index:60; pointer-events:none; }
 .info-pop b{ color:#ffd98a; }
-.info-dot:hover .info-pop, .info-dot:focus .info-pop, .info-dot.open .info-pop{ display:block; }
-@media (hover: none){ .info-dot:hover .info-pop, .info-dot:focus .info-pop{ display:none; } .info-dot.open .info-pop{ display:block; } }
+.info-dot:hover .info-pop, .info-dot:focus .info-pop, .info-dot.open .info-pop,
+.info-term:hover .info-pop, .info-term:focus .info-pop, .info-term.open .info-pop{ display:block; }
+@media (hover: none){ .info-dot:hover .info-pop, .info-dot:focus .info-pop, .info-term:hover .info-pop, .info-term:focus .info-pop{ display:none; } .info-dot.open .info-pop, .info-term.open .info-pop{ display:block; } }
 
 .pick-row{ display:flex; align-items:center; gap:6px; }
 .pick-row select{ flex:1; min-width:0; }

@@ -1047,7 +1047,7 @@ function renderStoryTab() {
 }
 function abilityGridHTML(c) {
   const abilities = [['STR', c.str], ['DEX', c.dex], ['CON', c.con], ['INT', c.int], ['WIS', c.wis], ['CHA', c.cha]];
-  return `<div class="stat-grid">${abilities.map(([k, v]) => `<div class="stat-chip"><span class="k">${k}${abilityInfoHTML(k)}</span><span class="v">${v ?? 10} (${fmtMod(abilityMod(v))})</span></div>`).join('')}</div>
+  return `<div class="stat-grid">${abilities.map(([k, v]) => `<div class="stat-chip"><span class="k">${asTerm(abilityInfoHTML(k), k)}</span><span class="v">${v ?? 10} (${fmtMod(abilityMod(v))})</span></div>`).join('')}</div>
     <div class="derived-row"><span><b>Passive Perception</b> ${passivePerception(c)}</span><span><b>Initiative</b> ${fmtMod(initiativeBonus(c))}</span></div>`;
 }
 function sheetMiniHTML() {
@@ -1315,14 +1315,16 @@ function slotLineHTML(c, cs) {
 }
 
 // "!" info bubble: hover on desktop, tap on phones. Clicking it never ticks a checkbox or casts a spell.
-function infoDotHTML(title, sub, text) {
-  if (!text) return '';
+function infoDotHTML(title, sub, text, label) {
+  if (!text) return label !== undefined ? label : '';
+  const pop = `<span class="info-pop" role="tooltip"><b>${escapeHtml(title)}</b>${sub ? ` &middot; ${escapeHtml(sub)}` : ''}<br>${escapeHtml(text)}</span>`;
+  if (label !== undefined) return `<span class="info-term" tabindex="0" role="button" aria-label="About ${escapeAttr(title)}" onclick="infoDotTap(event, this)" onmouseenter="infoDotPlace(this)" onfocus="infoDotPlace(this)" onkeydown="if(event.key==='Enter'||event.key===' ')infoDotTap(event, this)">${label}${pop}</span>`;
   return `<span class="info-dot" tabindex="0" role="button" aria-label="About ${escapeAttr(title)}" onclick="infoDotTap(event, this)" onmouseenter="infoDotPlace(this)" onfocus="infoDotPlace(this)" onkeydown="if(event.key==='Enter'||event.key===' ')infoDotTap(event, this)">!<span class="info-pop" role="tooltip"><b>${escapeHtml(title)}</b>${sub ? ` &middot; ${escapeHtml(sub)}` : ''}<br>${escapeHtml(text)}</span></span>`;
 }
 function infoDotTap(e, dot) {
   e.preventDefault(); e.stopPropagation();
   const open = dot.classList.contains('open');
-  document.querySelectorAll('.info-dot.open').forEach(d => d.classList.remove('open'));
+  document.querySelectorAll('.info-dot.open, .info-term.open').forEach(d => d.classList.remove('open'));
   if (!open) { dot.classList.add('open'); infoDotPlace(dot); }
 }
 // Centres the bubble over its "!", shifted sideways only as far as needed to stay on screen.
@@ -1341,12 +1343,19 @@ function infoDotPlace(dot) {
   if (!shown) pop.style.display = '';
 }
 window.infoDotPlace = infoDotPlace;
-document.addEventListener('click', e => { if (!e.target.closest || !e.target.closest('.info-dot')) document.querySelectorAll('.info-dot.open').forEach(d => d.classList.remove('open')); });
+document.addEventListener('click', e => { if (!e.target.closest || !e.target.closest('.info-dot, .info-term')) document.querySelectorAll('.info-dot.open, .info-term.open').forEach(d => d.classList.remove('open')); });
 window.infoDotTap = infoDotTap;
 // Notes for races, classes, gear, skills, abilities and conditions (public/srd-info.js).
 const SRDI = () => window.SRD_INFO || {};
 const byLength = o => Object.keys(o || {}).sort((a, b) => b.length - a.length);
 const wordIn = (k, text) => new RegExp('(^|[^a-z])' + k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '($|[^a-z])', 'i').test(text);
+const asTerm = (dotHTML, label) => {
+  // turn a dot's HTML into a term around label (reuses the same note text)
+  const m = /<span class="info-pop" role="tooltip"><b>([\s\S]*?)<\/b>(?: &middot; ([\s\S]*?))?<br>([\s\S]*?)<\/span><\/span>$/.exec(dotHTML || '');
+  if (!m) return label;
+  const un = t => String(t || '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/<br>/g, '\n').replace(/&amp;/g, '&');
+  return infoDotHTML(un(m[1]), un(m[2]), un(m[3]), label);
+};
 function raceInfoHTML(v) { const k = toListEntry(v, SRD_RACES); const t = (SRDI().races || {})[k]; return t ? infoDotHTML(k, 'race', t) : ''; }
 function classInfoHTML(v) { const k = toListEntry(v, SRD_CLASSES); const t = (SRDI().classes || {})[k]; return t ? infoDotHTML(k, 'class', t) : ''; }
 function itemInfoHTML(item) {
@@ -1373,7 +1382,7 @@ function conditionDots(html) {
     const k = w.toLowerCase();
     if (seen.has(k) || !C[k]) return w;
     seen.add(k);
-    return w + infoDotHTML(capFirst(k), 'condition', C[k]);
+    return infoDotHTML(capFirst(k), 'condition', C[k], w);
   })).join('');
 }
 
@@ -1419,7 +1428,7 @@ function spellSheetHTML(c) {
   if (!open) {
     const list = mySpells(c);
     return `<div class="panel spell-panel">${head}
-      ${list.length ? [...new Set(list.map(s => s.level))].map(l => `<p><b>${l ? ordinal(l) + ' level' : 'Cantrips'}:</b> ${list.filter(s => s.level === l).map(s => escapeHtml(s.name) + spellInfoHTML(s.name)).join(', ')}</p>`).join('') : '<p class="helptext">No spells chosen yet.</p>'}
+      ${list.length ? [...new Set(list.map(s => s.level))].map(l => `<p><b>${l ? ordinal(l) + ' level' : 'Cantrips'}:</b> ${list.filter(s => s.level === l).map(s => asTerm(spellInfoHTML(s.name), escapeHtml(s.name))).join(', ')}</p>`).join('') : '<p class="helptext">No spells chosen yet.</p>'}
       ${mine ? '<p class="helptext">You can change your spells after a long rest or when a new session begins.</p>' : ''}</div>`;
   }
   if (!SPELL_DRAFT || SPELL_DRAFT.id !== MY_CHAR_ID) SPELL_DRAFT = { id: MY_CHAR_ID, set: new Set(mySpells(c).map(s => s.name)) };
@@ -3032,7 +3041,7 @@ function renderMapTab() {
       cells += `<button class="${cls.join(' ')}" onclick="mapTap(${x},${y})" title="${t ? escapeAttr(t.name) + ' — ' : ''}${sq(x, y)}">${label}</button>`;
     }
   }
-  const legend = (g.tokens || []).map(t => `<span class="map-key ${t.kind === 'hero' ? 'map-hero' : t.kind === 'ally' ? 'map-ally' : 'map-foe'}">${escapeHtml(t.name.split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase())}</span> ${escapeHtml(t.name)}${t.kind !== 'hero' ? foeInfoHTML(t.name) : ''} <span class="helptext">${sq(t.x, t.y)}${me && t !== me ? ' · ' + feetBetween(me, t) + ' ft' : ''}${t.kind !== 'hero' && findFoe(t.name) ? ' · ' + findFoe(t.name).hp + '/' + findFoe(t.name).maxhp + ' HP' : ''}</span>`).join('<br>');
+  const legend = (g.tokens || []).map(t => `<span class="map-key ${t.kind === 'hero' ? 'map-hero' : t.kind === 'ally' ? 'map-ally' : 'map-foe'}">${escapeHtml(t.name.split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase())}</span> ${t.kind !== 'hero' ? asTerm(foeInfoHTML(t.name), escapeHtml(t.name)) : escapeHtml(t.name)} <span class="helptext">${sq(t.x, t.y)}${me && t !== me ? ' · ' + feetBetween(me, t) + ' ft' : ''}${t.kind !== 'hero' && findFoe(t.name) ? ' · ' + findFoe(t.name).hp + '/' + findFoe(t.name).maxhp + ' HP' : ''}</span>`).join('<br>');
   const prevScroll = el('mapScroll') ? el('mapScroll').scrollLeft : null; // keep the view still across redraws
   body.innerHTML = `
     <div class="map-wrap">
@@ -3833,7 +3842,7 @@ function renderSheetTab() {
   el('tabBody').innerHTML = `
     <div class="panel" style="max-width:640px;">
       <h2>${escapeHtml(c.name)}</h2>
-      <p class="rclass">${escapeHtml(c.player)} &middot; Lv${c.level} ${escapeHtml(c.race)}${raceInfoHTML(c.race)} ${escapeHtml(c.klass)}${classInfoHTML(c.klass)}</p>
+      <p class="rclass">${escapeHtml(c.player)} &middot; Lv${c.level} ${asTerm(raceInfoHTML(c.race), escapeHtml(c.race))} ${asTerm(classInfoHTML(c.klass), escapeHtml(c.klass))}</p>
       ${portraitBoxHTML(c)}
       <div class="sheet-grid">
         <div class="sheet-stat"><div class="label">HP</div><div class="val">${c.hp} / ${c.maxhp}</div>${deathSaveHTML(c)}</div>
@@ -3850,10 +3859,10 @@ function renderSheetTab() {
       <p class="helptext" style="margin:-4px 0 20px;">HP only changes through the game: damage from attacks, traps and falls; healing from potions, spells and rests.</p>
 
       <h3 style="font-size:1rem;">Skills</h3>
-      ${(c.skills || []).map(s => `<div class="item-row"><span>${escapeHtml(s.name)}${skillInfoHTML(s.name)}</span><span style="font-family:var(--font-display);font-weight:600;color:var(--glow)">${s.mod >= 0 ? '+' : ''}${escapeHtml(String(s.mod))}</span></div>`).join('') || '<p class="helptext">None recorded.</p>'}
+      ${(c.skills || []).map(s => `<div class="item-row"><span>${asTerm(skillInfoHTML(s.name), escapeHtml(s.name))}</span><span style="font-family:var(--font-display);font-weight:600;color:var(--glow)">${s.mod >= 0 ? '+' : ''}${escapeHtml(String(s.mod))}</span></div>`).join('') || '<p class="helptext">None recorded.</p>'}
 
       <h3 style="font-size:1rem;margin-top:20px;">Inventory</h3>
-      ${(() => { const f = handFlags(c); return (c.inventory || []).map((it, i) => `<div class="item-row"><span>${escapeHtml(it)}${f[i] ? '' : itemInfoHTML(it)}${f[i] ? ' <span class="hand-item" title="You typed this in. The GM only counts items the story gave you.">(added by you)</span>' : ''}</span><button class="small-x" onclick="removeItem(${i})">&times;</button></div>`).join(''); })() || '<p class="helptext">Empty-handed.</p>'}
+      ${(() => { const f = handFlags(c); return (c.inventory || []).map((it, i) => `<div class="item-row"><span>${f[i] ? escapeHtml(it) : asTerm(itemInfoHTML(it), escapeHtml(it))}${f[i] ? ' <span class="hand-item" title="You typed this in. The GM only counts items the story gave you.">(added by you)</span>' : ''}</span><button class="small-x" onclick="removeItem(${i})">&times;</button></div>`).join(''); })() || '<p class="helptext">Empty-handed.</p>'}
       <p class="helptext">Items the story gives you are added for you. Anything you type in here is marked <i>added by you</i>, and the GM won't count it.</p>
       <div class="skill-row" style="margin-top:10px;">
         <input type="text" id="newItem" placeholder="Add item..." value="${escapeAttr(newItemDraft)}" oninput="setNewItemDraft(this.value)">
