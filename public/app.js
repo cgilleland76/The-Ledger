@@ -754,6 +754,7 @@ async function generateCharacter() {
   const appearanceHint = (el('cAppearance')?.value || '').trim().slice(0, 500);
   const genderHint = (el('cGender')?.value || '').trim().slice(0, 30);
   const ageHint = (el('cAge')?.value || '').trim().slice(0, 20);
+  const nameHint = (el('cCharName')?.value || '').trim().slice(0, 40);
   renderCharSetup();
 
   const prompt = `Generate a complete tabletop RPG character sheet for a new level 1 character in a ${MODE === 'solo' ? 'solo story' : 'campaign'} titled "${META.name}". Ruleset: ${META.ruleset}. Genre/tone: ${META.tone || 'unspecified — pick something fitting'}.
@@ -761,10 +762,11 @@ ${raceHint ? `The player wants a ${raceHint} character.` : `Choose a race that f
 ${classHint ? `The player wants to play a ${classHint}.` : `Choose a class that fits the tone from exactly this list: ${SRD_CLASSES.join(', ')}.`}
 ${genderHint ? `The character's gender is: ${genderHint}.` : ''}
 ${ageHint ? `The character's age is: ${ageHint}.` : ''}
+${nameHint ? `The character's name is ${nameHint}; keep it.` : 'Give the character a fitting name.'}
 ${appearanceHint ? `The player describes their look as: ${appearanceHint}` : ''}
 
 Respond with ONLY a single JSON object, no markdown code fences, no commentary, matching exactly this shape:
-{"race":"string","klass":"string","str":10,"dex":10,"con":10,"int":10,"wis":10,"cha":10,"maxhp":10,"ac":10,"skills":[{"name":"string","mod":0}],"inventory":["string"],"notes":"one or two sentence backstory hook","appearance":"one or two sentences describing how the character looks","gender":"string","age":"string, e.g. 34"}
+{"name":"string","race":"string","klass":"string","str":10,"dex":10,"con":10,"int":10,"wis":10,"cha":10,"maxhp":10,"ac":10,"skills":[{"name":"string","mod":0}],"inventory":["string"],"notes":"one or two sentence backstory hook","appearance":"one or two sentences describing how the character looks","gender":"string","age":"string, e.g. 34"}
 
 Use sensible 5e-appropriate ability scores for the class (e.g. the standard array 15/14/13/12/10/8 assigned to fit the class), a reasonable starting HP and AC for a level 1 character, 3-5 class-appropriate skills with realistic modifiers, and 4-8 pieces of starting gear specifically appropriate to that class and the campaign's tone — not generic fantasy-adventurer gear unless the tone calls for it.`;
 
@@ -773,6 +775,7 @@ Use sensible 5e-appropriate ability scores for the class (e.g. the standard arra
     const parsed = parseCharacterJSON(text);
     draftChar = {
       ...draftChar,
+      name: nameHint || String(parsed.name || '').trim().slice(0, 40) || draftChar.name,
       race: raceHint || toListEntry(parsed.race, SRD_RACES) || draftChar.race,
       klass: classHint || toListEntry(parsed.klass, SRD_CLASSES) || draftChar.klass,
       str: parsed.str ?? draftChar.str,
