@@ -9,6 +9,12 @@ window.LEDGER_CHANGELOG = [
   {
     date: "2026-11-14",
     type: "feature",
+    title: "Leave anything blank and the GM fills it in",
+    detail: "On character creation, whatever you leave blank (name, race, class, looks, backstory, skills, gear or ability scores) is filled in by the GM when you begin, built around what you did choose."
+  },
+  {
+    date: "2026-11-14",
+    type: "feature",
     title: "Pick your race and class from a list",
     detail: "Character creation now lists every SRD race (Dragonborn, Dwarf, Elf, Gnome, Half-Elf, Half-Orc, Halfling, Human, Tiefling) and class (Barbarian through Wizard). Let the GM choose, or pick Something else for any other genre."
   },

@@ -575,8 +575,8 @@ function renderCharSetup() {
       <div class="field"><label>Appearance (optional — used to paint your portrait)</label><textarea id="cAppearance" maxlength="500" placeholder="e.g. Tall and wiry, silver hair, a scar over one eye, patched green cloak" oninput="setDraftField('appearance', this.value)">${escapeAttr(d.appearance || '')}</textarea></div>
 
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:end;">
-        <div class="field"><label>Race / Species ${charGenMode === 'auto' ? '(optional — leave blank to let the GM choose)' : ''}</label>${pickListHTML('cRace', 'race', SRD_RACES, d.race, charGenMode === 'auto')}</div>
-        <div class="field"><label>Class ${charGenMode === 'auto' ? '(optional — leave blank to let the GM choose)' : ''}</label>${pickListHTML('cClass', 'klass', SRD_CLASSES, d.klass, charGenMode === 'auto')}</div>
+        <div class="field"><label>Race / Species</label>${pickListHTML('cRace', 'race', SRD_RACES, d.race, true)}</div>
+        <div class="field"><label>Class</label>${pickListHTML('cClass', 'klass', SRD_CLASSES, d.klass, true)}</div>
       </div>
 
       <div class="field">
@@ -626,6 +626,7 @@ function renderCharSetup() {
 
       <div class="field"><label>Notes / Backstory (optional)</label><textarea id="cNotes" oninput="setDraftField('notes', this.value)">${escapeAttr(d.notes)}</textarea></div>
 
+      <p class="helptext">Anything you leave blank (name, race, class, looks, backstory, skills, gear) the GM fills in when you ${MODE === 'solo' ? 'begin' : 'join'}.</p>
       <div id="charErr" class="error-text"></div>
       <button class="btn solid wide" onclick="submitCharacter()">${MODE === 'solo' ? 'Begin' : 'Join the Table'}</button>
     </div>
@@ -700,6 +701,47 @@ function parseCharacterJSON(text) {
   const end = cleaned.lastIndexOf('}');
   if (start === -1 || end === -1) throw new Error("The GM's response wasn't valid JSON.");
   return JSON.parse(cleaned.slice(start, end + 1));
+}
+
+// Anything the player left blank is filled in by the AI GM when they create the character; everything
+// they entered is kept exactly. A sheet whose numbers were never set (all 10s) counts as blank too.
+const ABILITY_KEYS = ['str', 'dex', 'con', 'int', 'wis', 'cha'];
+function characterBlanks(d, statsBlank) {
+  const blank = [];
+  if (!d.name || d.name === 'Unnamed') blank.push('name');
+  if (!d.race || d.race === '__other') blank.push('race');
+  if (!d.klass || d.klass === '__other') blank.push('klass');
+  for (const k of ['gender', 'age', 'appearance', 'notes']) if (!String(d[k] || '').trim()) blank.push(k);
+  if (!(d.skills || []).length) blank.push('skills');
+  if (!(d.inventory || []).length) blank.push('inventory');
+  if (statsBlank) blank.push(...ABILITY_KEYS, 'maxhp', 'ac');
+  return blank;
+}
+async function fillCharacterBlanks(d, blank) {
+  const known = {};
+  for (const k of ['name', 'race', 'klass', 'level', 'gender', 'age', 'appearance', 'notes', ...ABILITY_KEYS, 'maxhp', 'ac', 'skills', 'inventory']) {
+    if (!blank.includes(k) && d[k] !== undefined && d[k] !== '') known[k] = d[k];
+  }
+  const prompt = `Fill in the blank parts of a level ${parseInt(d.level) || 1} tabletop RPG character for a ${MODE === 'solo' ? 'solo story' : 'campaign'} titled "${META.name}". Ruleset: ${META.ruleset}. Genre/tone: ${META.tone || 'unspecified, pick something fitting'}.
+The player already chose these; keep them exactly and build the rest around them: ${JSON.stringify(known)}
+Fill in ONLY these fields: ${blank.join(', ')}.
+${blank.includes('race') ? `"race" must be exactly one of: ${SRD_RACES.join(', ')}.` : ''}
+${blank.includes('klass') ? `"klass" must be exactly one of: ${SRD_CLASSES.join(', ')}.` : ''}
+Respond with ONLY a single JSON object containing just those fields, no markdown code fences, no commentary. Field shapes: "name": a fitting character name; "gender": string; "age": string, e.g. "34"; "appearance": one or two sentences on how they look; "notes": a one or two sentence backstory hook; "skills": [{"name":"string","mod":0}], 3-5 class-appropriate skills with modifiers that match the ability scores; "inventory": ["string"], 4-8 starting items fitting the class and tone, giving counts for ammunition and coins (e.g. "Light crossbow with 20 bolts", "10 gold pieces"); "str".."cha": numbers using the standard array 15/14/13/12/10/8 fitted to the class; "maxhp": the class hit die plus the CON modifier for a level 1 character; "ac": a number fitting the starting armour.`;
+  const p = parseCharacterJSON(await fetchGM(prompt));
+  const num = (v, lo, hi) => { const n = parseInt(v); return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : null; };
+  for (const k of blank) {
+    const v = p[k];
+    if (v === undefined || v === null || v === '') continue;
+    if (k === 'race') d.race = toListEntry(v, SRD_RACES);
+    else if (k === 'klass') d.klass = toListEntry(v, SRD_CLASSES);
+    else if (ABILITY_KEYS.includes(k)) { const n = num(v, 3, 20); if (n) d[k] = n; }
+    else if (k === 'maxhp') { const n = num(v, 1, 300); if (n) { d.maxhp = n; d.hp = n; } }
+    else if (k === 'ac') { const n = num(v, 5, 25); if (n) d.ac = n; }
+    else if (k === 'skills' && Array.isArray(v)) d.skills = v.filter(x => x && x.name).slice(0, 8).map(x => ({ name: String(x.name).slice(0, 40), mod: num(x.mod, -5, 15) || 0 }));
+    else if (k === 'inventory' && Array.isArray(v)) d.inventory = v.map(x => String(x).trim().slice(0, 80)).filter(Boolean).slice(0, 12);
+    else if (typeof v === 'string' || typeof v === 'number') d[k] = String(v).slice(0, k === 'appearance' ? 500 : k === 'notes' ? 600 : k === 'name' ? 40 : 30);
+  }
 }
 
 async function generateCharacter() {
@@ -788,7 +830,6 @@ async function submitCharacter() {
     draftChar.name = el('cCharName').value.trim() || 'Unnamed';
     draftChar.race = el('cRace').value.trim();
     draftChar.klass = el('cClass').value.trim();
-    if (!draftChar.race || !draftChar.klass || draftChar.race === '__other' || draftChar.klass === '__other') { el('charErr').innerText = 'Choose a race and a class.'; return; }
     draftChar.level = parseInt(el('cLevel').value) || 1;
     draftChar.maxhp = parseInt(el('cMaxHP').value) || 10;
     draftChar.hp = draftChar.maxhp;
@@ -805,6 +846,23 @@ async function submitCharacter() {
     draftChar.age = el('cAge').value.trim().slice(0, 20);
     draftChar.skills = draftChar.skills.filter(s => s.name.trim());
     draftChar.inventory = draftChar.inventory.filter(i => i.trim());
+    const statsBlank = !draftChar.__generated && ABILITY_KEYS.every(k => draftChar[k] === 10) && draftChar.maxhp === 10 && draftChar.ac === 10;
+    const blank = characterBlanks(draftChar, statsBlank);
+    if (blank.length) {
+      el('charErr').innerHTML = '<span class="thinking">The GM is filling in the blanks…</span>';
+      try { await fillCharacterBlanks(draftChar, blank); }
+      catch (e) {
+        console.error(e);
+        if (characterBlanks(draftChar, false).some(k => k === 'race' || k === 'klass')) {
+          el('charErr').innerText = `${e.outOfInk ? e.message : friendlyTrouble(e)} Or choose a race and a class yourself.`;
+          return;
+        }
+      }
+      el('charErr').innerText = '';
+    }
+    if (!draftChar.name || draftChar.name === '__other') draftChar.name = 'Unnamed';
+    if (draftChar.race === '__other') draftChar.race = '';
+    if (draftChar.klass === '__other') draftChar.klass = '';
     if (!(draftChar.handItems || []).length) normalizeInventory(draftChar);
     }
 
