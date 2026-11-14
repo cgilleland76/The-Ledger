@@ -884,6 +884,7 @@ function setTab(k) { ACTIVE_TAB = k; render(); }
 
 async function advanceSession() {
   META.session = (META.session || 1) + 1;
+  META.spellWindow = gmCount(); // casters may change their spells until the story moves on
   await dbUpdateRoomMeta(ROOM, META);
   const entry = { id: uid(6), author: 'The Ledger', type: 'system', text: `— Session ${META.session} begins —` };
   await dbInsertLog(ROOM, entry);
@@ -931,9 +932,189 @@ function sheetMiniHTML() {
     <div class="hpbar"><div class="hpbar-fill ${pct < 30 ? 'low' : ''}" style="width:${pct}%"></div></div>
     <div class="hprow"><span>HP ${c.hp}/${c.maxhp}</span><span>AC ${c.ac}</span></div>
     ${deathSaveHTML(c)}
+    ${spellCardHTML(c)}
     ${abilityGridHTML(c)}
   </div>`;
 }
+/* ---------------- Spellcasting (SRD 5.1) ----------------
+   Slots, how many spells a caster has, and their spell list come from the class and level; spells come from
+   the class's SRD list (srd-spells.js). The game spends slots with the GM's [[cast]] and refuses a spell
+   that isn't chosen or has no slot left. A long rest restores slots (a short rest restores warlock pact
+   slots). Spells can be changed only after a long rest, when a new session begins, or by a new hero. */
+const CASTERS = { // class: [list letter, ability, slot progression, how spells are chosen]
+  bard: ['b', 'cha', 'full', 'known'], cleric: ['c', 'wis', 'full', 'prepared'], druid: ['d', 'wis', 'full', 'prepared'],
+  paladin: ['p', 'cha', 'half', 'prepared'], ranger: ['r', 'wis', 'half', 'known'], sorcerer: ['s', 'cha', 'full', 'known'],
+  warlock: ['k', 'cha', 'pact', 'known'], wizard: ['w', 'int', 'full', 'prepared'],
+};
+const FULL_SLOTS = [[2], [3], [4, 2], [4, 3], [4, 3, 2], [4, 3, 3], [4, 3, 3, 1], [4, 3, 3, 2], [4, 3, 3, 3, 1], [4, 3, 3, 3, 2],
+  [4, 3, 3, 3, 2, 1], [4, 3, 3, 3, 2, 1], [4, 3, 3, 3, 2, 1, 1], [4, 3, 3, 3, 2, 1, 1], [4, 3, 3, 3, 2, 1, 1, 1], [4, 3, 3, 3, 2, 1, 1, 1],
+  [4, 3, 3, 3, 2, 1, 1, 1, 1], [4, 3, 3, 3, 3, 1, 1, 1, 1], [4, 3, 3, 3, 3, 2, 1, 1, 1], [4, 3, 3, 3, 3, 2, 2, 1, 1]];
+const SPELLS_KNOWN = {
+  bard: [4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 15, 16, 18, 19, 19, 20, 22, 22, 22],
+  sorcerer: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 12, 13, 13, 14, 14, 15, 15, 15, 15],
+  warlock: [2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 11, 11, 12, 12, 13, 13, 14, 14, 15, 15],
+  ranger: [0, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11],
+};
+const CANTRIPS_KNOWN = { bard: [2, 3, 4], cleric: [3, 4, 5], druid: [2, 3, 4], sorcerer: [4, 5, 6], warlock: [2, 3, 4], wizard: [3, 4, 5] };
+const ordinal = n => n === 1 ? '1st' : n === 2 ? '2nd' : n === 3 ? '3rd' : n + 'th';
+
+function casterOf(c) {
+  if (!c) return null;
+  const cls = Object.keys(CASTERS).find(n => new RegExp('\\b' + n + '\\b', 'i').test(String(c.klass || '')));
+  if (!cls) return null;
+  const [letter, ab, kind, mode] = CASTERS[cls];
+  const lvl = Math.max(1, Math.min(20, parseInt(c.level) || 1));
+  const mod = abilityMod(c[ab]);
+  const prof = Math.ceil(lvl / 4) + 1;
+  let slots = [], pact = null;
+  if (kind === 'full') slots = FULL_SLOTS[lvl - 1];
+  else if (kind === 'half') slots = lvl >= 2 ? FULL_SLOTS[Math.ceil(lvl / 2) - 1] : [];
+  else pact = { n: lvl === 1 ? 1 : lvl <= 10 ? 2 : lvl <= 16 ? 3 : 4, level: Math.min(5, Math.ceil(lvl / 2)) };
+  const maxLevel = pact ? pact.level : slots.length;
+  const cantrips = CANTRIPS_KNOWN[cls] ? CANTRIPS_KNOWN[cls][lvl >= 10 ? 2 : lvl >= 4 ? 1 : 0] : 0;
+  const spells = mode === 'known' ? SPELLS_KNOWN[cls][lvl - 1] : maxLevel ? Math.max(1, mod + (kind === 'half' ? Math.floor(lvl / 2) : lvl)) : 0;
+  return { cls, letter, ability: ab.toUpperCase(), mod, prof, dc: 8 + prof + mod, attack: prof + mod, slots, pact, maxLevel, cantrips, spells, mode };
+}
+function spellInfo(name) {
+  const t = window.SRD_SPELLS || {};
+  const want = String(name || '').trim().toLowerCase();
+  const k = Object.keys(t).find(n => n.toLowerCase() === want);
+  return k ? { name: k, level: t[k][0], classes: t[k][1] } : null;
+}
+function mySpells(c) { return (Array.isArray(c.spells) ? c.spells : []).map(spellInfo).filter(Boolean).sort((a, b) => a.level - b.level || a.name.localeCompare(b.name)); }
+function slotsLeft(c, cs) {
+  if (cs.pact) return [{ level: cs.pact.level, total: cs.pact.n, left: Math.max(0, cs.pact.n - (parseInt(c.pactUsed) || 0)), pact: true }];
+  const used = c.slotsUsed || {};
+  return cs.slots.map((t, i) => ({ level: i + 1, total: t, left: Math.max(0, t - (parseInt(used[i + 1]) || 0)) }));
+}
+function spellWindowOpen(c) {
+  if (!META || !c) return false;
+  if (!Array.isArray(c.spells) || !c.spells.length) return true; // a new hero chooses straight away
+  const n = gmCount();
+  return (Number.isFinite(META.lastLongRest) && META.lastLongRest === n) || (Number.isFinite(META.spellWindow) && META.spellWindow === n);
+}
+const pipRow = (left, total) => Array.from({ length: total }, (_, i) => `<span class="ds-pip ${i < left ? 'ok' : ''}"></span>`).join('');
+function slotLineHTML(c, cs) {
+  const s = slotsLeft(c, cs);
+  return s.length ? `<div class="slot-line">${s.map(x => `<span class="slot-group">${x.pact ? 'Pact ' : ''}${ordinal(x.level)} ${pipRow(x.left, x.total)}</span>`).join('')}</div>` : '';
+}
+
+// The character card (story tab): DC, slots and the chosen spells. Your own spells fill the message box.
+function spellCardHTML(c) {
+  const cs = casterOf(c);
+  if (!cs) return '';
+  if (!cs.maxLevel && !cs.cantrips) return `<div class="spell-card helptext">Spellcasting starts at level 2.</div>`;
+  const mine = c === ROSTER[MY_CHAR_ID];
+  const list = mySpells(c);
+  return `<div class="spell-card">
+    <div class="spell-head">Spells &middot; save DC ${cs.dc} &middot; ${fmtMod(cs.attack)} to hit</div>
+    ${slotLineHTML(c, cs)}
+    <div class="spell-names">${list.length ? list.map(s => mine
+      ? `<button class="spell-chip" title="${s.level ? ordinal(s.level) + ' level' : 'Cantrip'}" onclick="castChip('${escapeAttr(s.name)}')">${escapeHtml(s.name)}</button>`
+      : `<span class="spell-chip" title="${s.level ? ordinal(s.level) + ' level' : 'Cantrip'}">${escapeHtml(s.name)}</span>`).join('')
+      : `<span class="helptext">${mine ? 'Choose your spells on the Your Sheet tab.' : 'No spells chosen yet.'}</span>`}</div>
+  </div>`;
+}
+function castChip(name) {
+  const box = el('composerInput');
+  if (!box) return;
+  box.value = `I cast ${name} `; composerDraft = box.value; box.focus();
+}
+
+// Your Sheet: the full list, and choosing spells while the window is open.
+let SPELL_DRAFT = null;
+function spellSheetHTML(c) {
+  const cs = casterOf(c);
+  if (!cs) return '';
+  const mine = c === ROSTER[MY_CHAR_ID];
+  const head = `<h3>Spellcasting</h3>
+    <p class="helptext">${cs.ability} &middot; spell save DC ${cs.dc} &middot; spell attack ${fmtMod(cs.attack)}${cs.cantrips ? ` &middot; ${cs.cantrips} cantrips` : ''}${cs.spells ? ` &middot; ${cs.spells} ${cs.mode === 'known' ? 'spells known' : 'spells prepared'}` : ''}${cs.pact ? ` &middot; pact slots come back on a short rest` : ''}</p>
+    ${slotLineHTML(c, cs)}`;
+  if (!cs.maxLevel && !cs.cantrips) return `<div class="panel spell-panel">${head}<p class="helptext">${escapeHtml(c.klass)}s start casting spells at level 2.</p></div>`;
+  const open = mine && spellWindowOpen(c);
+  if (!open) {
+    const list = mySpells(c);
+    return `<div class="panel spell-panel">${head}
+      ${list.length ? [...new Set(list.map(s => s.level))].map(l => `<p><b>${l ? ordinal(l) + ' level' : 'Cantrips'}:</b> ${list.filter(s => s.level === l).map(s => escapeHtml(s.name)).join(', ')}</p>`).join('') : '<p class="helptext">No spells chosen yet.</p>'}
+      ${mine ? '<p class="helptext">You can change your spells after a long rest or when a new session begins.</p>' : ''}</div>`;
+  }
+  if (!SPELL_DRAFT || SPELL_DRAFT.id !== MY_CHAR_ID) SPELL_DRAFT = { id: MY_CHAR_ID, set: new Set(mySpells(c).map(s => s.name)) };
+  const t = window.SRD_SPELLS || {};
+  const levels = [];
+  if (cs.cantrips) levels.push(0);
+  for (let l = 1; l <= cs.maxLevel; l++) levels.push(l);
+  const groups = levels.map(l => {
+    const names = Object.keys(t).filter(n => t[n][0] === l && t[n][1].includes(cs.letter)).sort();
+    return `<details ${l <= 1 ? 'open' : ''}><summary>${l ? ordinal(l) + ' level' : 'Cantrips'} (${names.length})</summary><div class="spell-options">${names.map(n =>
+      `<label class="spell-option"><input type="checkbox" ${SPELL_DRAFT.set.has(n) ? 'checked' : ''} onchange="toggleSpellDraft('${escapeAttr(n)}', this.checked)"> ${escapeHtml(n)}</label>`).join('')}</div></details>`;
+  }).join('');
+  return `<div class="panel spell-panel">${head}
+    <p class="hero-note">Choose your spells now: you can change them only after a long rest or when a new session begins.</p>
+    <p class="helptext" id="spellCount">${spellCountText(cs)}</p>
+    ${groups}
+    <div id="spellErr" class="error-text"></div>
+    <button class="btn solid" onclick="saveSpells()">Save my spells</button></div>`;
+}
+function spellCountText(cs) {
+  const picked = [...SPELL_DRAFT.set].map(spellInfo).filter(Boolean);
+  const nc = picked.filter(s => s.level === 0).length, ns = picked.length - nc;
+  return `${cs.cantrips ? `Cantrips ${nc}/${cs.cantrips} &middot; ` : ''}Spells ${ns}/${cs.spells}`;
+}
+function toggleSpellDraft(name, on) {
+  if (!SPELL_DRAFT) return;
+  if (on) SPELL_DRAFT.set.add(name); else SPELL_DRAFT.set.delete(name);
+  const cs = casterOf(ROSTER[MY_CHAR_ID]);
+  const box = el('spellCount'); if (box && cs) box.innerHTML = spellCountText(cs);
+}
+async function saveSpells() {
+  const c = ROSTER[MY_CHAR_ID]; const cs = casterOf(c);
+  if (!c || !cs || !SPELL_DRAFT || !spellWindowOpen(c)) return;
+  const picked = [...SPELL_DRAFT.set].map(spellInfo).filter(s => s && s.classes.includes(cs.letter) && s.level <= cs.maxLevel);
+  const nc = picked.filter(s => s.level === 0).length, ns = picked.length - nc;
+  const err = el('spellErr');
+  if (nc > cs.cantrips || ns > cs.spells) { if (err) err.innerText = `Too many: you can have ${cs.cantrips ? cs.cantrips + ' cantrips and ' : ''}${cs.spells} spells.`; return; }
+  if (!picked.length) { if (err) err.innerText = 'Pick at least one spell.'; return; }
+  c.spells = picked.map(s => s.name);
+  SPELL_DRAFT = null;
+  await dbUpsertCharacter(MY_CHAR_ID, ROOM, c);
+  const entry = { id: uid(6), author: 'The Ledger', type: 'system', text: `📖 ${c.name}'s spells: ${mySpells(c).map(s => s.name).join(', ')}.` };
+  await dbInsertLog(ROOM, entry);
+  LOG.push({ ...entry, ts: Date.now() });
+  render();
+}
+window.castChip = castChip; window.toggleSpellDraft = toggleSpellDraft; window.saveSpells = saveSpells;
+
+// For the GM's party list.
+function spellPromptText(c) {
+  const cs = casterOf(c);
+  if (!cs || (!cs.maxLevel && !cs.cantrips)) return '';
+  const slots = slotsLeft(c, cs).map(s => `${s.pact ? 'pact ' : ''}${ordinal(s.level)} ${s.left}/${s.total}`).join(', ');
+  const list = mySpells(c).map(s => `${s.name} (${s.level ? ordinal(s.level) : 'cantrip'})`).join(', ');
+  return `, spellcasting (${cs.ability}, save DC ${cs.dc}, ${fmtMod(cs.attack)} to hit; slots left: ${slots || 'none'}; spells: ${list || 'none chosen'})`;
+}
+
+// [[cast: Sera | Cure Wounds | 2]] — spends a slot (the spell's level, or the higher level given).
+function resolveCast(x) {
+  const c = findTarget(x.who);
+  if (!c) return sysEntry(`✨ ${x.who}: the game couldn't find that caster.`);
+  const cs = casterOf(c);
+  const sp = spellInfo(x.spell);
+  const name = sp ? sp.name : String(x.spell || '').trim().slice(0, 60);
+  const chosen = (Array.isArray(c.spells) ? c.spells : []).some(n => String(n).toLowerCase() === name.toLowerCase());
+  if (!cs || !sp || !chosen) return sysEntry(`✨ ${c.name} can't cast ${name}: it isn't one of their spells, so it isn't cast.`);
+  if (sp.level === 0) return sysEntry(`✨ ${c.name} casts ${sp.name} (cantrip).`);
+  const asked = parseInt(String(x.level || '').replace(/[^0-9]/g, '')) || 0;
+  const slots = slotsLeft(c, cs);
+  let slot;
+  if (cs.pact) slot = sp.level <= cs.pact.level ? slots[0] : null;
+  else slot = slots[Math.max(sp.level, asked) - 1];
+  if (!slot) return sysEntry(`✨ ${c.name} can't cast ${sp.name} at that level yet, so it isn't cast.`);
+  if (slot.left < 1) return sysEntry(`✨ ${c.name} has no ${ordinal(slot.level)}-level spell slots left, so ${sp.name} isn't cast.`);
+  if (cs.pact) c.pactUsed = (parseInt(c.pactUsed) || 0) + 1;
+  else { c.slotsUsed = { ...(c.slotsUsed || {}) }; c.slotsUsed[slot.level] = (parseInt(c.slotsUsed[slot.level]) || 0) + 1; }
+  return sysEntry(`✨ ${c.name} casts ${sp.name} with a ${ordinal(slot.level)}-level slot (${slot.left - 1}/${slot.total} left).`, { saveAll: true });
+}
+
 /* ---------------- Death saves ----------------
    A hero at 0 HP is dying (c.dying = { s, f }) until three successes (stable), three failures (dead), a
    natural 20 (back up with 1 HP), healing, or [[stable]]. The dying player rolls with the button (or
@@ -1295,6 +1476,7 @@ function renderRosterMini() {
       <div class="hpbar"><div class="hpbar-fill ${pct < 30 ? 'low' : ''}" style="width:${pct}%"></div></div>
       <div class="hprow"><span>HP ${c.hp}/${c.maxhp}</span><span>AC ${c.ac}</span></div>
       ${deathSaveHTML(c)}
+      ${spellCardHTML(c)}
       ${abilityGridHTML(c)}
     </div>`;
   }).join('');
@@ -1439,17 +1621,17 @@ async function callGM(prompt, fallbackEntry) {
     GM_PENDING = false;
     GM_ABORT = null;
   }
-  const { clean, attacks, heals, gives, uses, damages, notes, foesAdded, hits, mapOps, defeats, successes, rests, stables } = entry.type === 'gm' ? extractFoeAttacks(entry.text)
-    : { clean: entry.text, attacks: [], heals: [], gives: [], uses: [], damages: [], notes: [], foesAdded: [], hits: [], mapOps: [], defeats: [], successes: [], rests: [], stables: [] };
+  const { clean, attacks, heals, gives, uses, damages, notes, foesAdded, hits, mapOps, defeats, successes, rests, stables, casts } = entry.type === 'gm' ? extractFoeAttacks(entry.text)
+    : { clean: entry.text, attacks: [], heals: [], gives: [], uses: [], damages: [], notes: [], foesAdded: [], hits: [], mapOps: [], defeats: [], successes: [], rests: [], stables: [], casts: [] };
   // A message that was nothing but directives has no story text of its own to log.
-  if (clean || !(attacks.length || heals.length || gives.length || uses.length || damages.length || notes.length || foesAdded.length || hits.length || mapOps.length || defeats.length || successes.length || rests.length || stables.length)) {
+  if (clean || !(attacks.length || heals.length || gives.length || uses.length || damages.length || notes.length || foesAdded.length || hits.length || mapOps.length || defeats.length || successes.length || rests.length || stables.length || casts.length)) {
     entry.text = clean || entry.text;
     await dbInsertLog(ROOM, entry);
     LOG.push({ ...entry, ts: Date.now() });
   }
   // Damage, healing and items change the sheet itself: save every character that changed.
   // XP is awarded before a rest, so a long rest in the same message can unlock a level-up.
-  const results = [resolveMapOps(mapOps), ...foesAdded.map(resolveFoe), ...attacks.map(resolveFoeAttack), ...hits.map(resolveHit), ...damages.map(resolveDamage), ...heals.map(resolveHeal), ...gives.map(resolveGive), ...uses.map(resolveUse),
+  const results = [resolveMapOps(mapOps), ...casts.map(resolveCast), ...foesAdded.map(resolveFoe), ...attacks.map(resolveFoeAttack), ...hits.map(resolveHit), ...damages.map(resolveDamage), ...heals.map(resolveHeal), ...gives.map(resolveGive), ...uses.map(resolveUse),
     ...defeats.map(resolveDefeat), ...successes.map(resolveSuccess), ...notes.map(resolveNote), ...rests.map(k => k === 'long' ? resolveLongRest() : resolveShortRest()), ...stables.map(resolveStable)];
   for (const r of results.filter(Boolean)) {
     const { hpChar, saveAll, saveMeta, ...result } = r;
@@ -2288,6 +2470,18 @@ function resolveMapOps(ops) {
       notes.push(`battle map ${w}×${h} (1 square = 5 ft)`);
       continue;
     }
+    if (op.kind === 'remove') {
+      // Out of the fight for good (fled, surrendered, left): off the map AND off the Foes/Allies list. No XP.
+      const name = op.body.split('|')[0].trim();
+      if (!name) continue;
+      let off = false;
+      if (g) { const before = (g.tokens || []).length; g.tokens = (g.tokens || []).filter(t => tokenKey(t.name) !== tokenKey(name)); off = g.tokens.length < before; }
+      const table = foeTable(), k = name.toLowerCase();
+      const rec = table[k] || Object.values(table).find(f => f.name.toLowerCase() === k);
+      if (rec) dropFoe(rec);
+      if (off || rec) notes.push(`${rec ? rec.name : name} leaves the fight`);
+      continue;
+    }
     if (!g) continue;
     if (op.kind === 'place') {
       const [who, at, role] = op.body.split('|').map(s => s.trim());
@@ -2318,11 +2512,6 @@ function resolveMapOps(ops) {
       }
       g.walls = [...walls];
       continue;
-    }
-    if (op.kind === 'remove') {
-      const before = (g.tokens || []).length;
-      g.tokens = (g.tokens || []).filter(t => tokenKey(t.name) !== tokenKey(op.body));
-      if (g.tokens.length < before) notes.push(`${op.body.trim()} leaves the map`);
     }
   }
   return { id: uid(6), author: 'The Ledger', type: 'system', text: `🗺 ${notes.length ? notes.join(' · ') : 'battle map updated'}.`, saveMeta: true };
@@ -2492,6 +2681,7 @@ const HIT_DIRECTIVE = /\[\[\s*hit:([^\]]*)\]\]/gi;
 const DAMAGE_DIRECTIVE = /\[\[\s*damage:([^\]]*)\]\]/gi;
 const DEFEAT_DIRECTIVE = /\[\[\s*defeat:([^\]]*)\]\]/gi;
 const SUCCESS_DIRECTIVE = /\[\[\s*success:([^\]]*)\]\]/gi;
+const CAST_DIRECTIVE = /\[\[\s*cast:([^\]]*)\]\]/gi;
 const STABLE_DIRECTIVE = /\[\[\s*stable:([^\]]*)\]\]/gi;
 const REST_DIRECTIVE = /\[\[\s*(short|long)[- ]rest\s*(?::[^\]]*)?\]\]/gi;
 function extractFoeAttacks(text) {
@@ -2508,6 +2698,7 @@ function extractFoeAttacks(text) {
   const successes = [];
   const rests = [];
   const stables = [];
+  const casts = [];
   const clean = String(text).replace(FOE_DIRECTIVE, (_, body) => {
     const p = body.split('|').map(s => s.trim());
     if (p.length >= 5 && attacks.length < 4) attacks.push({ who: p[0].slice(0, 40), atk: p[1].slice(0, 40), bonus: p[2], dmg: p[3], target: p[4], ac: p[5] });
@@ -2551,6 +2742,10 @@ function extractFoeAttacks(text) {
     const p = body.split('|').map(s => s.trim());
     if (p[0] && successes.length < 4) successes.push({ target: p[0], skill: (p[1] || '').slice(0, 40), dc: p[2] || '' });
     return '';
+  }).replace(CAST_DIRECTIVE, (_, body) => {
+    const p = body.split('|').map(x => x.trim());
+    if (p[0] && p[1] && casts.length < 4) casts.push({ who: p[0], spell: p[1], level: p[2] || '' });
+    return '';
   }).replace(STABLE_DIRECTIVE, (_, body) => {
     const name = body.split('|')[0].trim();
     if (name && stables.length < 4) stables.push({ target: name });
@@ -2559,7 +2754,7 @@ function extractFoeAttacks(text) {
     if (!rests.length) rests.push(kind.toLowerCase());
     return '';
   }).replace(/\n{3,}/g, '\n\n').trim();
-  return { clean, attacks, heals, gives, uses, damages, notes, foesAdded, hits, mapOps, defeats, successes, rests, stables };
+  return { clean, attacks, heals, gives, uses, damages, notes, foesAdded, hits, mapOps, defeats, successes, rests, stables, casts };
 }
 function findTarget(name) {
   const chars = Object.values(ROSTER);
@@ -2794,7 +2989,7 @@ async function askGM() {
   if (GM_PENDING) return;
   const rerolls = rerollIds();
   const recent = LOG.slice(-30).map(e => `${e.author} (${e.type}): ${e.text}${rerolls.has(e.id) ? ' ' + REROLL_TAG : ''}`).join('\n');
-  const party = Object.values(ROSTER).map(c => `${c.name} — Lv${c.level} ${c.race} ${c.klass}, HP ${c.hp}/${c.maxhp} (current, from the sheet)${(parseInt(c.hp) || 0) <= 0 ? ` — ${c.dead ? 'DEAD' : c.stable ? 'UNCONSCIOUS, stable' : `DYING, ${dyingText(c)}${deathSaveDue(c) ? ', death save not yet rolled this turn' : ', death save already rolled this turn'}`}` : ''}, AC ${c.ac}, XP ${xpOf(c)}, inventory: ${earnedItems(c).join(', ') || 'none'}${handItems(c).length ? `; written in by the player, never given in the story (NOT owned): ${handItems(c).join(', ')}` : ''}
+  const party = Object.values(ROSTER).map(c => `${c.name} — Lv${c.level} ${c.race} ${c.klass}, HP ${c.hp}/${c.maxhp} (current, from the sheet)${spellPromptText(c)}${(parseInt(c.hp) || 0) <= 0 ? ` — ${c.dead ? 'DEAD' : c.stable ? 'UNCONSCIOUS, stable' : `DYING, ${dyingText(c)}${deathSaveDue(c) ? ', death save not yet rolled this turn' : ', death save already rolled this turn'}`}` : ''}, AC ${c.ac}, XP ${xpOf(c)}, inventory: ${earnedItems(c).join(', ') || 'none'}${handItems(c).length ? `; written in by the player, never given in the story (NOT owned): ${handItems(c).join(', ')}` : ''}
   Sheet modifiers (the only d20 bonuses this character has): ${rollOptions(c).map(o => `${o.name} ${fmtMod(o.mod)}`).join(', ')}`).join('\n');
   const prompt = `You are the Game Master for a tabletop RPG ${MODE === 'solo' ? 'solo story' : 'session'} titled "${META.name}".
 Ruleset: ${META.ruleset}. Tone/genre: ${META.tone || 'unspecified — infer something fitting'}. Length: ${lengthLabel[META.length]}.
@@ -2821,8 +3016,9 @@ Roll resolution rules — follow these exactly:
 - Always phrase a requested roll using the exact command the player should type, formatted as inline code, e.g. "/roll +5 Attack (DEX)" for an attack, "/roll 2d6+3" for damage, "/roll +5 adv Attack (DEX)" for advantage. Never say "roll a d20" or similar without giving the exact /roll command.
 - For any d20 check or save, the bonus in your /roll command must be one of that character's Sheet modifiers listed above, and the command should name it, e.g. "/roll +3 Dexterity" or "/roll +7 Stealth". Never add a proficiency bonus, expertise, or any other bonus that isn't on the sheet. If the right skill or tool isn't listed, use the matching ability's modifier as-is (and say that's what you're using). Weapon attack rolls use the listed "Attack (STR)" or "Attack (DEX)" modifier, e.g. "/roll +5 Attack (DEX)". Damage rolls use dice notation for the weapon or spell, e.g. "/roll 1d8+3".
 - Players never roll for monsters. For each attack a foe makes, write it in the fiction and put this directive on its own line: [[foe-attack: Goblin B | scimitar | +4 | 1d6+2 | Telilin]] (attacker | attack name | to-hit bonus from its stat block | damage dice | the target's exact character name). When an ally NPC attacks an enemy, add the enemy's AC as a sixth field, e.g. [[foe-attack: Scout | longbow | +4 | 1d8+2 | Goblin A | AC 15]]; the result tells you what happened and you track the enemy's HP. The game rolls the attack against the target's AC and the damage if it hits, and posts the result to the log; use one directive per attack (max 4). Then stop: don't say whether it hit and don't state the AC. Narrate the outcome next turn, once the result is in the log. The game subtracts the damage from the target's HP itself, so never ask players to take it off their HP. For damage that isn't a foe's attack (a trap, a fall, poison, fire, a failed save), put [[damage: <their name> | <dice or a number> | <source>]] on its own line and the game rolls it and takes it off their HP; when a successful save halves it, ask for the save first and add "| half" if they made it. Area effects roll once for everyone: list every character caught in it and mark those who made their save, e.g. [[damage: Brannoc, Sera half | 8d6 | fireball]], or use "party" for everyone at the table. Healing that reaches several characters works the same way: [[heal: Brannoc, Sera | 1d4+3 | mass healing word]]. Players can't change their own HP, so never ask them to. For any healing (a potion, a spell) put [[heal: Telilin | 2d4+2 | potion of healing]] on its own line (the character's exact name | dice or a flat number | source); the game rolls it and raises their HP up to their maximum. One per healing, max 4. A character at 0 HP is unconscious: never offer them options or actions, and never write choices for them; narrate what happens around them. Death saves belong to the game: when it's a DYING character's turn, ask that player to tap "Roll death save" (the game rolls it and counts it; its count is in the party list above, so never keep your own tally or roll it for them). Three successes leaves them stable, three failures means death, a natural 20 brings them back with 1 HP, and any healing wakes them. Damage to a character at 0 HP is a failed death save; the game counts that too. When someone stabilises a dying character, put [[stable: <their name>]] on its own line. Never use [[heal]] to stabilise a dying character: stabilising (a healer's kit, a Medicine check, spare the dying) restores no HP, it only ends their death saves, so ask the player for a Medicine check (DC 10, or a healer's kit with no roll) and narrate them stable at 0 HP. When a player's own character is doing the healing (their spell or potion), ask that player to /roll it; once that roll is in the log, put [[heal: <their name> | <that roll's total> | <source>]] with the total as a plain number, and the game adds it. Never state anyone's new HP total yourself (the game posts it), and never work HP out from older log lines: a character's current HP is only the "HP x/y (current, from the sheet)" in the party list above.
+- Spells: each caster's spells and remaining slots are in the party list above, kept by the game. A character can only cast spells on their own list. When a character casts a spell (a cantrip too), put [[cast: <their name> | <spell> | <slot level, only if cast at a higher level>]] on its own line before you narrate its effect; the game spends the slot. If the game says the spell isn't cast (not one of their spells, or no slot left), it fails: say so and let them choose something else. Never restore slots yourself: [[long-rest]] does that (warlock pact slots also come back on [[short-rest]]). Players change their spells on the Your Sheet tab, only after a long rest or when a new session begins.
 - Items: each character's inventory above is what they really carry. Items "written in by the player" were typed in by the player and never given in the story: they are NOT owned. If a player tries to use one, it isn't in their pack, and say so plainly. When the story gives a character an item (found, bought, looted, handed over), put [[give: <their name> | <item>]] on its own line and the game adds it. When a character uses up a consumable (drinks a potion, reads a scroll, spends a charge item), put [[use: <their name> | <item>]] on its own line and the game removes one. Max 4 of each per message.
-- Battle map: when a fight starts, lay out a map before the first attack: [[map: 12x10]] (columns A-L, rows 1-10; at most 20x20), then [[place: <name> | <square>]] for every hero and foe (add "| ally" for a friendly NPC, e.g. [[place: Woman | E5 | ally]]), and [[wall: D2-D5, H7]] for walls or heavy cover. On later turns move foes with [[place]], use [[remove: <name>]] when one flees, and [[end-battle]] when the fight is over. Players move their own heroes on the map, so never move a hero yourself unless the story forces it (a shove, a fall). Use the map's distances: a melee attack needs 5 ft (10 ft with reach); a ranged attack past normal range has disadvantage and can't go past long range; an area spell hits everyone within its radius of the square it's centred on. With no battle map, give each foe's distance in the Foes line, e.g. **Foes:** Goblin A 4/7 HP, 30 ft.
+- Battle map: when a fight starts, lay out a map before the first attack: [[map: 12x10]] (columns A-L, rows 1-10; at most 20x20), then [[place: <name> | <square>]] for every hero and foe (add "| ally" for a friendly NPC, e.g. [[place: Woman | E5 | ally]]), and [[wall: D2-D5, H7]] for walls or heavy cover. On later turns move foes with [[place]], use [[remove: <name>]] when one flees, surrenders or is otherwise out of the fight for good (the game takes it off the map and the Foes list; it gives no XP, so use [[defeat]] instead if the party beat it), and [[end-battle]] when the fight is over. Players move their own heroes on the map, so never move a hero yourself unless the story forces it (a shove, a fall). Use the map's distances: a melee attack needs 5 ft (10 ft with reach); a ranged attack past normal range has disadvantage and can't go past long range; an area spell hits everyone within its radius of the square it's centred on. With no battle map, give each foe's distance in the Foes line, e.g. **Foes:** Goblin A 4/7 HP, 30 ft.
 - Foe hit points belong to the game. When foes enter a fight, put [[foe: <name> | <hp>]] for each, with unique names (Goblin A, Goblin B); leave out the number for an SRD creature and the game uses its stat block. Never decide how much damage a hero deals: when a hero's attack hits, ask that player to /roll the damage, and once that roll is in the log put [[hit: <foe> | <hero>]]; the game takes exactly that roll off the foe. A hero's area spell works the same way: the player rolls the damage once, then [[hit: Goblin A, Goblin B half | <hero>]] (half for foes that made their save). [[damage]] is only for harm to heroes. The game posts each foe's HP and defeats it at 0 (no [[defeat]] needed then); copy its numbers into your Foes line. A friendly NPC who fights or can be hurt gets hit points the same way, marked as an ally: [[foe: Pell | 11 | ally]] (an SRD creature placed with "| ally" is tracked automatically). Foe attacks on an ally use [[foe-attack]] with the ally's AC as the sixth field; [[damage]] and [[heal]] work on allies by name. An ally at 0 HP is down, not defeated: never [[defeat]] an ally. Allies never land a blow in narration alone: when an ally NPC attacks (with a weapon, an improvised one, a shove or a spell), describe the attempt, put [[foe-attack: <ally> | <attack> | <to-hit> | <damage dice> | <enemy> | AC <enemy's AC>]] on its own line and stop; don't say it hit, and don't hurt, stun, daze or knock out the enemy until the result is in the log.
 - Field notes: when the party learns something worth remembering (a quest or task, a person and what they want, a place, a clue or piece of lore, how an encounter went, notable loot), put [[note: <Quests|People|Places|Clues|Encounters|Loot> | <one short sentence>]] on its own line; the game adds it to the party's journal. At most 3 per message, and don't repeat anything already in the field notes above.
 - XP, levels and rests are the game's job: never announce XP, levels or level-ups yourself. When the party kills or defeats a foe, put [[defeat: <creature>]] on its own line, one per creature (for a creature you invented, add its CR: [[defeat: Cave Wyrm | CR 2]]). When a character succeeds at a check you set a DC for, once their roll is in the log, put [[success: <their name> | <skill> | DC <n>]]. When the party actually rests in the story, put [[short-rest]] (about an hour) or [[long-rest]] (about 8 hours somewhere safe, at most once per in-game day) on its own line; the game restores HP and hit dice, so never use [[heal]] for a rest. A rest in danger gets interrupted instead.
@@ -3075,6 +3271,7 @@ function renderSheetTab() {
       ${miniPanelHTML(c)}
       ${forgePanelHTML(c, FORGE_TAG)}
       ${abilityGridHTML(c)}
+      ${spellSheetHTML(c)}
       <p class="helptext" style="margin:-4px 0 20px;">HP only changes through the game: damage from attacks, traps and falls; healing from potions, spells and rests.</p>
 
       <h3 style="font-size:1rem;">Skills</h3>
@@ -3846,11 +4043,13 @@ function resolveLongRest() {
   for (const c of Object.values(ROSTER)) {
     c.hp = parseInt(c.maxhp) || c.hp;
     c.hitDiceUsed = Math.max(0, (parseInt(c.hitDiceUsed) || 0) - Math.max(1, Math.floor((parseInt(c.level) || 1) / 2)));
+    c.slotsUsed = {}; c.pactUsed = 0;
     const need = nextLevelXp(c);
     c.levelReady = need !== null && xpOf(c) >= need;
     if (c.levelReady) ready.push(c.name);
   }
-  return sysEntry(`🌙 Long rest: everyone is back to full HP and regains hit dice.${ready.length ? ` ${ready.join(', ')} can level up now (Your Sheet tab).` : ''}`, { saveAll: true, saveMeta: true });
+  const casters = Object.values(ROSTER).some(c => casterOf(c));
+  return sysEntry(`🌙 Long rest: everyone is back to full HP and regains hit dice.${casters ? ' Spell slots are back, and casters can change their spells now (Your Sheet tab).' : ''}${ready.length ? ` ${ready.join(', ')} can level up now (Your Sheet tab).` : ''}`, { saveAll: true, saveMeta: true });
 }
 // [[short-rest]]: opens a window (until the next GM message) to spend hit dice on the Sheet tab.
 function resolveShortRest() {
@@ -3859,7 +4058,9 @@ function resolveShortRest() {
   if (since < SHORT_REST_GAP) return sysEntry(`☕ Too soon for another short rest, so it gives no benefits.`);
   m.lastShortRest = gmCount();
   m.shortRestAt = gmCount();
-  return sysEntry(`☕ Short rest: each hero can spend hit dice on the Your Sheet tab to heal, until the story continues.`, { saveMeta: true });
+  const pact = Object.values(ROSTER).filter(c => { const cs = casterOf(c); return cs && cs.pact && (parseInt(c.pactUsed) || 0) > 0; });
+  pact.forEach(c => { c.pactUsed = 0; });
+  return sysEntry(`☕ Short rest: each hero can spend hit dice on the Your Sheet tab to heal, until the story continues.${pact.length ? ` ${pact.map(c => c.name).join(', ')} regain${pact.length > 1 ? '' : 's'} pact magic slots.` : ''}`, { saveMeta: true, saveAll: pact.length > 0 });
 }
 async function spendHitDie() {
   const c = ROSTER[MY_CHAR_ID];

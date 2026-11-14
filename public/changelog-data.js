@@ -8,6 +8,18 @@
 window.LEDGER_CHANGELOG = [
   {
     date: "2026-11-13",
+    type: "feature",
+    title: "Spellcasting: slots and spells",
+    detail: "Casters now have spell slots and a spell list run by the game, using the SRD rules for their class and level. Choose your spells on the Your Sheet tab from your class's list; you can change them after a long rest or when a new session begins. Your card shows your save DC, slots left and spells (tap one to cast it). Casting spends a slot, and a long rest brings them back."
+  },
+  {
+    date: "2026-11-13",
+    type: "fix",
+    title: "Fleeing foes leave the Foes list too",
+    detail: "A foe that runs away, surrenders or otherwise leaves the fight is now taken off the Foes list and the table display as well as the battle map."
+  },
+  {
+    date: "2026-11-13",
     type: "fix",
     title: "Death saves are rolled and counted by the game",
     detail: "A hero at 0 HP now gets a Roll death save button, one per turn, and the game keeps the count: three successes and you're stable, three failures and you die, a natural 20 brings you back with 1 HP. Damage while you're down counts as a failure. The GM no longer offers a downed hero actions; it asks for the death save instead."

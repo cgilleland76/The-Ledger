@@ -482,3 +482,17 @@ input, textarea, select{ font-family:var(--font-body); font-size:1rem; }
 .ds-pip{ display:inline-block; width:10px; height:10px; border-radius:50%; border:1px solid rgba(60,40,20,0.6); margin:0 2px; vertical-align:middle; }
 .ds-pip.ok{ background:#2f6f5e; border-color:#2f6f5e; }
 .ds-pip.bad{ background:#8b2e20; border-color:#8b2e20; }
+
+/* Spellcasting */
+.spell-card{ margin:8px 0 0; padding:6px 0 0; border-top:1px dashed rgba(139,104,50,0.45); }
+.spell-head{ font-size:0.82rem; letter-spacing:0.04em; text-transform:uppercase; opacity:0.8; }
+.slot-line{ display:flex; flex-wrap:wrap; gap:4px 12px; margin:4px 0; font-size:0.85rem; }
+.slot-group{ white-space:nowrap; }
+.spell-names{ display:flex; flex-wrap:wrap; gap:4px; margin-top:4px; }
+.spell-chip{ font:inherit; font-size:0.82rem; padding:2px 8px; border-radius:10px; border:1px solid rgba(139,104,50,0.55); background:rgba(217,180,90,0.15); color:inherit; }
+button.spell-chip{ cursor:pointer; }
+button.spell-chip:hover{ background:rgba(217,180,90,0.35); }
+.spell-panel details{ margin:6px 0; }
+.spell-panel summary{ cursor:pointer; font-weight:600; }
+.spell-options{ display:grid; grid-template-columns:repeat(auto-fill, minmax(180px, 1fr)); gap:2px 12px; margin:6px 0 0; }
+.spell-option{ font-size:0.92rem; display:flex; gap:6px; align-items:center; }
