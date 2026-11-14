@@ -7,6 +7,24 @@
 
 window.LEDGER_CHANGELOG = [
   {
+    date: "2026-11-14",
+    type: "feature",
+    title: "Pick your race and class from a list",
+    detail: "Character creation now lists every SRD race (Dragonborn, Dwarf, Elf, Gnome, Half-Elf, Half-Orc, Halfling, Human, Tiefling) and class (Barbarian through Wizard). Let the GM choose, or pick Something else for any other genre."
+  },
+  {
+    date: "2026-11-14",
+    type: "feature",
+    title: "Class features: Rage, Second Wind, Ki and more",
+    detail: "Each class's limited-use features are now counted by the game and shown on your card: Rage, Bardic Inspiration, Channel Divinity, Wild Shape, Second Wind, Action Surge, Ki points, Lay on Hands, Divine Smite, Sorcery points and Arcane Recovery. Using one spends it, and short or long rests bring them back. Sneak Attack, unarmed strikes and Bardic Inspiration dice are in the Roll from sheet menu."
+  },
+  {
+    date: "2026-11-14",
+    type: "feature",
+    title: "Ammunition and supplies are counted",
+    detail: "Bolts, arrows, potions, torches, rations and coins are now counted. Firing a bow or crossbow from the Roll from sheet menu spends the ammunition, and you recover half of it after the fight. Weapons, armour and other gear always come back with you. Shops take your coins first; if you can't pay, you don't get the item."
+  },
+  {
     date: "2026-11-13",
     type: "feature",
     title: "Spellcasting: slots and spells",

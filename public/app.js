@@ -518,6 +518,7 @@ async function enterRoom(code) {
   pausedStory = null;
   if (mine && ROSTER[mine.characterId]) {
     MY_CHAR_ID = mine.characterId;
+    if (normalizeInventory(ROSTER[MY_CHAR_ID])) dbUpsertCharacter(MY_CHAR_ID, code, ROSTER[MY_CHAR_ID]);
     rememberCurrentRoom(code);
     VIEW = 'game'; subscribeRealtime(code); render();
   } else {
@@ -574,8 +575,8 @@ function renderCharSetup() {
       <div class="field"><label>Appearance (optional — used to paint your portrait)</label><textarea id="cAppearance" maxlength="500" placeholder="e.g. Tall and wiry, silver hair, a scar over one eye, patched green cloak" oninput="setDraftField('appearance', this.value)">${escapeAttr(d.appearance || '')}</textarea></div>
 
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:end;">
-        <div class="field"><label>Race / Species ${charGenMode === 'auto' ? '(optional — leave blank to let the GM choose)' : ''}</label><input type="text" id="cRace" value="${escapeAttr(d.race)}" oninput="setDraftField('race', this.value)"></div>
-        <div class="field"><label>Class ${charGenMode === 'auto' ? '(optional — leave blank to let the GM choose)' : ''}</label><input type="text" id="cClass" value="${escapeAttr(d.klass)}" oninput="setDraftField('klass', this.value)"></div>
+        <div class="field"><label>Race / Species ${charGenMode === 'auto' ? '(optional — leave blank to let the GM choose)' : ''}</label>${pickListHTML('cRace', 'race', SRD_RACES, d.race, charGenMode === 'auto')}</div>
+        <div class="field"><label>Class ${charGenMode === 'auto' ? '(optional — leave blank to let the GM choose)' : ''}</label>${pickListHTML('cClass', 'klass', SRD_CLASSES, d.klass, charGenMode === 'auto')}</div>
       </div>
 
       <div class="field">
@@ -642,6 +643,41 @@ function renderSkillRows() {
 function addSkillRow() { draftChar.skills.push({ name: '', mod: 0 }); renderSkillRows(); }
 function removeSkillRow(i) { draftChar.skills.splice(i, 1); renderSkillRows(); }
 function setDraftField(field, val) { if (draftChar) draftChar[field] = val; }
+// SRD 5.1 races and classes for character creation. "Something else…" keeps any genre playable
+// (a custom class simply has no SRD spells or class features).
+const SRD_RACES = ['Dragonborn', 'Dwarf (Hill)', 'Elf (High)', 'Gnome (Rock)', 'Half-Elf', 'Half-Orc', 'Halfling (Lightfoot)', 'Human', 'Tiefling'];
+const SRD_CLASSES = ['Barbarian', 'Bard', 'Cleric', 'Druid', 'Fighter', 'Monk', 'Paladin', 'Ranger', 'Rogue', 'Sorcerer', 'Warlock', 'Wizard'];
+const listBase = v => String(v || '').replace(/\s*\(.*\)\s*$/, '').trim().toLowerCase();
+// Matches free text ("elf", "High Elf", "Halfling (Stout)") to a list entry, or returns it unchanged.
+function toListEntry(v, list) {
+  const s = String(v || '').trim();
+  if (!s) return '';
+  const low = s.toLowerCase();
+  return list.find(x => x.toLowerCase() === low) || list.find(x => listBase(x) === listBase(s))
+    || [...list].sort((a, b) => listBase(b).length - listBase(a).length).find(x => new RegExp('\\b' + listBase(x).replace(/[^a-z-]/g, '').replace(/-/g, '[- ]?') + '\\b').test(low)) || s;
+}
+function pickListHTML(id, field, list, value, optional) {
+  const v = toListEntry(value, list);
+  const custom = v && !list.includes(v);
+  return `<select id="${id}" onchange="pickListChange(this, '${field}')">
+    ${optional ? `<option value="" ${v ? '' : 'selected'}>Let the GM choose</option>` : `<option value="" disabled ${v ? '' : 'selected'}>Choose…</option>`}
+    ${list.map(x => `<option ${x === v ? 'selected' : ''}>${escapeHtml(x)}</option>`).join('')}
+    ${custom ? `<option selected>${escapeHtml(v)}</option>` : ''}
+    <option value="__other">Something else…</option>
+  </select>`;
+}
+function pickListChange(sel, field) {
+  if (sel.value === '__other') {
+    const typed = (prompt(field === 'race' ? 'Type a race or species:' : 'Type a class:') || '').trim().slice(0, 40);
+    if (!typed) { sel.value = (draftChar && draftChar[field]) || ''; return; }
+    if (draftChar) draftChar[field] = typed;
+    const o = document.createElement('option'); o.textContent = typed; o.selected = true;
+    sel.insertBefore(o, sel.lastElementChild);
+    return;
+  }
+  setDraftField(field, sel.value);
+}
+window.pickListChange = pickListChange;
 function setSkillName(i, val) { draftChar.skills[i].name = val; }
 function setSkillMod(i, val) { draftChar.skills[i].mod = parseInt(val || 0); }
 function renderInvRows() {
@@ -679,8 +715,8 @@ async function generateCharacter() {
   renderCharSetup();
 
   const prompt = `Generate a complete tabletop RPG character sheet for a new level 1 character in a ${MODE === 'solo' ? 'solo story' : 'campaign'} titled "${META.name}". Ruleset: ${META.ruleset}. Genre/tone: ${META.tone || 'unspecified — pick something fitting'}.
-${raceHint ? `The player wants a ${raceHint} character.` : 'Choose a race/species that fits the tone.'}
-${classHint ? `The player wants to play a ${classHint}.` : 'Choose a class that fits the tone.'}
+${raceHint ? `The player wants a ${raceHint} character.` : `Choose a race that fits the tone from exactly this list: ${SRD_RACES.join(', ')}.`}
+${classHint ? `The player wants to play a ${classHint}.` : `Choose a class that fits the tone from exactly this list: ${SRD_CLASSES.join(', ')}.`}
 ${genderHint ? `The character's gender is: ${genderHint}.` : ''}
 ${ageHint ? `The character's age is: ${ageHint}.` : ''}
 ${appearanceHint ? `The player describes their look as: ${appearanceHint}` : ''}
@@ -695,8 +731,8 @@ Use sensible 5e-appropriate ability scores for the class (e.g. the standard arra
     const parsed = parseCharacterJSON(text);
     draftChar = {
       ...draftChar,
-      race: parsed.race || draftChar.race,
-      klass: parsed.klass || draftChar.klass,
+      race: raceHint || toListEntry(parsed.race, SRD_RACES) || draftChar.race,
+      klass: classHint || toListEntry(parsed.klass, SRD_CLASSES) || draftChar.klass,
       str: parsed.str ?? draftChar.str,
       dex: parsed.dex ?? draftChar.dex,
       con: parsed.con ?? draftChar.con,
@@ -752,6 +788,7 @@ async function submitCharacter() {
     draftChar.name = el('cCharName').value.trim() || 'Unnamed';
     draftChar.race = el('cRace').value.trim();
     draftChar.klass = el('cClass').value.trim();
+    if (!draftChar.race || !draftChar.klass || draftChar.race === '__other' || draftChar.klass === '__other') { el('charErr').innerText = 'Choose a race and a class.'; return; }
     draftChar.level = parseInt(el('cLevel').value) || 1;
     draftChar.maxhp = parseInt(el('cMaxHP').value) || 10;
     draftChar.hp = draftChar.maxhp;
@@ -768,6 +805,7 @@ async function submitCharacter() {
     draftChar.age = el('cAge').value.trim().slice(0, 20);
     draftChar.skills = draftChar.skills.filter(s => s.name.trim());
     draftChar.inventory = draftChar.inventory.filter(i => i.trim());
+    if (!(draftChar.handItems || []).length) normalizeInventory(draftChar);
     }
 
     draftChar.levelSession = (META && META.session) || 1;
@@ -933,9 +971,197 @@ function sheetMiniHTML() {
     <div class="hprow"><span>HP ${c.hp}/${c.maxhp}</span><span>AC ${c.ac}</span></div>
     ${deathSaveHTML(c)}
     ${spellCardHTML(c)}
+    ${featureCardHTML(c)}
     ${abilityGridHTML(c)}
   </div>`;
 }
+/* ---------------- Class features (SRD 5.1) ----------------
+   Limited-use features are counted on the character (c.featureUsed) and refilled by rests; the GM spends
+   them with [[feature: <name> | <feature> | <amount or slot level> | <target>]] and the game refuses when
+   none are left. Second Wind and Lay on Hands heal, Arcane Recovery restores slots, Divine Smite spends a
+   spell slot and damages a foe. Always-on features (Sneak Attack, Martial Arts...) are shown for reference. */
+function classOf(c) {
+  const k = String((c && c.klass) || '').toLowerCase();
+  return ['barbarian', 'bard', 'cleric', 'druid', 'fighter', 'monk', 'paladin', 'ranger', 'rogue', 'sorcerer', 'warlock', 'wizard'].find(n => k.includes(n)) || '';
+}
+// [{ key, name, uses (null = no limit), pool (spend any amount), rest: 'short'|'long'|null, note }]
+function featuresOf(c) {
+  if (!c) return [];
+  const L = Math.max(1, Math.min(20, parseInt(c.level) || 1));
+  const cha = abilityMod(c.cha), wis = abilityMod(c.wis), prof = Math.ceil(L / 4) + 1;
+  const f = [];
+  const add = (key, name, uses, rest, note, pool) => f.push({ key, name, uses, rest, note, pool: !!pool });
+  switch (classOf(c)) {
+    case 'barbarian':
+      add('rage', 'Rage', L >= 20 ? null : L >= 17 ? 6 : L >= 12 ? 5 : L >= 6 ? 4 : L >= 3 ? 3 : 2, 'long',
+        `+${L >= 16 ? 4 : L >= 9 ? 3 : 2} melee damage, resistance to bludgeoning, piercing and slashing, advantage on Strength checks; 1 minute`);
+      break;
+    case 'bard': {
+      const die = L >= 15 ? 'd12' : L >= 10 ? 'd10' : L >= 5 ? 'd8' : 'd6';
+      add('inspiration', 'Bardic Inspiration', Math.max(1, cha), L >= 5 ? 'short' : 'long', `give an ally a ${die} to add to one roll`);
+      break;
+    }
+    case 'cleric':
+      if (L >= 2) add('channel', 'Channel Divinity', L >= 18 ? 3 : L >= 6 ? 2 : 1, 'short', `Turn Undead: undead within 30 ft make a WIS save (DC ${8 + prof + wis}) or flee for 1 minute`);
+      break;
+    case 'druid':
+      if (L >= 2) add('wildshape', 'Wild Shape', 2, 'short', `become a beast of CR ${L >= 8 ? 1 : L >= 4 ? '1/2' : '1/4'} or lower${L < 8 ? (L < 4 ? ' (no flying or swimming speed)' : ' (no flying speed)') : ''}`);
+      break;
+    case 'fighter':
+      add('secondwind', 'Second Wind', 1, 'short', `bonus action: heal 1d10 + ${L}`);
+      if (L >= 2) add('surge', 'Action Surge', L >= 17 ? 2 : 1, 'short', 'one extra action on your turn');
+      break;
+    case 'monk':
+      add('martial', 'Martial Arts', null, null, `unarmed strikes deal 1d${L >= 17 ? 10 : L >= 11 ? 8 : L >= 5 ? 6 : 4}; bonus-action unarmed strike`);
+      if (L >= 2) add('ki', 'Ki points', L, 'short', 'Flurry of Blows, Patient Defense, Step of the Wind (1 each)', true);
+      break;
+    case 'paladin':
+      add('sense', 'Divine Sense', 1 + Math.max(0, cha), 'long', 'sense celestials, fiends and undead within 60 ft');
+      add('layonhands', 'Lay on Hands', 5 * L, 'long', 'touch: restore HP from this pool', true);
+      if (L >= 2) add('smite', 'Divine Smite', null, null, 'on a melee hit, spend a spell slot: +2d8 radiant (+1d8 per slot level above 1st, max 5d8)');
+      break;
+    case 'ranger':
+      add('favored', 'Favored Enemy', null, null, 'advantage to track and recall lore about your favored enemies');
+      break;
+    case 'rogue':
+      add('sneak', 'Sneak Attack', null, null, `once a turn: +${Math.ceil(L / 2)}d6 damage with a finesse or ranged weapon when you have advantage or an ally is next to the target`);
+      break;
+    case 'sorcerer':
+      if (L >= 2) add('sorcery', 'Sorcery points', L, 'long', 'Flexible Casting: turn points into spell slots and back', true);
+      break;
+    case 'warlock':
+      break;
+    case 'wizard':
+      add('arcane', 'Arcane Recovery', 1, 'long', `during a short rest, regain spent slots up to ${Math.ceil(L / 2)} levels in total (none above 5th)`);
+      break;
+  }
+  return f;
+}
+const featureLeft = (c, ft) => ft.uses === null ? null : Math.max(0, ft.uses - (parseInt((c.featureUsed || {})[ft.key]) || 0));
+function findFeature(c, name) {
+  const n = String(name || '').toLowerCase().replace(/[^a-z ]/g, '').trim();
+  const list = featuresOf(c);
+  return list.find(f => f.name.toLowerCase() === n) || list.find(f => n && (f.name.toLowerCase().includes(n) || n.includes(f.name.toLowerCase().replace(/ points$/, ''))));
+}
+// The card: tracked features with what's left. Your own fill the message box when tapped.
+function featureCardHTML(c) {
+  const list = featuresOf(c);
+  if (!list.length) return '';
+  const mine = c === ROSTER[MY_CHAR_ID];
+  return `<div class="spell-card">
+    <div class="spell-head">Class features</div>
+    <div class="spell-names">${list.map(ft => {
+      const left = featureLeft(c, ft);
+      const count = left === null ? '' : ft.pool || ft.uses > 6 ? ` ${left}/${ft.uses}` : ' ' + pipRow(left, ft.uses);
+      const tip = escapeAttr(ft.note + (ft.rest ? ` (refills on a ${ft.rest} rest)` : ''));
+      return mine ? `<button class="spell-chip" title="${tip}" onclick="featureChip('${escapeAttr(ft.name)}')">${escapeHtml(ft.name)}${count}</button>`
+        : `<span class="spell-chip" title="${tip}">${escapeHtml(ft.name)}${count}</span>`;
+    }).join('')}</div></div>`;
+}
+function featureChip(name) {
+  const box = el('composerInput');
+  if (!box) return;
+  box.value = `I use ${name} `; composerDraft = box.value; box.focus();
+}
+window.featureChip = featureChip;
+// Your Sheet: every feature with its rule text.
+function featureSheetHTML(c) {
+  const list = featuresOf(c);
+  if (!list.length) return '';
+  return `<div class="panel spell-panel"><h3>Class features</h3>
+    ${list.map(ft => { const left = featureLeft(c, ft); return `<p><b>${escapeHtml(ft.name)}</b>${left === null ? '' : ` &middot; ${left}/${ft.uses} left`}${ft.rest ? ` &middot; refills on a ${ft.rest} rest` : ''}<br><span class="helptext">${escapeHtml(ft.note)}</span></p>`; }).join('')}
+    <p class="helptext">Tell the GM when you use one (or tap it on your card); the game counts the uses.</p></div>`;
+}
+function featurePromptText(c) {
+  const list = featuresOf(c);
+  if (!list.length) return '';
+  return `, class features (kept by the game): ${list.map(ft => { const left = featureLeft(c, ft); return `${ft.name}${left === null ? '' : ` ${left}/${ft.uses} left${ft.rest ? ` (${ft.rest} rest)` : ''}`}`; }).join('; ')}`;
+}
+// Rests: a long rest refills everything; a short rest refills the short-rest features. Returns names refilled.
+function refillFeatures(kind) {
+  const names = [];
+  for (const c of Object.values(ROSTER)) {
+    const used = c.featureUsed || {};
+    if (!Object.keys(used).length) continue;
+    for (const ft of featuresOf(c)) {
+      if (used[ft.key] && (kind === 'long' || ft.rest === 'short')) { delete used[ft.key]; names.push(`${c.name}'s ${ft.name}`); }
+    }
+    c.featureUsed = used;
+  }
+  return names;
+}
+// [[feature: Mira | Second Wind]], [[feature: Aldric | Lay on Hands | 10 | Mira]], [[feature: Aldric | Divine Smite | 2 | Goblin A]]
+function resolveFeature(x) {
+  const c = findTarget(x.who);
+  if (!c) return sysEntry(`${x.who}: the game couldn't find that character.`);
+  const ft = findFeature(c, x.feature);
+  if (!ft) return sysEntry(`${c.name} has no class feature called ${x.feature}, so nothing happens.`);
+  const amt = parseInt(String(x.amount || '').replace(/[^0-9]/g, '')) || 0;
+  if (ft.key === 'smite') return resolveSmite(c, amt, x.target);
+  if (ft.uses === null) return sysEntry(`✦ ${c.name} uses ${ft.name}: ${ft.note}.`);
+  const left = featureLeft(c, ft);
+  let n = ft.pool ? amt : 1;
+  let healTarget = null;
+  if (ft.key === 'layonhands') {
+    healTarget = findTarget(x.target || '') || (x.target ? null : c);
+    if (!healTarget) { const a = findFoe(x.target); if (a && a.ally) healTarget = a; }
+    if (!healTarget) return sysEntry(`${c.name}'s Lay on Hands: the game couldn't tell who to heal.`);
+    if (!n) n = Math.max(1, Math.min(left, (parseInt(healTarget.maxhp) || 0) - (parseInt(healTarget.hp) || 0)));
+  }
+  if (ft.pool && !n) return sysEntry(`${c.name} uses ${ft.name}, but how many wasn't said, so none are spent.`);
+  if (left < n) return sysEntry(`✦ ${c.name} has ${left ? 'only ' + left : 'no'} ${ft.name}${left ? '' : ' left'}${ft.pool ? ` (needs ${n})` : ''}, so it doesn't happen.`);
+  let extra = '';
+  if (ft.key === 'arcane') {
+    const m = roomMeta();
+    if (!(Number.isFinite(m.shortRestAt) && gmCount() - m.shortRestAt <= 1)) return sysEntry(`✦ ${c.name} can only use Arcane Recovery during a short rest.`);
+    const cs = casterOf(c);
+    if (!cs) return sysEntry(`✦ ${c.name} has no spell slots to recover.`);
+    let budget = Math.ceil((parseInt(c.level) || 1) / 2);
+    const got = [];
+    c.slotsUsed = { ...(c.slotsUsed || {}) };
+    for (let l = Math.min(5, cs.maxLevel); l >= 1; l--) {
+      while (budget >= l && (parseInt(c.slotsUsed[l]) || 0) > 0) { c.slotsUsed[l]--; budget -= l; got.push(ordinal(l)); }
+    }
+    if (!got.length) return sysEntry(`✦ ${c.name} has no spent spell slots to recover.`);
+    extra = ` — regains ${got.join(', ')}-level slot${got.length > 1 ? 's' : ''}`;
+  }
+  c.featureUsed = { ...(c.featureUsed || {}) };
+  c.featureUsed[ft.key] = (parseInt(c.featureUsed[ft.key]) || 0) + n;
+  const after = featureLeft(c, ft);
+  if (ft.key === 'secondwind') {
+    const r = rollSpec(parseDice(`1d10+${parseInt(c.level) || 1}`), 1);
+    const { before, after: hp, max } = changeHP(c, r.total);
+    extra = ` — heals ${r.total} (${r.text}): HP ${before} → ${hp}/${max}`;
+  }
+  if (ft.key === 'layonhands') {
+    const { before, after: hp, max } = changeHP(healTarget, n);
+    extra = ` — ${healTarget.name} heals ${n}: HP ${before} → ${hp}/${max}`;
+  }
+  const saveMeta = !!(healTarget && healTarget.ally);
+  return sysEntry(`✦ ${c.name} uses ${ft.name}${ft.pool ? ` (${n})` : ''}${extra}. ${after}/${ft.uses} left${ft.rest ? ` (refills on a ${ft.rest} rest)` : ''}.`, { saveAll: true, saveMeta });
+}
+function resolveSmite(c, level, target) {
+  const cs = casterOf(c);
+  if (!cs) return sysEntry(`✦ ${c.name} has no spell slots for Divine Smite.`);
+  const slots = slotsLeft(c, cs);
+  const slot = level ? slots[level - 1] : slots.find(s => s.left > 0);
+  if (!slot || slot.left < 1) return sysEntry(`✦ ${c.name} has no ${level ? ordinal(level) + '-level ' : ''}spell slot left for Divine Smite, so it doesn't happen.`);
+  c.slotsUsed = { ...(c.slotsUsed || {}) };
+  c.slotsUsed[slot.level] = (parseInt(c.slotsUsed[slot.level]) || 0) + 1;
+  const r = rollSpec(parseDice(`${Math.min(5, 1 + slot.level)}d8`), 1);
+  let text = `✦ ${c.name}'s Divine Smite (${ordinal(slot.level)}-level slot): ${r.total} radiant damage (${r.text})`;
+  const foe = target ? findFoe(target) : null;
+  let saveMeta = false;
+  if (foe && !foe.ally) {
+    const before = foe.hp;
+    foe.hp = Math.max(0, foe.hp - r.total);
+    text += ` — ${foe.name}: HP ${before} → ${foe.hp}/${foe.maxhp}${foe.hp === 0 ? ' (down!)' : ''}`;
+    if (foe.hp === 0) text += ' ' + foeFell(foe).text;
+    saveMeta = true;
+  }
+  return sysEntry(text + '.', { saveAll: true, saveMeta });
+}
+
 /* ---------------- Spellcasting (SRD 5.1) ----------------
    Slots, how many spells a caster has, and their spell list come from the class and level; spells come from
    the class's SRD list (srd-spells.js). The game spends slots with the GM's [[cast]] and refuses a spell
@@ -1058,7 +1284,8 @@ function spellSheetHTML(c) {
 function spellCountText(cs) {
   const picked = [...SPELL_DRAFT.set].map(spellInfo).filter(Boolean);
   const nc = picked.filter(s => s.level === 0).length, ns = picked.length - nc;
-  return `${cs.cantrips ? `Cantrips ${nc}/${cs.cantrips} &middot; ` : ''}Spells ${ns}/${cs.spells}`;
+  const over = (n, max) => n > max ? `<span class="error-text">${n}/${max} (too many)</span>` : `${n}/${max}`;
+  return `${cs.cantrips ? `Cantrips ${over(nc, cs.cantrips)} &middot; ` : ''}Spells ${over(ns, cs.spells)}`;
 }
 function toggleSpellDraft(name, on) {
   if (!SPELL_DRAFT) return;
@@ -1191,6 +1418,25 @@ function rollOptions(c) {
   const prof = 2 + Math.floor(((parseInt(c.level) || 1) - 1) / 4);
   opts.push({ key: 'atk:STR', group: 'Attacks', name: 'Attack (STR)', mod: abilityMod(c.str) + prof });
   opts.push({ key: 'atk:DEX', group: 'Attacks', name: 'Attack (DEX)', mod: abilityMod(c.dex) + prof });
+  // One attack and one damage entry per weapon the story gave them; bows and crossbows spend ammunition.
+  const seen = new Set();
+  for (const it of earnedItems(c)) {
+    const w = weaponOf(it);
+    if (!w || seen.has(w.key)) continue;
+    seen.add(w.key);
+    const ab = w.ab === 'fin' ? (abilityMod(c.dex) >= abilityMod(c.str) ? 'dex' : 'str') : w.ab;
+    const nm = capFirst(w.key);
+    opts.push({ key: 'w:' + w.key, group: 'Weapons', name: `${nm} attack`, mod: abilityMod(c[ab]) + prof });
+    opts.push({ key: 'wd:' + w.key, group: 'Weapons', name: `${nm} damage`, mod: abilityMod(c[ab]), dice: w.dice });
+  }
+  const lvl = parseInt(c.level) || 1, cls = classOf(c);
+  if (cls === 'rogue') opts.push({ key: 'f:sneak', group: 'Class features', name: 'Sneak Attack damage', mod: 0, dice: `${Math.ceil(lvl / 2)}d6` });
+  if (cls === 'bard') opts.push({ key: 'f:insp', group: 'Class features', name: 'Bardic Inspiration die', mod: 0, dice: `1d${lvl >= 15 ? 12 : lvl >= 10 ? 10 : lvl >= 5 ? 8 : 6}` });
+  if (cls === 'monk') {
+    const best = Math.max(abilityMod(c.dex), abilityMod(c.str));
+    opts.push({ key: 'f:unarmed', group: 'Class features', name: 'Unarmed strike attack', mod: best + prof });
+    opts.push({ key: 'f:unarmedd', group: 'Class features', name: 'Unarmed strike damage', mod: best, dice: `1d${lvl >= 17 ? 10 : lvl >= 11 ? 8 : lvl >= 5 ? 6 : 4}` });
+  }
   opts.push({ key: 'i', group: 'Other', name: 'Initiative', mod: initiativeBonus(c) });
   return opts;
 }
@@ -1201,7 +1447,7 @@ function rollPickerHTML() {
   return `<select class="roll-picker" id="rollPicker" onchange="pickRoll(this.value)" title="Fill in a roll using your character sheet">
     <option value="">🎲 Roll from sheet…</option>
     ${groups.map(g => `<optgroup label="${escapeAttr(g)}">${opts.filter(o => o.group === g).map(o =>
-      `<option value="${escapeAttr(o.key)}">${escapeHtml(o.name)} (${fmtMod(o.mod)})</option>`).join('')}</optgroup>`).join('')}
+      `<option value="${escapeAttr(o.key)}">${escapeHtml(o.name)} (${o.dice ? o.dice + (o.mod ? fmtMod(o.mod) : '') : fmtMod(o.mod)})</option>`).join('')}</optgroup>`).join('')}
   </select>`;
 }
 function pickRoll(key) {
@@ -1209,7 +1455,7 @@ function pickRoll(key) {
   const picker = el('rollPicker');
   if (picker) picker.value = '';
   if (!opt) return;
-  composerDraft = `/roll ${fmtMod(opt.mod)} ${opt.name}`;
+  composerDraft = opt.dice ? `/roll ${opt.dice}${opt.mod ? fmtMod(opt.mod) : ''} ${opt.name}` : `/roll ${fmtMod(opt.mod)} ${opt.name}`;
   const input = el('composerInput');
   if (input) { input.value = composerDraft; input.focus(); }
 }
@@ -1477,6 +1723,7 @@ function renderRosterMini() {
       <div class="hprow"><span>HP ${c.hp}/${c.maxhp}</span><span>AC ${c.ac}</span></div>
       ${deathSaveHTML(c)}
       ${spellCardHTML(c)}
+      ${featureCardHTML(c)}
       ${abilityGridHTML(c)}
     </div>`;
   }).join('');
@@ -1496,6 +1743,16 @@ async function submitAction(override) {
   // Matches "/roll +5", "/roll 1d20+4", "/roll 2d6+3 adv", "/roll d20", "/roll 1d4", and an
   // optional label after the dice, e.g. "/roll +7 Stealth" or "/roll +7 adv Stealth".
   const rollMatch = text.match(/^\/roll(?=\s|$)\s*(?:(\d*)d(\d+))?\s*([+-]\d+)?\s*(.*)$/i);
+  let ammoNote = '';
+  if (rollMatch && me && !rollMatch[2] && /\battack\b/i.test(rollMatch[4] || '')) {
+    const w = weaponOf(rollMatch[4]);
+    if (w && w.ammo) {
+      const spent = spendAmmo(me, w.ammo);
+      if (!spent.ok) { alert(`${me.name} has ${spent.text}, so the ${capFirst(w.key).toLowerCase()} can't be fired.`); return; }
+      ammoNote = ` — ${spent.text}`;
+      await dbUpsertCharacter(MY_CHAR_ID, ROOM, me);
+    }
+  }
   let entry, diceArgs = null;
   if (rollMatch) {
     // Capped so something like "/roll 999999999d6" can't freeze the tab.
@@ -1529,7 +1786,7 @@ async function submitAction(override) {
              (mode && count === 1 && sides === 20 ? ` · ${mode === 'adv' ? 'advantage' : 'disadvantage'}` : ''),
     };
     entry = { id: uid(6), author: authorName, type: 'roll',
-      text: `rolls ${detail}${mod !== 0 ? ' ' + fmtMod(mod) : ''} = ${total}${label ? ' (' + label + ')' : ''}${flagged ? ' ' + UNLISTED_FLAG : ''}` };
+      text: `rolls ${detail}${mod !== 0 ? ' ' + fmtMod(mod) : ''} = ${total}${label ? ' (' + label + ')' : ''}${flagged ? ' ' + UNLISTED_FLAG : ''}${ammoNote}` };
   } else {
     entry = { id: uid(6), author: authorName, type: 'action', text };
   }
@@ -1621,18 +1878,18 @@ async function callGM(prompt, fallbackEntry) {
     GM_PENDING = false;
     GM_ABORT = null;
   }
-  const { clean, attacks, heals, gives, uses, damages, notes, foesAdded, hits, mapOps, defeats, successes, rests, stables, casts } = entry.type === 'gm' ? extractFoeAttacks(entry.text)
-    : { clean: entry.text, attacks: [], heals: [], gives: [], uses: [], damages: [], notes: [], foesAdded: [], hits: [], mapOps: [], defeats: [], successes: [], rests: [], stables: [], casts: [] };
+  const { clean, attacks, heals, gives, uses, damages, notes, foesAdded, hits, mapOps, defeats, successes, rests, stables, casts, features } = entry.type === 'gm' ? extractFoeAttacks(entry.text)
+    : { clean: entry.text, attacks: [], heals: [], gives: [], uses: [], damages: [], notes: [], foesAdded: [], hits: [], mapOps: [], defeats: [], successes: [], rests: [], stables: [], casts: [], features: [] };
   // A message that was nothing but directives has no story text of its own to log.
-  if (clean || !(attacks.length || heals.length || gives.length || uses.length || damages.length || notes.length || foesAdded.length || hits.length || mapOps.length || defeats.length || successes.length || rests.length || stables.length || casts.length)) {
+  if (clean || !(attacks.length || heals.length || gives.length || uses.length || damages.length || notes.length || foesAdded.length || hits.length || mapOps.length || defeats.length || successes.length || rests.length || stables.length || casts.length || features.length)) {
     entry.text = clean || entry.text;
     await dbInsertLog(ROOM, entry);
     LOG.push({ ...entry, ts: Date.now() });
   }
   // Damage, healing and items change the sheet itself: save every character that changed.
   // XP is awarded before a rest, so a long rest in the same message can unlock a level-up.
-  const results = [resolveMapOps(mapOps), ...casts.map(resolveCast), ...foesAdded.map(resolveFoe), ...attacks.map(resolveFoeAttack), ...hits.map(resolveHit), ...damages.map(resolveDamage), ...heals.map(resolveHeal), ...gives.map(resolveGive), ...uses.map(resolveUse),
-    ...defeats.map(resolveDefeat), ...successes.map(resolveSuccess), ...notes.map(resolveNote), ...rests.map(k => k === 'long' ? resolveLongRest() : resolveShortRest()), ...stables.map(resolveStable)];
+  const results = [resolveMapOps(mapOps), ...casts.map(resolveCast), ...foesAdded.map(resolveFoe), ...attacks.map(resolveFoeAttack), ...hits.map(resolveHit), ...damages.map(resolveDamage), ...heals.map(resolveHeal), ...usesThenGives(uses, gives),
+    ...defeats.map(resolveDefeat), ...successes.map(resolveSuccess), ...notes.map(resolveNote), ...rests.map(k => k === 'long' ? resolveLongRest() : resolveShortRest()), ...stables.map(resolveStable), ...features.map(resolveFeature)];
   for (const r of results.filter(Boolean)) {
     const { hpChar, saveAll, saveMeta, ...result } = r;
     await dbInsertLog(ROOM, result);
@@ -2459,9 +2716,15 @@ function tokenAt(g, x, y) { return (g.tokens || []).find(t => t.x === x && t.y =
 function resolveMapOps(ops) {
   if (!ops.length || !META) return null;
   const notes = [];
+  let ammoBack = false;
   for (const op of ops) {
     const g = META.grid && META.grid.w ? META.grid : null;
-    if (op.kind === 'end-battle') { if (META.foes) META.foes = {}; if (g) { META.grid = null; notes.push('the battle map is cleared'); } continue; }
+    if (op.kind === 'end-battle') {
+      if (META.foes) META.foes = {};
+      if (g) { META.grid = null; notes.push('the battle map is cleared'); }
+      const back = recoverAmmo(); if (back.length) { notes.push(...back); ammoBack = true; }
+      continue;
+    }
     if (op.kind === 'map') {
       const m = /(\d{1,2})\s*[x×]\s*(\d{1,2})/i.exec(op.body);
       const w = Math.min(MAP_MAX, Math.max(4, m ? parseInt(m[1]) : 12));
@@ -2514,7 +2777,7 @@ function resolveMapOps(ops) {
       continue;
     }
   }
-  return { id: uid(6), author: 'The Ledger', type: 'system', text: `🗺 ${notes.length ? notes.join(' · ') : 'battle map updated'}.`, saveMeta: true };
+  return { id: uid(6), author: 'The Ledger', type: 'system', text: `🗺 ${notes.length ? notes.join(' · ') : 'battle map updated'}.`, saveMeta: true, saveAll: ammoBack };
 }
 function removeTokenNamed(name) {
   const g = mapState();
@@ -2681,6 +2944,7 @@ const HIT_DIRECTIVE = /\[\[\s*hit:([^\]]*)\]\]/gi;
 const DAMAGE_DIRECTIVE = /\[\[\s*damage:([^\]]*)\]\]/gi;
 const DEFEAT_DIRECTIVE = /\[\[\s*defeat:([^\]]*)\]\]/gi;
 const SUCCESS_DIRECTIVE = /\[\[\s*success:([^\]]*)\]\]/gi;
+const FEATURE_DIRECTIVE = /\[\[\s*feature:([^\]]*)\]\]/gi;
 const CAST_DIRECTIVE = /\[\[\s*cast:([^\]]*)\]\]/gi;
 const STABLE_DIRECTIVE = /\[\[\s*stable:([^\]]*)\]\]/gi;
 const REST_DIRECTIVE = /\[\[\s*(short|long)[- ]rest\s*(?::[^\]]*)?\]\]/gi;
@@ -2699,6 +2963,7 @@ function extractFoeAttacks(text) {
   const rests = [];
   const stables = [];
   const casts = [];
+  const features = [];
   const clean = String(text).replace(FOE_DIRECTIVE, (_, body) => {
     const p = body.split('|').map(s => s.trim());
     if (p.length >= 5 && attacks.length < 4) attacks.push({ who: p[0].slice(0, 40), atk: p[1].slice(0, 40), bonus: p[2], dmg: p[3], target: p[4], ac: p[5] });
@@ -2709,11 +2974,11 @@ function extractFoeAttacks(text) {
     return '';
   }).replace(GIVE_DIRECTIVE, (_, body) => {
     const p = body.split('|').map(s => s.trim());
-    if (p.length >= 2 && p[1] && gives.length < 4) gives.push({ target: p[0], item: p[1].slice(0, 80) });
+    if (p.length >= 2 && p[1] && gives.length < 4) gives.push({ target: p[0], item: p[1].slice(0, 80), qty: p[2] || '' });
     return '';
   }).replace(USE_DIRECTIVE, (_, body) => {
     const p = body.split('|').map(s => s.trim());
-    if (p.length >= 2 && p[1] && uses.length < 4) uses.push({ target: p[0], item: p[1].slice(0, 80) });
+    if (p.length >= 2 && p[1] && uses.length < 4) uses.push({ target: p[0], item: p[1].slice(0, 80), qty: p[2] || '' });
     return '';
   }).replace(NOTE_DIRECTIVE, (_, body) => {
     const i = body.indexOf('|');
@@ -2742,6 +3007,10 @@ function extractFoeAttacks(text) {
     const p = body.split('|').map(s => s.trim());
     if (p[0] && successes.length < 4) successes.push({ target: p[0], skill: (p[1] || '').slice(0, 40), dc: p[2] || '' });
     return '';
+  }).replace(FEATURE_DIRECTIVE, (_, body) => {
+    const p = body.split('|').map(x => x.trim());
+    if (p[0] && p[1] && features.length < 4) features.push({ who: p[0], feature: p[1], amount: p[2] || '', target: p[3] || '' });
+    return '';
   }).replace(CAST_DIRECTIVE, (_, body) => {
     const p = body.split('|').map(x => x.trim());
     if (p[0] && p[1] && casts.length < 4) casts.push({ who: p[0], spell: p[1], level: p[2] || '' });
@@ -2754,7 +3023,7 @@ function extractFoeAttacks(text) {
     if (!rests.length) rests.push(kind.toLowerCase());
     return '';
   }).replace(/\n{3,}/g, '\n\n').trim();
-  return { clean, attacks, heals, gives, uses, damages, notes, foesAdded, hits, mapOps, defeats, successes, rests, stables, casts };
+  return { clean, attacks, heals, gives, uses, damages, notes, foesAdded, hits, mapOps, defeats, successes, rests, stables, casts, features };
 }
 function findTarget(name) {
   const chars = Object.values(ROSTER);
@@ -2926,40 +3195,178 @@ function dropHandItem(c, item) {
 }
 const QTY_RE = /\s*\((\d+)\)\s*$/;
 const itemBase = s => String(s).replace(QTY_RE, '').trim().toLowerCase();
+
+/* ---------------- Gear: counted consumables, weapons, ammunition ----------------
+   Non-consumable gear (weapons, armour, shields, tools) always comes back after a fight and is never removed.
+   Consumables are counted stacks, e.g. "Crossbow bolts (20)", "Gold pieces (5)". A weapon attack from the
+   Roll from sheet menu spends one piece of its ammunition; when the fight ends ([[end-battle]], or the next
+   rest) half of what was spent is recovered, rounded down (SRD). Other consumables go through [[use]]. */
+const WEAPONS = { // SRD weapons: damage dice, ability ('fin' = STR or DEX), ammunition
+  club: ['1d4', 'str'], dagger: ['1d4', 'fin'], greatclub: ['1d8', 'str'], handaxe: ['1d6', 'str'], javelin: ['1d6', 'str'],
+  'light hammer': ['1d4', 'str'], mace: ['1d6', 'str'], quarterstaff: ['1d6', 'str'], sickle: ['1d4', 'str'], spear: ['1d6', 'str'],
+  'light crossbow': ['1d8', 'dex', 'bolt'], dart: ['1d4', 'fin'], shortbow: ['1d6', 'dex', 'arrow'], sling: ['1d4', 'dex', 'bullet'],
+  battleaxe: ['1d8', 'str'], flail: ['1d8', 'str'], glaive: ['1d10', 'str'], greataxe: ['1d12', 'str'], greatsword: ['2d6', 'str'],
+  halberd: ['1d10', 'str'], lance: ['1d12', 'str'], longsword: ['1d8', 'str'], maul: ['2d6', 'str'], morningstar: ['1d8', 'str'],
+  pike: ['1d10', 'str'], rapier: ['1d8', 'fin'], scimitar: ['1d6', 'fin'], shortsword: ['1d6', 'fin'], trident: ['1d6', 'str'],
+  'war pick': ['1d8', 'str'], warhammer: ['1d8', 'str'], whip: ['1d4', 'fin'], blowgun: ['1d1', 'dex', 'needle'],
+  'hand crossbow': ['1d6', 'dex', 'bolt'], 'heavy crossbow': ['1d10', 'dex', 'bolt'], longbow: ['1d8', 'dex', 'arrow'],
+};
+const WEAPON_KEYS = Object.keys(WEAPONS).sort((a, b) => b.length - a.length);
+const AMMO = { bolt: 'Crossbow bolts', arrow: 'Arrows', bullet: 'Sling bullets', needle: 'Blowgun needles' };
+const AMMO_WORD = /\b(?:crossbow\s+)?(?:sling\s+)?(?:blowgun\s+)?(bolts?|arrows?|bullets?|needles?)\b/i;
+const ammoKind = w => /bolt/i.test(w) ? 'bolt' : /arrow/i.test(w) ? 'arrow' : /bullet/i.test(w) ? 'bullet' : 'needle';
+const COIN_NAMES = { gold: 'Gold pieces', gp: 'Gold pieces', silver: 'Silver pieces', sp: 'Silver pieces', copper: 'Copper pieces', cp: 'Copper pieces',
+  platinum: 'Platinum pieces', pp: 'Platinum pieces', electrum: 'Electrum pieces', ep: 'Electrum pieces' };
+const isAmmoItem = s => AMMO_WORD.test(String(s)) && !/\bbow\b|crossbow\s*(?:,|with|and|$)|\bsling\s*(?:,|with|and|$)/i.test(String(s).replace(/\bcrossbow\s+bolts?\b/i, ''));
+function weaponOf(item) {
+  const s = String(item || '').toLowerCase();
+  if (isAmmoItem(s)) return null;
+  const k = WEAPON_KEYS.find(n => new RegExp('\\b' + n + '\\b').test(s));
+  return k ? { key: k, dice: WEAPONS[k][0], ab: WEAPONS[k][1], ammo: WEAPONS[k][2] || null } : null;
+}
+const capFirst = s => s.charAt(0).toUpperCase() + s.slice(1);
+// One written item -> one or more inventory lines with counts.
+function normalizeItem(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return [];
+  let m = /^(.*?)\s*(?:,|\bwith\b|\band\b|\+|&)\s*(?:an?\s+)?(?:(?:quiver|case|pouch|bundle)\s+(?:of\s+)?)?(\d+)\s+(?:crossbow\s+|sling\s+|blowgun\s+)?(bolts?|arrows?|bullets?|needles?)\b.*$/i.exec(s);
+  if (m && m[1].trim()) return [m[1].trim(), `${AMMO[ammoKind(m[3])]} (${m[2]})`];
+  m = /^(?:an?\s+)?(?:(?:quiver|case|pouch|bundle)\s+(?:of\s+)?)?(\d+)\s+(?:crossbow\s+|sling\s+|blowgun\s+)?(bolts?|arrows?|bullets?|needles?)\b/i.exec(s);
+  if (m) return [`${AMMO[ammoKind(m[2])]} (${m[1]})`];
+  m = /^(?:crossbow\s+|sling\s+|blowgun\s+)?(bolts?|arrows?|bullets?|needles?)\s*(?:[x×]\s*(\d+)|\((\d+)\))?$/i.exec(s);
+  if (m) return [`${AMMO[ammoKind(m[1])]} (${m[2] || m[3] || 1})`];
+  m = /^(\d+)\s*(gold|silver|copper|platinum|electrum|gp|sp|cp|pp|ep)\b/i.exec(s);
+  if (m) return [`${COIN_NAMES[m[2].toLowerCase()]} (${m[1]})`];
+  m = /^(gold|silver|copper|platinum|electrum)\s+(?:pieces?|coins?)\s*(?:[x×]\s*(\d+)|\((\d+)\))?$/i.exec(s);
+  if (m) return [`${COIN_NAMES[m[1].toLowerCase()]} (${m[2] || m[3] || 1})`];
+  m = /^(?:(?:road|trail|travel|iron)\s+)?rations?\s*\((\d+)\s*days?\)$/i.exec(s) || /^(\d+)\s*days?(?:'s)?\s+(?:of\s+)?(?:(?:road|trail|travel|iron)\s+)?rations?$/i.exec(s);
+  if (m) return [`Rations (${m[1]})`]; // one ration feeds one person for a day
+  m = /^(.*?)\s*[x×]\s*(\d+)$/i.exec(s);
+  if (m && m[1].trim()) return [`${m[1].trim()} (${m[2]})`];
+  return [s];
+}
+// The name a stack is matched by: coins and ammunition by kind, other things by their singular name.
+function stackKey(s) {
+  const b = itemBase(s);
+  const coin = /^(?:\d+\s*)?(gold|silver|copper|platinum|electrum|gp|sp|cp|pp|ep)\b/.exec(b);
+  if (coin) return COIN_NAMES[coin[1]].toLowerCase();
+  if (isAmmoItem(b)) { const a = AMMO_WORD.exec(b); return AMMO[ammoKind(a[1])].toLowerCase(); }
+  return b.replace(/(?:es|s)$/, '');
+}
+const stackCount = s => { const q = QTY_RE.exec(String(s)); return q ? parseInt(q[1]) : 1; };
+const withCount = (base, n) => `${base} (${n})`;
+function mergeStacks(list) {
+  const out = [];
+  for (const it of list) {
+    const k = stackKey(it);
+    const j = out.findIndex(o => stackKey(o) === k);
+    if (j >= 0 && (QTY_RE.test(it) || QTY_RE.test(out[j]))) out[j] = withCount(String(out[j]).replace(QTY_RE, '').trim(), stackCount(out[j]) + stackCount(it));
+    else out.push(it);
+  }
+  return out;
+}
+// Rewrites a character's earned items into counted stacks (typed-in items are left alone). True if changed.
+function normalizeInventory(c) {
+  if (!c || !Array.isArray(c.inventory)) return false;
+  const flags = handFlags(c);
+  const hand = c.inventory.filter((_, i) => flags[i]);
+  const earned = mergeStacks(c.inventory.filter((it, i) => !flags[i] && String(it).trim()).flatMap(normalizeItem));
+  const next = [...earned, ...hand];
+  if (JSON.stringify(next) === JSON.stringify(c.inventory)) return false;
+  c.inventory = next;
+  return true;
+}
+function findStack(c, name) {
+  const inv = c.inventory || [];
+  const flags = handFlags(c);
+  const want = stackKey(name), wantBase = itemBase(name);
+  const order = [...inv.keys()].filter(i => !flags[i]); // only things the story gave them
+  return order.find(i => stackKey(inv[i]) === want)
+    ?? order.find(i => { const b = itemBase(inv[i]); return wantBase && (b.includes(wantBase) || wantBase.includes(b)); });
+}
+// Takes n off a stack. Returns { ok, left, base } or { ok: false, have }.
+function takeFromStack(c, idx, n) {
+  const inv = c.inventory;
+  const have = stackCount(inv[idx]);
+  const base = String(inv[idx]).replace(QTY_RE, '').trim();
+  if (have < n) return { ok: false, have, base };
+  const left = have - n;
+  if (left > 0) inv[idx] = QTY_RE.test(inv[idx]) || left > 1 ? withCount(base, left) : base;
+  else inv.splice(idx, 1);
+  return { ok: true, left, base };
+}
+function spendAmmo(c, kind) {
+  normalizeInventory(c);
+  const name = AMMO[kind];
+  const idx = findStack(c, name);
+  if (idx === undefined) return { ok: false, text: `no ${name.toLowerCase()} left` };
+  const r = takeFromStack(c, idx, 1);
+  if (!r.ok) return { ok: false, text: `no ${name.toLowerCase()} left` };
+  c.ammoSpent = { ...(c.ammoSpent || {}) };
+  c.ammoSpent[kind] = (c.ammoSpent[kind] || 0) + 1;
+  return { ok: true, text: `1 ${name.toLowerCase().replace(/s$/, '')} spent (${r.left} left)` };
+}
+// End of a fight: half the ammunition each hero spent is found again, rounded down. Returns log text.
+function recoverAmmo() {
+  const parts = [];
+  for (const c of Object.values(ROSTER)) {
+    const spent = c.ammoSpent || {};
+    for (const kind of Object.keys(spent)) {
+      const n = parseInt(spent[kind]) || 0, back = Math.floor(n / 2);
+      if (back > 0) {
+        const name = AMMO[kind] || kind;
+        const idx = findStack(c, name);
+        if (idx !== undefined) c.inventory[idx] = withCount(String(c.inventory[idx]).replace(QTY_RE, '').trim(), stackCount(c.inventory[idx]) + back);
+        else (c.inventory = c.inventory || []).unshift(withCount(name, back));
+      }
+      if (n > 0) parts.push(`${c.name} recovers ${back} of ${n} ${(AMMO[kind] || kind).toLowerCase()} (the rest are broken or lost)`);
+    }
+    delete c.ammoSpent;
+  }
+  return parts;
+}
 // [[give: Brannoc | Potion of Healing]]: the story hands a character an item.
 function resolveGive(g) {
   const target = findTarget(g.target);
   if (!target) return { id: uid(6), author: 'The Ledger', type: 'system', text: `${g.item}: the game couldn't tell who received it.` };
   target.inventory = (target.inventory || []).filter(i => String(i).trim());
-  if (target.inventory.length >= 40) return { id: uid(6), author: 'The Ledger', type: 'system', text: `${target.name}'s pack is full, so ${g.item} wasn't added.` };
-  target.inventory.push(g.item);
-  return { id: uid(6), author: 'The Ledger', type: 'system', hpChar: charIdOf(target), text: `🎁 ${target.name} gains ${g.item}.` };
+  normalizeInventory(target);
+  const qty = parseInt(String(g.qty || '').replace(/[^0-9]/g, '')) || 0;
+  const items = normalizeItem(qty > 1 && !QTY_RE.test(g.item) ? withCount(g.item, Math.min(999, qty)) : g.item);
+  for (const it of items) {
+    const idx = QTY_RE.test(it) ? findStack(target, it) : undefined;
+    if (idx !== undefined && stackKey(target.inventory[idx]) === stackKey(it)) {
+      target.inventory[idx] = withCount(String(target.inventory[idx]).replace(QTY_RE, '').trim(), stackCount(target.inventory[idx]) + stackCount(it));
+    } else {
+      if (target.inventory.length >= 40) return { id: uid(6), author: 'The Ledger', type: 'system', text: `${target.name}'s pack is full, so ${g.item} wasn't added.` };
+      target.inventory.push(it);
+    }
+  }
+  return { id: uid(6), author: 'The Ledger', type: 'system', hpChar: charIdOf(target), text: `🎁 ${target.name} gains ${items.join(' and ')}.` };
 }
 // [[use: Brannoc | Potion of Healing]]: a consumable is used up. "Potion (3)" becomes "Potion (2)".
+// Payments and other [[use]] lines run before [[give]]: a hero who couldn't pay gets nothing given that message.
+function usesThenGives(uses, gives) {
+  const results = uses.map(resolveUse);
+  const blocked = new Set(results.filter(r => r.failed && r.who).map(r => r.who));
+  return [...results.map(({ failed, who, ...r }) => r),
+    ...gives.map(g => { const t = findTarget(g.target); return t && blocked.has(t) ? { id: uid(6), author: 'The Ledger', type: 'system', text: `${t.name} doesn't get ${g.item}: the payment didn't go through.` } : resolveGive(g); })];
+}
 function resolveUse(u) {
+  const fail = text => ({ id: uid(6), author: 'The Ledger', type: 'system', text, failed: true, who: findTarget(u.target) });
   const target = findTarget(u.target);
-  if (!target) return { id: uid(6), author: 'The Ledger', type: 'system', text: `${u.item}: the game couldn't tell who used it.` };
-  const inv = target.inventory || [];
-  const want = itemBase(u.item);
-  const flags = handFlags(target);
-  const order = [...inv.keys()].sort((a, b) => flags[a] - flags[b]); // earned items first
-  const idx = order.find(i => itemBase(inv[i]) === want) ?? order.find(i => { const b = itemBase(inv[i]); return want && (b.includes(want) || want.includes(b)); });
-  if (idx === undefined) return { id: uid(6), author: 'The Ledger', type: 'system', text: `${target.name} has no ${u.item} to use.` };
-  const old = inv[idx];
-  const q = QTY_RE.exec(old);
-  const n = q ? parseInt(q[1]) : 1;
-  const base = String(old).replace(QTY_RE, '').trim();
-  const wasHand = flags[idx];
-  if (n > 1) {
-    const next = n - 1 > 1 ? `${base} (${n - 1})` : base;
-    inv[idx] = next;
-    if (wasHand) { dropHandItem(target, old); target.handItems.push(next); }
-  } else {
-    inv.splice(idx, 1);
-    if (wasHand) dropHandItem(target, old);
+  if (!target) return fail(`${u.item}: the game couldn't tell who used it.`);
+  normalizeInventory(target);
+  const n = Math.max(1, Math.min(999, parseInt(String(u.qty || '').replace(/[^0-9]/g, '')) || 1));
+  const idx = findStack(target, u.item);
+  if (idx === undefined) {
+    // Typed-in items are not owned: they can't be used up either.
+    return fail(`${target.name} has no ${u.item}, so it isn't used${/coin|piece|gold|silver|copper|gp|sp|cp/i.test(u.item) ? ' (they can\'t pay)' : ''}.`);
   }
+  const r = takeFromStack(target, idx, n);
+  if (!r.ok) return fail(`${target.name} has only ${r.have} ${r.base}, not ${n}, so ${/coin|piece|gold|silver|copper/i.test(r.base) ? 'they can\'t pay' : 'nothing is used'}.`);
   return { id: uid(6), author: 'The Ledger', type: 'system', hpChar: charIdOf(target),
-    text: `${target.name} uses ${base}${n > 1 ? ` (${n - 1} left)` : ''}.` };
+    text: `${target.name} uses ${n > 1 ? n + ' ' : ''}${r.base}${r.left > 0 ? ` (${r.left} left)` : ' (none left)'}.` };
 }
 
 // Players can click Roll as often as they like, so the app (not the GM) decides which roll counts:
@@ -2989,7 +3396,7 @@ async function askGM() {
   if (GM_PENDING) return;
   const rerolls = rerollIds();
   const recent = LOG.slice(-30).map(e => `${e.author} (${e.type}): ${e.text}${rerolls.has(e.id) ? ' ' + REROLL_TAG : ''}`).join('\n');
-  const party = Object.values(ROSTER).map(c => `${c.name} — Lv${c.level} ${c.race} ${c.klass}, HP ${c.hp}/${c.maxhp} (current, from the sheet)${spellPromptText(c)}${(parseInt(c.hp) || 0) <= 0 ? ` — ${c.dead ? 'DEAD' : c.stable ? 'UNCONSCIOUS, stable' : `DYING, ${dyingText(c)}${deathSaveDue(c) ? ', death save not yet rolled this turn' : ', death save already rolled this turn'}`}` : ''}, AC ${c.ac}, XP ${xpOf(c)}, inventory: ${earnedItems(c).join(', ') || 'none'}${handItems(c).length ? `; written in by the player, never given in the story (NOT owned): ${handItems(c).join(', ')}` : ''}
+  const party = Object.values(ROSTER).map(c => `${c.name} — Lv${c.level} ${c.race} ${c.klass}, HP ${c.hp}/${c.maxhp} (current, from the sheet)${spellPromptText(c)}${featurePromptText(c)}${(parseInt(c.hp) || 0) <= 0 ? ` — ${c.dead ? 'DEAD' : c.stable ? 'UNCONSCIOUS, stable' : `DYING, ${dyingText(c)}${deathSaveDue(c) ? ', death save not yet rolled this turn' : ', death save already rolled this turn'}`}` : ''}, AC ${c.ac}, XP ${xpOf(c)}, inventory: ${earnedItems(c).join(', ') || 'none'}${handItems(c).length ? `; written in by the player, never given in the story (NOT owned): ${handItems(c).join(', ')}` : ''}
   Sheet modifiers (the only d20 bonuses this character has): ${rollOptions(c).map(o => `${o.name} ${fmtMod(o.mod)}`).join(', ')}`).join('\n');
   const prompt = `You are the Game Master for a tabletop RPG ${MODE === 'solo' ? 'solo story' : 'session'} titled "${META.name}".
 Ruleset: ${META.ruleset}. Tone/genre: ${META.tone || 'unspecified — infer something fitting'}. Length: ${lengthLabel[META.length]}.
@@ -3017,7 +3424,8 @@ Roll resolution rules — follow these exactly:
 - For any d20 check or save, the bonus in your /roll command must be one of that character's Sheet modifiers listed above, and the command should name it, e.g. "/roll +3 Dexterity" or "/roll +7 Stealth". Never add a proficiency bonus, expertise, or any other bonus that isn't on the sheet. If the right skill or tool isn't listed, use the matching ability's modifier as-is (and say that's what you're using). Weapon attack rolls use the listed "Attack (STR)" or "Attack (DEX)" modifier, e.g. "/roll +5 Attack (DEX)". Damage rolls use dice notation for the weapon or spell, e.g. "/roll 1d8+3".
 - Players never roll for monsters. For each attack a foe makes, write it in the fiction and put this directive on its own line: [[foe-attack: Goblin B | scimitar | +4 | 1d6+2 | Telilin]] (attacker | attack name | to-hit bonus from its stat block | damage dice | the target's exact character name). When an ally NPC attacks an enemy, add the enemy's AC as a sixth field, e.g. [[foe-attack: Scout | longbow | +4 | 1d8+2 | Goblin A | AC 15]]; the result tells you what happened and you track the enemy's HP. The game rolls the attack against the target's AC and the damage if it hits, and posts the result to the log; use one directive per attack (max 4). Then stop: don't say whether it hit and don't state the AC. Narrate the outcome next turn, once the result is in the log. The game subtracts the damage from the target's HP itself, so never ask players to take it off their HP. For damage that isn't a foe's attack (a trap, a fall, poison, fire, a failed save), put [[damage: <their name> | <dice or a number> | <source>]] on its own line and the game rolls it and takes it off their HP; when a successful save halves it, ask for the save first and add "| half" if they made it. Area effects roll once for everyone: list every character caught in it and mark those who made their save, e.g. [[damage: Brannoc, Sera half | 8d6 | fireball]], or use "party" for everyone at the table. Healing that reaches several characters works the same way: [[heal: Brannoc, Sera | 1d4+3 | mass healing word]]. Players can't change their own HP, so never ask them to. For any healing (a potion, a spell) put [[heal: Telilin | 2d4+2 | potion of healing]] on its own line (the character's exact name | dice or a flat number | source); the game rolls it and raises their HP up to their maximum. One per healing, max 4. A character at 0 HP is unconscious: never offer them options or actions, and never write choices for them; narrate what happens around them. Death saves belong to the game: when it's a DYING character's turn, ask that player to tap "Roll death save" (the game rolls it and counts it; its count is in the party list above, so never keep your own tally or roll it for them). Three successes leaves them stable, three failures means death, a natural 20 brings them back with 1 HP, and any healing wakes them. Damage to a character at 0 HP is a failed death save; the game counts that too. When someone stabilises a dying character, put [[stable: <their name>]] on its own line. Never use [[heal]] to stabilise a dying character: stabilising (a healer's kit, a Medicine check, spare the dying) restores no HP, it only ends their death saves, so ask the player for a Medicine check (DC 10, or a healer's kit with no roll) and narrate them stable at 0 HP. When a player's own character is doing the healing (their spell or potion), ask that player to /roll it; once that roll is in the log, put [[heal: <their name> | <that roll's total> | <source>]] with the total as a plain number, and the game adds it. Never state anyone's new HP total yourself (the game posts it), and never work HP out from older log lines: a character's current HP is only the "HP x/y (current, from the sheet)" in the party list above.
 - Spells: each caster's spells and remaining slots are in the party list above, kept by the game. A character can only cast spells on their own list. When a character casts a spell (a cantrip too), put [[cast: <their name> | <spell> | <slot level, only if cast at a higher level>]] on its own line before you narrate its effect; the game spends the slot. If the game says the spell isn't cast (not one of their spells, or no slot left), it fails: say so and let them choose something else. Never restore slots yourself: [[long-rest]] does that (warlock pact slots also come back on [[short-rest]]). Players change their spells on the Your Sheet tab, only after a long rest or when a new session begins.
-- Items: each character's inventory above is what they really carry. Items "written in by the player" were typed in by the player and never given in the story: they are NOT owned. If a player tries to use one, it isn't in their pack, and say so plainly. When the story gives a character an item (found, bought, looted, handed over), put [[give: <their name> | <item>]] on its own line and the game adds it. When a character uses up a consumable (drinks a potion, reads a scroll, spends a charge item), put [[use: <their name> | <item>]] on its own line and the game removes one. Max 4 of each per message.
+- Class features: each character's limited-use features (Rage, Second Wind, Action Surge, Ki points, Lay on Hands, Channel Divinity, Wild Shape, Bardic Inspiration, Sorcery points, Arcane Recovery...) and what's left are in the party list, kept by the game. When a character uses one, put [[feature: <their name> | <feature>]] on its own line before narrating it; for pools add the amount ([[feature: Aldric | Lay on Hands | 10 | Mira]] heals Mira 10; [[feature: Kai | Ki points | 1]]). Divine Smite spends a spell slot: [[feature: Aldric | Divine Smite | <slot level> | <foe>]] and the game rolls the radiant damage onto that foe. Second Wind's healing is rolled by the game. If the game says none are left, it doesn't happen. Never refill them yourself: rests do.
+- Items: each character's inventory above is what they really carry. Items "written in by the player" were typed in by the player and never given in the story: they are NOT owned. If a player tries to use one, it isn't in their pack, and say so plainly. When the story gives a character an item (found, bought, looted, handed over), put [[give: <their name> | <item>]] on its own line and the game adds it. When a character uses up a consumable (drinks a potion, reads a scroll, spends a charge item), put [[use: <their name> | <item>]] on its own line and the game removes one. Max 4 of each per message. Only consumables are ever used up: weapons, armour, shields and other gear are always recovered after a fight, so never remove them. Consumables are counted, e.g. "Crossbow bolts (18)", "Gold pieces (5)"; when some are used up (a potion drunk, rope left tying prisoners, torches burned out, rations eaten on the road, coins spent) put [[use: <their name> | <item> | <how many>]], and [[give: <their name> | <item> | <how many>]] adds them. Ranged weapon attacks: ask the player to roll that weapon's attack from the Roll from sheet menu (e.g. /roll +4 Light crossbow attack); the game spends the ammunition and gives back half of it when the fight ends, so never [[use]] ammunition yourself, and a character with none left can't shoot. Items come only from the story (found, looted, given, earned or bought), never because a player asks for one. To buy something, first [[use]] the coins; if the game says they can't pay, they don't get it; otherwise [[give]] the item.
 - Battle map: when a fight starts, lay out a map before the first attack: [[map: 12x10]] (columns A-L, rows 1-10; at most 20x20), then [[place: <name> | <square>]] for every hero and foe (add "| ally" for a friendly NPC, e.g. [[place: Woman | E5 | ally]]), and [[wall: D2-D5, H7]] for walls or heavy cover. On later turns move foes with [[place]], use [[remove: <name>]] when one flees, surrenders or is otherwise out of the fight for good (the game takes it off the map and the Foes list; it gives no XP, so use [[defeat]] instead if the party beat it), and [[end-battle]] when the fight is over. Players move their own heroes on the map, so never move a hero yourself unless the story forces it (a shove, a fall). Use the map's distances: a melee attack needs 5 ft (10 ft with reach); a ranged attack past normal range has disadvantage and can't go past long range; an area spell hits everyone within its radius of the square it's centred on. With no battle map, give each foe's distance in the Foes line, e.g. **Foes:** Goblin A 4/7 HP, 30 ft.
 - Foe hit points belong to the game. When foes enter a fight, put [[foe: <name> | <hp>]] for each, with unique names (Goblin A, Goblin B); leave out the number for an SRD creature and the game uses its stat block. Never decide how much damage a hero deals: when a hero's attack hits, ask that player to /roll the damage, and once that roll is in the log put [[hit: <foe> | <hero>]]; the game takes exactly that roll off the foe. A hero's area spell works the same way: the player rolls the damage once, then [[hit: Goblin A, Goblin B half | <hero>]] (half for foes that made their save). [[damage]] is only for harm to heroes. The game posts each foe's HP and defeats it at 0 (no [[defeat]] needed then); copy its numbers into your Foes line. A friendly NPC who fights or can be hurt gets hit points the same way, marked as an ally: [[foe: Pell | 11 | ally]] (an SRD creature placed with "| ally" is tracked automatically). Foe attacks on an ally use [[foe-attack]] with the ally's AC as the sixth field; [[damage]] and [[heal]] work on allies by name. An ally at 0 HP is down, not defeated: never [[defeat]] an ally. Allies never land a blow in narration alone: when an ally NPC attacks (with a weapon, an improvised one, a shove or a spell), describe the attempt, put [[foe-attack: <ally> | <attack> | <to-hit> | <damage dice> | <enemy> | AC <enemy's AC>]] on its own line and stop; don't say it hit, and don't hurt, stun, daze or knock out the enemy until the result is in the log.
 - Field notes: when the party learns something worth remembering (a quest or task, a person and what they want, a place, a clue or piece of lore, how an encounter went, notable loot), put [[note: <Quests|People|Places|Clues|Encounters|Loot> | <one short sentence>]] on its own line; the game adds it to the party's journal. At most 3 per message, and don't repeat anything already in the field notes above.
@@ -3272,6 +3680,7 @@ function renderSheetTab() {
       ${forgePanelHTML(c, FORGE_TAG)}
       ${abilityGridHTML(c)}
       ${spellSheetHTML(c)}
+      ${featureSheetHTML(c)}
       <p class="helptext" style="margin:-4px 0 20px;">HP only changes through the game: damage from attacks, traps and falls; healing from potions, spells and rests.</p>
 
       <h3 style="font-size:1rem;">Skills</h3>
@@ -4039,6 +4448,8 @@ function resolveLongRest() {
   if (since < LONG_REST_GAP) return sysEntry(`🌙 Too soon for another long rest (the story needs to move on first), so it gives no benefits.`);
   m.lastLongRest = gmCount();
   m.shortRestAt = null;
+  const ammoBack = recoverAmmo();
+  refillFeatures('long');
   const ready = [];
   for (const c of Object.values(ROSTER)) {
     c.hp = parseInt(c.maxhp) || c.hp;
@@ -4049,7 +4460,7 @@ function resolveLongRest() {
     if (c.levelReady) ready.push(c.name);
   }
   const casters = Object.values(ROSTER).some(c => casterOf(c));
-  return sysEntry(`🌙 Long rest: everyone is back to full HP and regains hit dice.${casters ? ' Spell slots are back, and casters can change their spells now (Your Sheet tab).' : ''}${ready.length ? ` ${ready.join(', ')} can level up now (Your Sheet tab).` : ''}`, { saveAll: true, saveMeta: true });
+  return sysEntry(`🌙 Long rest: everyone is back to full HP and regains hit dice.${casters ? ' Spell slots are back, and casters can change their spells now (Your Sheet tab).' : ''}${ammoBack.length ? ' ' + ammoBack.join('; ') + '.' : ''}${ready.length ? ` ${ready.join(', ')} can level up now (Your Sheet tab).` : ''}`, { saveAll: true, saveMeta: true });
 }
 // [[short-rest]]: opens a window (until the next GM message) to spend hit dice on the Sheet tab.
 function resolveShortRest() {
@@ -4060,7 +4471,8 @@ function resolveShortRest() {
   m.shortRestAt = gmCount();
   const pact = Object.values(ROSTER).filter(c => { const cs = casterOf(c); return cs && cs.pact && (parseInt(c.pactUsed) || 0) > 0; });
   pact.forEach(c => { c.pactUsed = 0; });
-  return sysEntry(`☕ Short rest: each hero can spend hit dice on the Your Sheet tab to heal, until the story continues.${pact.length ? ` ${pact.map(c => c.name).join(', ')} regain${pact.length > 1 ? '' : 's'} pact magic slots.` : ''}`, { saveMeta: true, saveAll: pact.length > 0 });
+  const refilled = refillFeatures('short');
+  return sysEntry(`☕ Short rest: each hero can spend hit dice on the Your Sheet tab to heal, until the story continues.${pact.length ? ` ${pact.map(c => c.name).join(', ')} regain${pact.length > 1 ? '' : 's'} pact magic slots.` : ''}${refilled.length ? ` Back again: ${refilled.join(', ')}.` : ''}`, { saveMeta: true, saveAll: pact.length > 0 || refilled.length > 0 });
 }
 async function spendHitDie() {
   const c = ROSTER[MY_CHAR_ID];
