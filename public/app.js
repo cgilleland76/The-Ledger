@@ -685,14 +685,16 @@ function toListEntry(v, list) {
 function pickListHTML(id, field, list, value, optional) {
   const v = toListEntry(value, list);
   const custom = v && !list.includes(v);
-  return `<select id="${id}" onchange="pickListChange(this, '${field}')">
+  const dot = `<span id="${id}Info" class="pick-info">${field === 'race' ? raceInfoHTML(v) : classInfoHTML(v)}</span>`;
+  return `<div class="pick-row"><select id="${id}" onchange="pickListChange(this, '${field}')">
     ${optional ? `<option value="" ${v ? '' : 'selected'}>Let the GM choose</option>` : `<option value="" disabled ${v ? '' : 'selected'}>Choose…</option>`}
     ${list.map(x => `<option ${x === v ? 'selected' : ''}>${escapeHtml(x)}</option>`).join('')}
     ${custom ? `<option selected>${escapeHtml(v)}</option>` : ''}
     <option value="__other">Something else…</option>
-  </select>`;
+  </select>${dot}</div>`;
 }
 function pickListChange(sel, field) {
+  setTimeout(() => { const d = el(sel.id + 'Info'); if (d) d.innerHTML = field === 'race' ? raceInfoHTML(sel.value) : classInfoHTML(sel.value); }, 0);
   if (sel.value === '__other') {
     const typed = (prompt(field === 'race' ? 'Type a race or species:' : 'Type a class:') || '').trim().slice(0, 40);
     if (!typed) { sel.value = (draftChar && draftChar[field]) || ''; return; }
@@ -1045,7 +1047,7 @@ function renderStoryTab() {
 }
 function abilityGridHTML(c) {
   const abilities = [['STR', c.str], ['DEX', c.dex], ['CON', c.con], ['INT', c.int], ['WIS', c.wis], ['CHA', c.cha]];
-  return `<div class="stat-grid">${abilities.map(([k, v]) => `<div class="stat-chip"><span class="k">${k}</span><span class="v">${v ?? 10} (${fmtMod(abilityMod(v))})</span></div>`).join('')}</div>
+  return `<div class="stat-grid">${abilities.map(([k, v]) => `<div class="stat-chip"><span class="k">${k}${abilityInfoHTML(k)}</span><span class="v">${v ?? 10} (${fmtMod(abilityMod(v))})</span></div>`).join('')}</div>
     <div class="derived-row"><span><b>Passive Perception</b> ${passivePerception(c)}</span><span><b>Initiative</b> ${fmtMod(initiativeBonus(c))}</span></div>`;
 }
 function sheetMiniHTML() {
@@ -1341,6 +1343,40 @@ function infoDotPlace(dot) {
 window.infoDotPlace = infoDotPlace;
 document.addEventListener('click', e => { if (!e.target.closest || !e.target.closest('.info-dot')) document.querySelectorAll('.info-dot.open').forEach(d => d.classList.remove('open')); });
 window.infoDotTap = infoDotTap;
+// Notes for races, classes, gear, skills, abilities and conditions (public/srd-info.js).
+const SRDI = () => window.SRD_INFO || {};
+const byLength = o => Object.keys(o || {}).sort((a, b) => b.length - a.length);
+const wordIn = (k, text) => new RegExp('(^|[^a-z])' + k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '($|[^a-z])', 'i').test(text);
+function raceInfoHTML(v) { const k = toListEntry(v, SRD_RACES); const t = (SRDI().races || {})[k]; return t ? infoDotHTML(k, 'race', t) : ''; }
+function classInfoHTML(v) { const k = toListEntry(v, SRD_CLASSES); const t = (SRDI().classes || {})[k]; return t ? infoDotHTML(k, 'class', t) : ''; }
+function itemInfoHTML(item) {
+  const base = itemBase(item), I = SRDI();
+  const w = weaponOf(base);
+  if (w && I.weapons && I.weapons[w.key]) return infoDotHTML(capFirst(w.key), 'weapon', I.weapons[w.key]);
+  const a = byLength(I.armor).find(k => wordIn(k, base));
+  if (a) return infoDotHTML(capFirst(a), 'armour', I.armor[a]);
+  const sk = stackKey(item);
+  const g = byLength(I.gear).find(k => k === sk || wordIn(k, base) || wordIn(k.replace(/e?s$/, ''), base));
+  return g ? infoDotHTML(capFirst(g), 'gear', I.gear[g]) : '';
+}
+function skillInfoHTML(name) {
+  const n = String(name || '').trim().toLowerCase();
+  const k = Object.keys(SRDI().skills || {}).find(x => n === x.toLowerCase() || n.startsWith(x.toLowerCase()));
+  return k ? infoDotHTML(k, 'skill', SRDI().skills[k]) : '';
+}
+function abilityInfoHTML(abbr) { const t = (SRDI().abilities || {})[abbr]; return t ? infoDotHTML(abbr, 'ability', t) : ''; }
+// Condition words in the GM's story get a "!" on their first mention in each message.
+const CONDITION_RE = /\b(blinded|charmed|deafened|frightened|grappled|incapacitated|invisible|paralyzed|paralysed|petrified|poisoned|prone|restrained|stunned|unconscious|exhaustion)\b/gi;
+function conditionDots(html) {
+  const seen = new Set(), C = SRDI().conditions || {};
+  return html.split(/(<[^>]+>)/).map(seg => seg.startsWith('<') ? seg : seg.replace(CONDITION_RE, w => {
+    const k = w.toLowerCase();
+    if (seen.has(k) || !C[k]) return w;
+    seen.add(k);
+    return w + infoDotHTML(capFirst(k), 'condition', C[k]);
+  })).join('');
+}
+
 function spellInfoHTML(name) {
   const sp = spellInfo(name);
   const text = (window.SRD_SPELL_INFO || {})[sp ? sp.name : name];
@@ -1804,7 +1840,7 @@ function entryHTML(e) {
   let lastGm = null;
   for (let i = LOG.length - 1; i >= 0; i--) { if (LOG[i].type === 'gm') { lastGm = LOG[i]; break; } }
   const ctx = { entryId: e.id, active: !!lastGm && lastGm.id === e.id && !!ROSTER[MY_CHAR_ID] };
-  const body = e.type === 'gm' ? `<div class="md">${renderMarkdown(e.text, ctx)}</div>`
+  const body = e.type === 'gm' ? `<div class="md">${conditionDots(renderMarkdown(e.text, ctx))}</div>`
     : escapeHtml(flagged ? e.text.replace(UNLISTED_FLAG, '').trim() : e.text);
   const flag = flagged ? ` <span class="roll-flag" title="This bonus isn't on that character's sheet">${UNLISTED_FLAG}</span>` : '';
   return `<div class="entry ${cls}${voided ? ' void' : ''}" data-id="${escapeAttr(e.id)}"><div class="who">${dot}${escapeHtml(e.author)}</div><div class="text">${voided ? '<s class="void-text">' + body + '</s>' : body}${flag}${voided ? ' <span class="roll-void" title="Only your first roll of each kind counts">rolled in error — ignored</span>' : ''}</div></div>`;
@@ -2001,10 +2037,10 @@ async function callGM(prompt, fallbackEntry) {
     GM_PENDING = false;
     GM_ABORT = null;
   }
-  const { clean, attacks, heals, gives, uses, damages, notes, foesAdded, hits, mapOps, defeats, successes, rests, stables, casts, features } = entry.type === 'gm' ? extractFoeAttacks(entry.text)
-    : { clean: entry.text, attacks: [], heals: [], gives: [], uses: [], damages: [], notes: [], foesAdded: [], hits: [], mapOps: [], defeats: [], successes: [], rests: [], stables: [], casts: [], features: [] };
+  const { clean, attacks, heals, gives, uses, damages, notes, foesAdded, hits, mapOps, defeats, successes, rests, stables, casts, features, learns } = entry.type === 'gm' ? extractFoeAttacks(entry.text)
+    : { clean: entry.text, attacks: [], heals: [], gives: [], uses: [], damages: [], notes: [], foesAdded: [], hits: [], mapOps: [], defeats: [], successes: [], rests: [], stables: [], casts: [], features: [], learns: [] };
   // A message that was nothing but directives has no story text of its own to log.
-  if (clean || !(attacks.length || heals.length || gives.length || uses.length || damages.length || notes.length || foesAdded.length || hits.length || mapOps.length || defeats.length || successes.length || rests.length || stables.length || casts.length || features.length)) {
+  if (clean || !(attacks.length || heals.length || gives.length || uses.length || damages.length || notes.length || foesAdded.length || hits.length || mapOps.length || defeats.length || successes.length || rests.length || stables.length || casts.length || features.length || learns.length)) {
     entry.text = clean || entry.text;
     await dbInsertLog(ROOM, entry);
     LOG.push({ ...entry, ts: Date.now() });
@@ -2012,7 +2048,7 @@ async function callGM(prompt, fallbackEntry) {
   // Damage, healing and items change the sheet itself: save every character that changed.
   // XP is awarded before a rest, so a long rest in the same message can unlock a level-up.
   const results = [resolveMapOps(mapOps), ...casts.map(resolveCast), ...foesAdded.map(resolveFoe), ...attacks.map(resolveFoeAttack), ...hits.map(resolveHit), ...damages.map(resolveDamage), ...heals.map(resolveHeal), ...usesThenGives(uses, gives),
-    ...defeats.map(resolveDefeat), ...successes.map(resolveSuccess), ...notes.map(resolveNote), ...rests.map(k => k === 'long' ? resolveLongRest() : resolveShortRest()), ...stables.map(resolveStable), ...features.map(resolveFeature)];
+    ...defeats.map(resolveDefeat), ...successes.map(resolveSuccess), ...notes.map(resolveNote), ...rests.map(k => k === 'long' ? resolveLongRest() : resolveShortRest()), ...stables.map(resolveStable), ...features.map(resolveFeature), ...learns.map(resolveLearn)];
   for (const r of results.filter(Boolean)) {
     const { hpChar, saveAll, saveMeta, ...result } = r;
     await dbInsertLog(ROOM, result);
@@ -2996,7 +3032,7 @@ function renderMapTab() {
       cells += `<button class="${cls.join(' ')}" onclick="mapTap(${x},${y})" title="${t ? escapeAttr(t.name) + ' — ' : ''}${sq(x, y)}">${label}</button>`;
     }
   }
-  const legend = (g.tokens || []).map(t => `<span class="map-key ${t.kind === 'hero' ? 'map-hero' : t.kind === 'ally' ? 'map-ally' : 'map-foe'}">${escapeHtml(t.name.split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase())}</span> ${escapeHtml(t.name)} <span class="helptext">${sq(t.x, t.y)}${me && t !== me ? ' · ' + feetBetween(me, t) + ' ft' : ''}${t.kind !== 'hero' && findFoe(t.name) ? ' · ' + findFoe(t.name).hp + '/' + findFoe(t.name).maxhp + ' HP' : ''}</span>`).join('<br>');
+  const legend = (g.tokens || []).map(t => `<span class="map-key ${t.kind === 'hero' ? 'map-hero' : t.kind === 'ally' ? 'map-ally' : 'map-foe'}">${escapeHtml(t.name.split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase())}</span> ${escapeHtml(t.name)}${t.kind !== 'hero' ? foeInfoHTML(t.name) : ''} <span class="helptext">${sq(t.x, t.y)}${me && t !== me ? ' · ' + feetBetween(me, t) + ' ft' : ''}${t.kind !== 'hero' && findFoe(t.name) ? ' · ' + findFoe(t.name).hp + '/' + findFoe(t.name).maxhp + ' HP' : ''}</span>`).join('<br>');
   const prevScroll = el('mapScroll') ? el('mapScroll').scrollLeft : null; // keep the view still across redraws
   body.innerHTML = `
     <div class="map-wrap">
@@ -3067,6 +3103,7 @@ const HIT_DIRECTIVE = /\[\[\s*hit:([^\]]*)\]\]/gi;
 const DAMAGE_DIRECTIVE = /\[\[\s*damage:([^\]]*)\]\]/gi;
 const DEFEAT_DIRECTIVE = /\[\[\s*defeat:([^\]]*)\]\]/gi;
 const SUCCESS_DIRECTIVE = /\[\[\s*success:([^\]]*)\]\]/gi;
+const LEARN_DIRECTIVE = /\[\[\s*learn:([^\]]*)\]\]/gi;
 const FEATURE_DIRECTIVE = /\[\[\s*feature:([^\]]*)\]\]/gi;
 const CAST_DIRECTIVE = /\[\[\s*cast:([^\]]*)\]\]/gi;
 const STABLE_DIRECTIVE = /\[\[\s*stable:([^\]]*)\]\]/gi;
@@ -3087,6 +3124,7 @@ function extractFoeAttacks(text) {
   const stables = [];
   const casts = [];
   const features = [];
+  const learns = [];
   const clean = String(text).replace(FOE_DIRECTIVE, (_, body) => {
     const p = body.split('|').map(s => s.trim());
     if (p.length >= 5 && attacks.length < 4) attacks.push({ who: p[0].slice(0, 40), atk: p[1].slice(0, 40), bonus: p[2], dmg: p[3], target: p[4], ac: p[5] });
@@ -3130,6 +3168,10 @@ function extractFoeAttacks(text) {
     const p = body.split('|').map(s => s.trim());
     if (p[0] && successes.length < 4) successes.push({ target: p[0], skill: (p[1] || '').slice(0, 40), dc: p[2] || '' });
     return '';
+  }).replace(LEARN_DIRECTIVE, (_, body) => {
+    const p = body.split('|').map(x => x.trim());
+    if (p[0] && learns.length < 4) learns.push({ foe: p[0], what: p[1] || 'look' });
+    return '';
   }).replace(FEATURE_DIRECTIVE, (_, body) => {
     const p = body.split('|').map(x => x.trim());
     if (p[0] && p[1] && features.length < 4) features.push({ who: p[0], feature: p[1], amount: p[2] || '', target: p[3] || '' });
@@ -3146,7 +3188,7 @@ function extractFoeAttacks(text) {
     if (!rests.length) rests.push(kind.toLowerCase());
     return '';
   }).replace(/\n{3,}/g, '\n\n').trim();
-  return { clean, attacks, heals, gives, uses, damages, notes, foesAdded, hits, mapOps, defeats, successes, rests, stables, casts, features };
+  return { clean, attacks, heals, gives, uses, damages, notes, foesAdded, hits, mapOps, defeats, successes, rests, stables, casts, features, learns };
 }
 function findTarget(name) {
   const chars = Object.values(ROSTER);
@@ -3547,6 +3589,7 @@ Roll resolution rules — follow these exactly:
 - For any d20 check or save, the bonus in your /roll command must be one of that character's Sheet modifiers listed above, and the command should name it, e.g. "/roll +3 Dexterity" or "/roll +7 Stealth". Never add a proficiency bonus, expertise, or any other bonus that isn't on the sheet. If the right skill or tool isn't listed, use the matching ability's modifier as-is (and say that's what you're using). Weapon attack rolls use the listed "Attack (STR)" or "Attack (DEX)" modifier, e.g. "/roll +5 Attack (DEX)". Damage rolls use dice notation for the weapon or spell, e.g. "/roll 1d8+3".
 - Players never roll for monsters. For each attack a foe makes, write it in the fiction and put this directive on its own line: [[foe-attack: Goblin B | scimitar | +4 | 1d6+2 | Telilin]] (attacker | attack name | to-hit bonus from its stat block | damage dice | the target's exact character name). When an ally NPC attacks an enemy, add the enemy's AC as a sixth field, e.g. [[foe-attack: Scout | longbow | +4 | 1d8+2 | Goblin A | AC 15]]; the result tells you what happened and you track the enemy's HP. The game rolls the attack against the target's AC and the damage if it hits, and posts the result to the log; use one directive per attack (max 4). Then stop: don't say whether it hit and don't state the AC. Narrate the outcome next turn, once the result is in the log. The game subtracts the damage from the target's HP itself, so never ask players to take it off their HP. For damage that isn't a foe's attack (a trap, a fall, poison, fire, a failed save), put [[damage: <their name> | <dice or a number> | <source>]] on its own line and the game rolls it and takes it off their HP; when a successful save halves it, ask for the save first and add "| half" if they made it. Area effects roll once for everyone: list every character caught in it and mark those who made their save, e.g. [[damage: Brannoc, Sera half | 8d6 | fireball]], or use "party" for everyone at the table. Healing that reaches several characters works the same way: [[heal: Brannoc, Sera | 1d4+3 | mass healing word]]. Players can't change their own HP, so never ask them to. For any healing (a potion, a spell) put [[heal: Telilin | 2d4+2 | potion of healing]] on its own line (the character's exact name | dice or a flat number | source); the game rolls it and raises their HP up to their maximum. One per healing, max 4. A character at 0 HP is unconscious: never offer them options or actions, and never write choices for them; narrate what happens around them. Death saves belong to the game: when it's a DYING character's turn, ask that player to tap "Roll death save" (the game rolls it and counts it; its count is in the party list above, so never keep your own tally or roll it for them). Three successes leaves them stable, three failures means death, a natural 20 brings them back with 1 HP, and any healing wakes them. Damage to a character at 0 HP is a failed death save; the game counts that too. When someone stabilises a dying character, put [[stable: <their name>]] on its own line. Never use [[heal]] to stabilise a dying character: stabilising (a healer's kit, a Medicine check, spare the dying) restores no HP, it only ends their death saves, so ask the player for a Medicine check (DC 10, or a healer's kit with no roll) and narrate them stable at 0 HP. When a player's own character is doing the healing (their spell or potion), ask that player to /roll it; once that roll is in the log, put [[heal: <their name> | <that roll's total> | <source>]] with the total as a plain number, and the game adds it. Never state anyone's new HP total yourself (the game posts it), and never work HP out from older log lines: a character's current HP is only the "HP x/y (current, from the sheet)" in the party list above.
 - Spells: each caster's spells and remaining slots are in the party list above, kept by the game. A character can only cast spells on their own list. When a character casts a spell (a cantrip too), put [[cast: <their name> | <spell> | <slot level, only if cast at a higher level>]] on its own line before you narrate its effect; the game spends the slot. If the game says the spell isn't cast (not one of their spells, or no slot left), it fails: say so and let them choose something else. Never restore slots yourself: [[long-rest]] does that (warlock pact slots also come back on [[short-rest]]). Players change their spells on the Your Sheet tab, only after a long rest or when a new session begins.
+- What the party knows about foes is kept by the game: never state a foe's AC, resistances, immunities or special abilities outright. When a hero succeeds at a Perception, Insight or Investigation check made to study a foe, put [[learn: <foe> | look]] (reveals AC, speed and senses); when a hero succeeds at a knowledge check about it (Arcana, History, Nature or Religion, whichever fits; DC about 10 + its CR), put [[learn: <foe> | lore]] (reveals resistances, immunities, special traits and languages). Then describe what they notice or remember in the story.
 - Class features: each character's limited-use features (Rage, Second Wind, Action Surge, Ki points, Lay on Hands, Channel Divinity, Wild Shape, Bardic Inspiration, Sorcery points, Arcane Recovery...) and what's left are in the party list, kept by the game. When a character uses one, put [[feature: <their name> | <feature>]] on its own line before narrating it; for pools add the amount ([[feature: Aldric | Lay on Hands | 10 | Mira]] heals Mira 10; [[feature: Kai | Ki points | 1]]). Divine Smite spends a spell slot: [[feature: Aldric | Divine Smite | <slot level> | <foe>]] and the game rolls the radiant damage onto that foe. Second Wind's healing is rolled by the game. If the game says none are left, it doesn't happen. Never refill them yourself: rests do.
 - Items: each character's inventory above is what they really carry. Items "written in by the player" were typed in by the player and never given in the story: they are NOT owned. If a player tries to use one, it isn't in their pack, and say so plainly. When the story gives a character an item (found, bought, looted, handed over), put [[give: <their name> | <item>]] on its own line and the game adds it. When a character uses up a consumable (drinks a potion, reads a scroll, spends a charge item), put [[use: <their name> | <item>]] on its own line and the game removes one. Max 4 of each per message. Only consumables are ever used up: weapons, armour, shields and other gear are always recovered after a fight, so never remove them. Consumables are counted, e.g. "Crossbow bolts (18)", "Gold pieces (5)"; when some are used up (a potion drunk, rope left tying prisoners, torches burned out, rations eaten on the road, coins spent) put [[use: <their name> | <item> | <how many>]], and [[give: <their name> | <item> | <how many>]] adds them. Ranged weapon attacks: ask the player to roll that weapon's attack from the Roll from sheet menu (e.g. /roll +4 Light crossbow attack); the game spends the ammunition and gives back half of it when the fight ends, so never [[use]] ammunition yourself, and a character with none left can't shoot. Items come only from the story (found, looted, given, earned or bought), never because a player asks for one. To buy something, first [[use]] the coins; if the game says they can't pay, they don't get it; otherwise [[give]] the item.
 - Battle map: when a fight starts, lay out a map before the first attack: [[map: 12x10]] (columns A-L, rows 1-10; at most 20x20), then [[place: <name> | <square>]] for every hero and foe (add "| ally" for a friendly NPC, e.g. [[place: Woman | E5 | ally]]), and [[wall: D2-D5, H7]] for walls or heavy cover. On later turns move foes with [[place]], use [[remove: <name>]] when one flees, surrenders or is otherwise out of the fight for good (the game takes it off the map and the Foes list; it gives no XP, so use [[defeat]] instead if the party beat it), and [[end-battle]] when the fight is over. Players move their own heroes on the map, so never move a hero yourself unless the story forces it (a shove, a fall). Use the map's distances: a melee attack needs 5 ft (10 ft with reach); a ranged attack past normal range has disadvantage and can't go past long range; an area spell hits everyone within its radius of the square it's centred on. With no battle map, give each foe's distance in the Foes line, e.g. **Foes:** Goblin A 4/7 HP, 30 ft.
@@ -3790,7 +3833,7 @@ function renderSheetTab() {
   el('tabBody').innerHTML = `
     <div class="panel" style="max-width:640px;">
       <h2>${escapeHtml(c.name)}</h2>
-      <p class="rclass">${escapeHtml(c.player)} &middot; Lv${c.level} ${escapeHtml(c.race)} ${escapeHtml(c.klass)}</p>
+      <p class="rclass">${escapeHtml(c.player)} &middot; Lv${c.level} ${escapeHtml(c.race)}${raceInfoHTML(c.race)} ${escapeHtml(c.klass)}${classInfoHTML(c.klass)}</p>
       ${portraitBoxHTML(c)}
       <div class="sheet-grid">
         <div class="sheet-stat"><div class="label">HP</div><div class="val">${c.hp} / ${c.maxhp}</div>${deathSaveHTML(c)}</div>
@@ -3807,10 +3850,10 @@ function renderSheetTab() {
       <p class="helptext" style="margin:-4px 0 20px;">HP only changes through the game: damage from attacks, traps and falls; healing from potions, spells and rests.</p>
 
       <h3 style="font-size:1rem;">Skills</h3>
-      ${(c.skills || []).map(s => `<div class="item-row"><span>${escapeHtml(s.name)}</span><span style="font-family:var(--font-display);font-weight:600;color:var(--glow)">${s.mod >= 0 ? '+' : ''}${escapeHtml(String(s.mod))}</span></div>`).join('') || '<p class="helptext">None recorded.</p>'}
+      ${(c.skills || []).map(s => `<div class="item-row"><span>${escapeHtml(s.name)}${skillInfoHTML(s.name)}</span><span style="font-family:var(--font-display);font-weight:600;color:var(--glow)">${s.mod >= 0 ? '+' : ''}${escapeHtml(String(s.mod))}</span></div>`).join('') || '<p class="helptext">None recorded.</p>'}
 
       <h3 style="font-size:1rem;margin-top:20px;">Inventory</h3>
-      ${(() => { const f = handFlags(c); return (c.inventory || []).map((it, i) => `<div class="item-row"><span>${escapeHtml(it)}${f[i] ? ' <span class="hand-item" title="You typed this in. The GM only counts items the story gave you.">(added by you)</span>' : ''}</span><button class="small-x" onclick="removeItem(${i})">&times;</button></div>`).join(''); })() || '<p class="helptext">Empty-handed.</p>'}
+      ${(() => { const f = handFlags(c); return (c.inventory || []).map((it, i) => `<div class="item-row"><span>${escapeHtml(it)}${f[i] ? '' : itemInfoHTML(it)}${f[i] ? ' <span class="hand-item" title="You typed this in. The GM only counts items the story gave you.">(added by you)</span>' : ''}</span><button class="small-x" onclick="removeItem(${i})">&times;</button></div>`).join(''); })() || '<p class="helptext">Empty-handed.</p>'}
       <p class="helptext">Items the story gives you are added for you. Anything you type in here is marked <i>added by you</i>, and the GM won't count it.</p>
       <div class="skill-row" style="margin-top:10px;">
         <input type="text" id="newItem" placeholder="Add item..." value="${escapeAttr(newItemDraft)}" oninput="setNewItemDraft(this.value)">
@@ -4397,6 +4440,39 @@ function levelUpGain(c) { return Math.max(1, hitDieFor(c.klass) / 2 + 1 + abilit
      foes marked half, as for a made save). No roll in the log, no damage. Players always roll their own damage.
    - NPC allies' attacks ([[foe-attack]] with an AC) are rolled by the game and come off tracked foes too.
    - At 0 HP a foe is defeated: XP is awarded and it leaves the map. */
+// Foe notes come in tiers (public/srd-foes.js): anyone sees its size and type; [[learn: <foe> | look]]
+// after a Perception/Insight/Investigation check shows AC, speed and senses; [[learn: <foe> | lore]] after
+// a knowledge check shows resistances, immunities, special traits and languages. Knowledge is per kind of
+// creature (META.foeKnowledge), so studying one goblin teaches the party about goblins.
+function foeData(name) {
+  const t = window.SRD_FOES || {};
+  const n = creatureBase(name);
+  return t[n] || t[n.replace(/s$/, '')] || t[n.replace(/es$/, '')] || null;
+}
+function foeKnown(name) { const d = foeData(name); return d ? ((META && META.foeKnowledge) || {})[d.n.toLowerCase()] || '' : ''; }
+function foeInfoHTML(name) {
+  const d = foeData(name);
+  if (!d) return '';
+  const k = foeKnown(name);
+  const parts = [d.see + '.'];
+  if (k === 'look' || k === 'lore') parts.push('Studied: ' + d.look + '.');
+  if (k === 'lore') parts.push('Known: ' + (d.lore || 'nothing unusual about it') + '.');
+  if (k !== 'lore') parts.push(k ? 'A knowledge check (Arcana, History, Nature or Religion) could tell you more.' : 'Study it (Perception, Insight) or recall what you know (Arcana, History, Nature, Religion) to learn more.');
+  return infoDotHTML(d.n, k === 'lore' ? 'known' : k === 'look' ? 'studied' : 'unknown', parts.join(' '));
+}
+// [[learn: Goblin A | look]] / [[learn: Goblin A | lore]]
+function resolveLearn(x) {
+  const d = foeData(x.foe);
+  const what = /lore|know|recall|arcana|history|nature|religion/i.test(x.what || '') ? 'lore' : 'look';
+  if (!d) return sysEntry(`🔎 ${x.foe} isn't in the creature records; the GM describes what you learn.`);
+  META.foeKnowledge = { ...(META.foeKnowledge || {}) };
+  const key = d.n.toLowerCase(), had = META.foeKnowledge[key] || '';
+  if (had === 'lore' || had === what) return sysEntry(`🔎 The party already knows that about ${d.n.toLowerCase()}s.`);
+  META.foeKnowledge[key] = what === 'lore' ? 'lore' : (had || 'look');
+  const text = what === 'lore' ? `What the party knows about ${d.n.toLowerCase()}s: ${d.lore || 'nothing unusual'}.` : `Studying the ${d.n.toLowerCase()}: ${d.look}.`;
+  return sysEntry(`🔎 ${text} (Tap the ! by its name on the battle map.)`, { saveMeta: true });
+}
+
 function creatureBase(name) {
   return String(name || '').toLowerCase().replace(/\s*\([^)]*\)\s*/g, ' ').trim().replace(/^(the|a|an)\s+/, '').replace(/\s+(#?\d+|[a-z])$/, '').trim();
 }

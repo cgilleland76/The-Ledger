@@ -505,3 +505,7 @@ button.spell-chip:hover{ background:rgba(217,180,90,0.35); }
 .info-pop b{ color:#ffd98a; }
 .info-dot:hover .info-pop, .info-dot:focus .info-pop, .info-dot.open .info-pop{ display:block; }
 @media (hover: none){ .info-dot:hover .info-pop, .info-dot:focus .info-pop{ display:none; } .info-dot.open .info-pop{ display:block; } }
+
+.pick-row{ display:flex; align-items:center; gap:6px; }
+.pick-row select{ flex:1; min-width:0; }
+.pick-info:empty{ display:none; }

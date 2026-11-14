@@ -9,8 +9,8 @@ window.LEDGER_CHANGELOG = [
   {
     date: "2026-11-14",
     type: "feature",
-    title: "What does this spell do?",
-    detail: "Every spell and class feature now has a small ! next to it. Hover over it (or tap it on a phone) for a short note: how long it takes to cast, its range and what it does."
+    title: "What does this do? Tap the !",
+    detail: "Spells, class features, races and classes (when you make a character), weapons, armour and gear, skills, ability scores and conditions like prone or frightened now have a small ! next to them. Hover over it, or tap it on a phone, for a short note. Foes on the battle map have one too: it starts with just what you can see, and a good Perception or knowledge check reveals more."
   },
   {
     date: "2026-11-14",
