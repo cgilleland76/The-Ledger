@@ -1,7 +1,7 @@
 // netlify/functions/wallet.js
 //
 // POST /api/wallet  { playerId, action: "balance" | "redeem" }
-//   balance -> { enforced, free_left, paid, free_per_month, costs }
+//   balance -> { enforced, free_left (free story turns left today), paid, free_per_day, costs }
 //   redeem  -> checks RevenueCat for Google Play purchases not yet credited, adds them,
 //              then returns the same shape plus { added }.
 // The app calls "redeem" right after a purchase and on every launch (to catch any
@@ -15,22 +15,23 @@ exports.handler = async function (event) {
   if (event.httpMethod === "OPTIONS") return { statusCode: 200, headers, body: "" };
   if (event.httpMethod !== "POST") return { statusCode: 405, headers, body: "Method Not Allowed" };
 
-  let playerId, action;
+  let playerId, action, tz;
   try {
     const body = JSON.parse(event.body || "{}");
     playerId = body.playerId;
+    tz = body.tz;
     action = body.action === "redeem" ? "redeem" : "balance";
   } catch (e) {
     return { statusCode: 400, headers, body: JSON.stringify({ error: "Invalid JSON body." }) };
   }
 
-  const base = { enforced: billing.enforced(), free_per_month: billing.freePerMonth(), costs: billing.COSTS };
+  const base = { enforced: billing.enforced(), free_per_day: billing.freePerDay(), costs: billing.COSTS };
   if (!billing.enforced()) return { statusCode: 200, headers, body: JSON.stringify({ ...base, added: 0 }) };
   if (!billing.validPlayer(playerId)) return { statusCode: 400, headers, body: JSON.stringify({ error: "Invalid player id." }) };
 
   try {
     const added = action === "redeem" ? await billing.redeem(playerId) : 0;
-    const bal = await billing.balance(playerId);
+    const bal = await billing.balance(playerId, tz);
     return { statusCode: 200, headers, body: JSON.stringify({ ...base, ...bal, added }) };
   } catch (e) {
     console.error("wallet error:", e.message);

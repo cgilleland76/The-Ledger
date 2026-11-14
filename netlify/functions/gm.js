@@ -9,6 +9,7 @@
 const { roomExists, corsHeaders } = require("./lib/shared");
 const { PLAYBOOK, statBlocksFor } = require("./lib/gm-knowledge");
 const billing = require("./lib/billing");
+const SETUP_MAX = () => parseInt(process.env.SETUP_MAX_PER_ROOM, 10) || 12;
 
 exports.handler = async function (event) {
   const headers = corsHeaders(event);
@@ -29,13 +30,14 @@ exports.handler = async function (event) {
     };
   }
 
-  let prompt, roomCode, kind, lore, playerId;
+  let prompt, roomCode, kind, lore, playerId, tz;
   try {
     const body = JSON.parse(event.body || "{}");
     prompt = body.prompt;
     roomCode = body.roomCode;
     playerId = body.playerId;
-    kind = body.kind === "story" ? "story" : "";
+    tz = body.tz;
+    kind = body.kind === "story" ? "story" : body.kind === "setup" ? "setup" : "";
     lore = typeof body.lore === "string" ? body.lore.slice(-6000) : "";
     if (!prompt || typeof prompt !== "string") {
       return { statusCode: 400, headers, body: JSON.stringify({ error: "That request couldn't be read.", reason: "bad_request" }) };
@@ -48,10 +50,20 @@ exports.handler = async function (event) {
     return { statusCode: 403, headers, body: JSON.stringify({ error: "That table isn't in the ledger.", reason: "room" }) };
   }
 
-  // Paywall: spend 1 ink before calling Claude (given back below if the call fails).
+  // Setup requests (story title/tone, Generate Character, filling a character's blanks) are free, but
+  // each table gets SETUP_MAX_PER_ROOM of them (supabase/setup-cap.sql) and short answers only.
+  if (kind === "setup") {
+    if (prompt.length > 6000) return { statusCode: 400, headers, body: JSON.stringify({ error: "That request couldn't be read.", reason: "bad_request" }) };
+    let allowed = true;
+    try { allowed = (await billing.sbAdmin("rpc/use_setup", { method: "POST", body: { p_room: roomCode, p_max: SETUP_MAX() } })) === true; }
+    catch (e) { console.warn("gm: setup cap unavailable, allowing:", e.message); } // setup-cap.sql not run yet
+    if (!allowed) return { statusCode: 429, headers, body: JSON.stringify({ error: "The GM has done all the setup it can for this table. Fill in the rest yourself.", reason: "setup_limit" }) };
+  }
+
+  // Paywall: spend 1 ink before calling Claude (given back below if the call fails). Setup is free.
   let charge;
   try {
-    charge = await billing.spend(playerId, "gm");
+    charge = kind === "setup" ? { ok: true, skipped: true } : await billing.spend(playerId, "gm", tz);
   } catch (e) {
     console.error("billing spend failed:", e.message);
     return { statusCode: 503, headers, body: JSON.stringify({ error: "The ink ledger is unavailable right now. Try again in a minute." }) };
@@ -67,7 +79,7 @@ exports.handler = async function (event) {
 
   // Story turns get the GM playbook (cached between calls) and stat blocks for any SRD
   // monsters named in the recent log. Other uses of this endpoint (character generation) don't.
-  const payload = { model: "claude-sonnet-4-6", max_tokens: 1000, messages: [{ role: "user", content: prompt }] };
+  const payload = { model: "claude-sonnet-4-6", max_tokens: kind === "setup" ? 700 : 1000, messages: [{ role: "user", content: prompt }] };
   if (kind === "story") {
     payload.max_tokens = 1200;
     payload.system = [{ type: "text", text: PLAYBOOK, cache_control: { type: "ephemeral" } }];

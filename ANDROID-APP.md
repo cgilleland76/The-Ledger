@@ -1,12 +1,12 @@
 # The Ledger: Android app + ink paywall
 
 The Android app is the same site, bundled with Capacitor. GM replies and portraits cost **ink**.
-Everyone gets free ink each month; more is sold on Google Play in packs. RevenueCat confirms each purchase,
+The story is free to play: everyone gets free story turns every day (refilled at their own midnight). Ink, sold on Google Play in packs, pays for extras (AI portraits, painted scenes) and for story turns past the daily allowance. RevenueCat confirms each purchase,
 and the server keeps every balance, so nobody can get ink by editing the app.
 
 | What | Ink | Where to change it |
 |---|---|---|
-| Free ink per month (refills on the 1st, UTC) | 40 | `FREE_INK_PER_MONTH` env var |
+| Free story turns per day (refill at the player's midnight; needs `supabase/billing-daily.sql`) | 30 | `FREE_STORY_TURNS_PER_DAY` env var |
 | GM reply (story turn or character generation) | 1 | `COSTS` in `netlify/functions/lib/billing.js` |
 | Character portrait | 8 | same |
 | Packs | 150 / 500 / 1200 | `PACKS` in `billing.js` (IDs must match Play Console) |
@@ -27,7 +27,7 @@ the website to use ink they bought in the app.
    - `SUPABASE_SERVICE_ROLE_KEY`: Supabase → Project Settings → API keys → **secret** key. Never put it in `public/`.
    - `REVENUECAT_SECRET_KEY`: from step 3 below (`sk_...`).
    - `BILLING_ENFORCED` = `true`. **Set this last.** Until you do, everything stays free, exactly as it is now.
-3. Deploy. The website then shows an ink badge in the game header. Web players get the free monthly ink,
+3. Deploy. The website then shows an ink badge in the game header. Web players get the free daily story turns,
    and the shop points them to the Android app.
 
 ## 2. Google Play Console

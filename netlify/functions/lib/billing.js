@@ -7,14 +7,20 @@
 //   BILLING_ENFORCED            "true" turns charging on. Unset/anything else = everything free (old behaviour).
 //   SUPABASE_SERVICE_ROLE_KEY   secret key from Supabase > Project Settings > API keys. Server only, never in public/.
 //   REVENUECAT_SECRET_KEY       RevenueCat > Project settings > API keys > secret key (sk_...). Server only.
-//   FREE_INK_PER_MONTH          optional, default below.
+//   FREE_STORY_TURNS_PER_DAY    optional, free GM story turns per day (default 30). They refill at the
+//                               player's own midnight (supabase/billing-daily.sql).
+//   FREE_INK_PER_MONTH          old monthly allowance, used only until billing-daily.sql has been run.
 //   ALLOW_SANDBOX_PURCHASES     optional, "false" ignores Google Play test purchases (default: they count,
 //                               so your license testers can try the shop; only accounts you list can make them).
 
 const { SUPABASE_URL } = require("./shared");
 
+// The story is free to play: GM replies come out of a daily free allowance, then 1 bought ink each.
+// Extras (portraits, AI scenes) are paid with bought ink only.
 const COSTS = { gm: 1, portrait: 8, scene: 10 }; // ink per GM reply / portrait / AI scene background
+const EXTRAS = new Set(["portrait", "scene"]);
 const DEFAULT_FREE_PER_MONTH = 40;
+const DEFAULT_FREE_PER_DAY = 30;
 
 // Must match the in-app product IDs created in Google Play Console (and attached in RevenueCat).
 const PACKS = {
@@ -30,6 +36,15 @@ const freePerMonth = () => {
   const n = parseInt(process.env.FREE_INK_PER_MONTH, 10);
   return Number.isFinite(n) && n >= 0 ? n : DEFAULT_FREE_PER_MONTH;
 };
+const freePerDay = () => {
+  const n = parseInt(process.env.FREE_STORY_TURNS_PER_DAY, 10);
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_FREE_PER_DAY;
+};
+// The player's local date. tz is the browser's getTimezoneOffset() in minutes (UTC minus local).
+function todayFor(tz) {
+  const off = Math.max(-840, Math.min(840, parseInt(tz, 10) || 0));
+  return new Date(Date.now() - off * 60000).toISOString().slice(0, 10);
+}
 const validPlayer = (id) => typeof id === "string" && PLAYER_ID_RE.test(id);
 
 // PostgREST call with the service-role (secret) key.
@@ -53,29 +68,36 @@ const rpc = (fn, args) => sbAdmin(`rpc/${fn}`, { method: "POST", body: args });
 
 // Spends ink for an action. Returns { ok, free_left, paid, from_free, from_paid }.
 // When billing is off it always succeeds without touching the database.
-async function spend(playerId, kind) {
+// Daily rules need supabase/billing-daily.sql; until it's run, the old monthly allowance applies.
+async function spend(playerId, kind, tz) {
   if (!enforced()) return { ok: true, skipped: true };
   if (!validPlayer(playerId)) return { ok: false, free_left: 0, paid: 0, invalid: true };
-  return rpc("spend_credits", { p_player: playerId, p_cost: COSTS[kind], p_free_monthly: freePerMonth() });
+  try {
+    const r = await rpc("spend_credits_daily", { p_player: playerId, p_cost: COSTS[kind], p_free_daily: freePerDay(), p_today: todayFor(tz), p_use_free: !EXTRAS.has(kind) });
+    return { ...r, daily: true };
+  } catch (e) {
+    if (!/\((404|400)\)/.test(e.message)) throw e;
+    return rpc("spend_credits", { p_player: playerId, p_cost: COSTS[kind], p_free_monthly: EXTRAS.has(kind) ? 0 : freePerMonth() });
+  }
 }
 
 async function refund(playerId, charge) {
   if (!charge || charge.skipped || !charge.ok) return;
   if (!charge.from_free && !charge.from_paid) return;
   try {
-    await rpc("refund_credits", { p_player: playerId, p_from_free: charge.from_free || 0, p_from_paid: charge.from_paid || 0 });
+    await rpc(charge.daily ? "refund_credits_daily" : "refund_credits", { p_player: playerId, p_from_free: charge.from_free || 0, p_from_paid: charge.from_paid || 0 });
   } catch (e) { /* best effort */ }
 }
 
-async function balance(playerId) {
-  const free = freePerMonth();
+async function balance(playerId, tz) {
+  const free = freePerDay();
   if (!validPlayer(playerId)) return { free_left: free, paid: 0 };
   const rows = await sbAdmin(`wallets?player_id=eq.${encodeURIComponent(playerId)}&select=free_period,free_used,paid_balance`);
   const w = rows && rows[0];
   if (!w) return { free_left: free, paid: 0 };
-  const cur = new Date().toISOString().slice(0, 7);
-  const used = w.free_period === cur ? w.free_used : 0;
-  return { free_left: Math.max(free - used, 0), paid: w.paid_balance };
+  const today = todayFor(tz);
+  const sameDay = /^\d{4}-\d{2}-\d{2}$/.test(w.free_period || "") && w.free_period >= today;
+  return { free_left: Math.max(free - (sameDay ? w.free_used : 0), 0), paid: w.paid_balance };
 }
 
 // Asks RevenueCat which one-time purchases this player has made, and credits any
@@ -109,8 +131,8 @@ async function redeem(playerId) {
 }
 
 const outOfInkMessage = (kind) =>
-  kind === "portrait"
-    ? `Not enough ink for a portrait (it costs ${COSTS.portrait}).`
-    : "You're out of ink for this month.";
+  kind === "portrait" ? `AI portraits are an extra: they cost ${COSTS.portrait} ink. You can still upload your own picture for free.`
+    : kind === "scene" ? `Painted scenes are an extra: they cost ${COSTS.scene} ink. You can still upload your own picture for free.`
+    : `That's today's ${freePerDay()} free story turns. Pause here and pick the story back up after midnight, or use ink to keep going now.`;
 
-module.exports = { COSTS, PACKS, enforced, freePerMonth, validPlayer, spend, refund, balance, redeem, outOfInkMessage, sbAdmin };
+module.exports = { COSTS, PACKS, enforced, freePerMonth, freePerDay, validPlayer, spend, refund, balance, redeem, outOfInkMessage, sbAdmin };

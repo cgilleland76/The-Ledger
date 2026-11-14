@@ -31,7 +31,9 @@ Work from either Claude session starts here.
 - Class features (SRD 5.1, `featuresOf` in app.js): limited uses on the card (`c.featureUsed`), `[[feature: name | feature | amount | target]]` spends them (Second Wind and Lay on Hands heal, Divine Smite spends a slot and damages a foe, Arcane Recovery during a short rest), short/long rests refill. Roll menu: Sneak Attack, unarmed strike, Bardic Inspiration die.
 - Gear: consumables are counted stacks ("Crossbow bolts (20)", "Gold pieces (5)", "Rations (2)"); non-consumable gear is never removed. Weapon attacks from Roll from sheet spend ammo; half is recovered at [[end-battle]] or the next rest. `[[use]]`/`[[give]]` take amounts; a failed payment blocks items given in the same message.
 - Character creation: race and class pick-lists (9 SRD races, 12 classes, "Let the GM choose", "Something else…" for custom); the AI builder picks from the lists.
+- Setup requests are free (`/api/gm` with kind "setup": story title/tone fill, Generate Character, filling a character's blanks): no ink, max 700 tokens, capped per table by `supabase/setup-cap.sql` (`use_setup`, `SETUP_MAX_PER_ROOM`, default 12). Allowed uncapped until that SQL is run.
 - Upload your own portrait on the Sheet tab (cropped to 640px square in the browser, stored in the `portraits` bucket, no ink).
+- Free to play: GM story turns come from a daily free allowance (`FREE_STORY_TURNS_PER_DAY`, default 30, refilled at the player's local midnight from the `tz` the app sends; the day only moves forward), then 1 bought ink each. Extras (portraits 8, AI scenes 10) use bought ink only. Needs `supabase/billing-daily.sql`; until then the old monthly rule applies.
 - Ink paywall is deployed but OFF (`BILLING_ENFORCED` unset). `billing.sql` and `tags-phase2.sql` have been run; `SUPABASE_SERVICE_ROLE_KEY` is set in Netlify. Google Play / RevenueCat (steps 7–10 in `ANDROID-APP.md`) are on hold until the owner is ready.
 
 ## Rules to keep

@@ -9,8 +9,14 @@ window.LEDGER_CHANGELOG = [
   {
     date: "2026-11-14",
     type: "feature",
+    title: "The story is free to play",
+    detail: "Everyone gets 30 free story turns a day, refilled at your own midnight. Run out? Pause and pick it up tomorrow, or use ink to keep going. Ink is now for extras: AI-painted portraits and scenes. Setting up stories and characters, uploading your own pictures, maps, spells and everything else stay free."
+  },
+  {
+    date: "2026-11-14",
+    type: "feature",
     title: "Leave anything blank and the GM fills it in",
-    detail: "On character creation, whatever you leave blank (name, race, class, looks, backstory, skills, gear or ability scores) is filled in by the GM when you begin, built around what you did choose."
+    detail: "When you start a story, a blank title or genre is chosen by the GM (and the tone then stays the same all story). On character creation, whatever you leave blank (name, race, class, looks, backstory, skills, gear or ability scores) is filled in by the GM, built around what you did choose. Setting up stories and characters never costs ink."
   },
   {
     date: "2026-11-14",

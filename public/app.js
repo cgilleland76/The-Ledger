@@ -383,7 +383,7 @@ function renderCreate() {
       <h2>${MODE === 'solo' ? 'Play Solo' : 'Break Ground'}</h2>
 
       <div class="field">
-        <label>${MODE === 'solo' ? 'Story Title' : 'Campaign Name'}</label>
+        <label>${MODE === 'solo' ? 'Story Title' : 'Campaign Name'} (leave blank and the GM names it)</label>
         <input type="text" id="cname" placeholder="e.g. The Last Tide, Ashwood Reach, Nine of Cups..." value="${escapeAttr(createDraft.name)}" oninput="setCreateName(this.value)">
       </div>
 
@@ -404,7 +404,7 @@ function renderCreate() {
       </div>
 
       <div class="field">
-        <label>Genre / Tone</label>
+        <label>Genre / Tone (leave blank and the GM picks one)</label>
         <input type="text" id="tone" placeholder="e.g. dark survival horror, swashbuckling heist, cozy village mystery..." value="${escapeAttr(createDraft.tone)}" oninput="setCreateTone(this.value)">
       </div>
 
@@ -434,10 +434,12 @@ async function submitCreate() {
   if (CREATE_PENDING) return; // guards against a double-click firing two inserts
   CREATE_PENDING = true;
   try {
-    createDraft.name = el('cname').value.trim() || (MODE === 'solo' ? 'Untitled Story' : 'Untitled Campaign');
+    const typedName = el('cname').value.trim();
+    createDraft.name = typedName || (MODE === 'solo' ? 'Untitled Story' : 'Untitled Campaign');
     createDraft.ruleset = el('ruleset').value;
     createDraft.tone = el('tone').value.trim();
     if (createDraft.seedMode === 'custom') createDraft.seed = el('seed').value.trim();
+    if (createDraft.seedMode === 'custom' && !createDraft.seed) createDraft.seedMode = 'blank'; // an empty premise: the GM invents one
 
     const code = roomCode();
     META = {
@@ -466,11 +468,34 @@ async function submitCreate() {
       await dbEvictOldestRoomIfAtCapacity();
       await dbInsertRoom(code, MODE, META);
     }
+    if (!typedName || !META.tone) {
+      const btn = document.querySelector('button[onclick="submitCreate()"]');
+      if (btn) { btn.disabled = true; btn.textContent = `The GM is ${!typedName ? 'naming your ' + (MODE === 'solo' ? 'story' : 'campaign') : 'setting the tone'}…`; }
+      try {
+        await fillStoryBlanks(!typedName, !META.tone);
+        await dbUpdateRoomMeta(ROOM, META);
+        TABLES = null;
+      } catch (e) { console.error(e); } // the defaults stand: "Untitled Story", and the GM picks a tone as it goes
+    }
     VIEW = 'charsetup';
     render();
   } finally {
     CREATE_PENDING = false;
   }
+}
+
+// A blank title or tone is chosen once by the GM at creation (so every later turn uses the same tone).
+async function fillStoryBlanks(needName, needTone) {
+  const ask = [needName && '"name"', needTone && '"tone"'].filter(Boolean).join(' and ');
+  const prompt = `A new tabletop ${MODE === 'solo' ? 'solo story' : 'campaign'} is starting. Ruleset: ${META.ruleset}. Length: ${lengthLabel[META.length] || META.length}.
+${META.tone ? `Genre/tone chosen by the player: ${META.tone}.` : 'The player left the genre and tone to you: choose something fresh and interesting, not generic fantasy unless it fits.'}
+${!needName ? `Its title, chosen by the player: ${META.name}.` : ''}
+${META.seedMode === 'custom' && META.seed ? `The player's opening premise: ${META.seed}` : ''}
+Respond with ONLY a single JSON object, no markdown, containing ${ask}. "name": an evocative, original title of 2 to 5 words (never "Untitled"); "tone": a short genre and tone phrase, e.g. "grim frontier survival" or "cozy village mystery".`;
+  const p = parseCharacterJSON(await fetchGM(prompt, undefined, 'setup'));
+  const clean = v => String(v || '').replace(/["\n]/g, '').trim();
+  if (needName && clean(p.name) && !/^untitled/i.test(clean(p.name))) META.name = clean(p.name).slice(0, 60);
+  if (needTone && clean(p.tone)) META.tone = clean(p.tone).slice(0, 120);
 }
 
 /* ---------------- JOIN (group mode only) ---------------- */
@@ -728,7 +753,7 @@ Fill in ONLY these fields: ${blank.join(', ')}.
 ${blank.includes('race') ? `"race" must be exactly one of: ${SRD_RACES.join(', ')}.` : ''}
 ${blank.includes('klass') ? `"klass" must be exactly one of: ${SRD_CLASSES.join(', ')}.` : ''}
 Respond with ONLY a single JSON object containing just those fields, no markdown code fences, no commentary. Field shapes: "name": a fitting character name; "gender": string; "age": string, e.g. "34"; "appearance": one or two sentences on how they look; "notes": a one or two sentence backstory hook; "skills": [{"name":"string","mod":0}], 3-5 class-appropriate skills with modifiers that match the ability scores; "inventory": ["string"], 4-8 starting items fitting the class and tone, giving counts for ammunition and coins (e.g. "Light crossbow with 20 bolts", "10 gold pieces"); "str".."cha": numbers using the standard array 15/14/13/12/10/8 fitted to the class; "maxhp": the class hit die plus the CON modifier for a level 1 character; "ac": a number fitting the starting armour.`;
-  const p = parseCharacterJSON(await fetchGM(prompt));
+  const p = parseCharacterJSON(await fetchGM(prompt, undefined, 'setup'));
   const num = (v, lo, hi) => { const n = parseInt(v); return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : null; };
   for (const k of blank) {
     const v = p[k];
@@ -771,7 +796,7 @@ Respond with ONLY a single JSON object, no markdown code fences, no commentary, 
 Use sensible 5e-appropriate ability scores for the class (e.g. the standard array 15/14/13/12/10/8 assigned to fit the class), a reasonable starting HP and AC for a level 1 character, 3-5 class-appropriate skills with realistic modifiers, and 4-8 pieces of starting gear specifically appropriate to that class and the campaign's tone — not generic fantasy-adventurer gear unless the tone calls for it.`;
 
   try {
-    const text = await fetchGM(prompt, CHARGEN_ABORT.signal);
+    const text = await fetchGM(prompt, CHARGEN_ABORT.signal, 'setup');
     const parsed = parseCharacterJSON(text);
     draftChar = {
       ...draftChar,
@@ -1891,6 +1916,7 @@ const GM_TROUBLE = [
 function friendlyTrouble(e) {
   if (e && e.name === 'TypeError') return "The road to the Game Master is washed out. Check your connection, then try again.";
   if (e && e.reason === 'room') return "The Game Master can't find this table in the ledger. Reopen the story with its code and try again.";
+  if (e && e.reason === 'setup_limit') return e.message;
   return GM_TROUBLE[Math.floor(Math.random() * GM_TROUBLE.length)];
 }
 
@@ -1900,7 +1926,7 @@ async function fetchGM(prompt, signal, kind, lore) {
   const resp = await fetch(api('/api/gm'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt, roomCode: ROOM, kind, lore, playerId: playerId() }),
+    body: JSON.stringify({ prompt, roomCode: ROOM, kind, lore, playerId: playerId(), tz: new Date().getTimezoneOffset() }),
     signal,
   });
   let data = {};
@@ -2361,7 +2387,7 @@ function renderAccount() {
     body = `<h2>Move this device's things into your account?</h2>
       <p class="helptext">This device has things on its own ink key that aren't in your account yet:</p>
       <ul class="helptext"><li>${d.ink || 0} bought ink</li><li>${d.minis || 0} hero mini${d.minis === 1 ? '' : 's'}</li><li>${d.tables || 0} table${d.tables === 1 ? '' : 's'} you host</li></ul>
-      <p class="helptext">Moving them is a one-time step. Free monthly ink isn't moved.</p>
+      <p class="helptext">Moving them is a one-time step. Free daily story turns aren't moved.</p>
       <button class="btn solid wide" ${ACCT.busy ? 'disabled' : ''} onclick="mergeYes()">Move them into my account</button>
       <button class="btn wide" style="margin-top:8px;" ${ACCT.busy ? 'disabled' : ''} onclick="mergeNo()">Leave them on this device's old key</button>`;
   } else if (signedIn()) {
@@ -3873,17 +3899,20 @@ window.copyInkKey = copyInkKey;
 window.useInkKey = useInkKey;
 
 /* ---------------- Ink: balance, shop, Google Play purchases ---------------- */
-let WALLET = null; // { enforced, free_left, paid, free_per_month, costs } from /api/wallet
+let WALLET = null; // { enforced, free_left (free story turns today), paid, free_per_day, costs } from /api/wallet
 let SHOP_REASON = '';
 let SHOP_PACKAGES = null; // RevenueCat packages, once loaded
 let SHOP_STATUS = '';
 let SHOP_BUSY = false;
 let purchasesReady = null;
 
+// The story is free: free_left is today's free story turns (refilled at midnight); paid is bought ink,
+// which pays for story turns past that and for extras (portraits, painted scenes).
 function inkTotal() { return WALLET ? (WALLET.free_left || 0) + (WALLET.paid || 0) : 0; }
+const inkBadgeText = () => `&#x1F58B; ${(WALLET && WALLET.free_left) || 0} free &middot; ${(WALLET && WALLET.paid) || 0} ink`;
 function inkBadgeHTML() {
   if (!WALLET || !WALLET.enforced) return '';
-  return `<button class="badge ink-badge" onclick="openShop()" title="Your ink: GM replies and portraits use it">&#x1F58B; ${inkTotal()} ink</button>`;
+  return `<button class="badge ink-badge" onclick="openShop()" title="Free story turns left today, and your bought ink">${inkBadgeText()}</button>`;
 }
 function inkCostLabel(kind) {
   const cost = WALLET && WALLET.enforced && WALLET.costs ? WALLET.costs[kind] : 0;
@@ -3891,14 +3920,14 @@ function inkCostLabel(kind) {
 }
 function setWallet(w) {
   WALLET = { ...(WALLET || { enforced: true }), ...w };
-  document.querySelectorAll('.ink-badge').forEach(b => { b.innerHTML = `&#x1F58B; ${inkTotal()} ink`; });
+  document.querySelectorAll('.ink-badge').forEach(b => { b.innerHTML = inkBadgeText(); });
   if (el('shopOverlay')) renderShop();
 }
 async function refreshWallet(action) {
   const resp = await fetch(api('/api/wallet'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ playerId: playerId(), action: action === 'redeem' ? 'redeem' : 'balance' }),
+    body: JSON.stringify({ playerId: playerId(), action: action === 'redeem' ? 'redeem' : 'balance', tz: new Date().getTimezoneOffset() }),
   });
   const data = await resp.json();
   if (!resp.ok || data.error) throw new Error(data.error || `Request failed (${resp.status})`);
@@ -3981,9 +4010,9 @@ function renderShop() {
     <div class="dice-card shop-card" role="dialog" aria-label="Ink pot">
       <div class="dice-title">The Ink Pot</div>
       ${SHOP_REASON ? `<p class="error-text">${escapeHtml(SHOP_REASON)}</p>` : ''}
-      <div class="shop-balance">${inkTotal()} <span>ink</span></div>
-      <p class="helptext">${w.free_left || 0} free ink left this month (of ${w.free_per_month || 0}; it refills on the 1st) &middot; ${w.paid || 0} bought ink, which never expires.</p>
-      <p class="helptext">A Game Master reply costs ${costs.gm} ink. A character portrait costs ${costs.portrait}. Rolls, sheets and the story log are always free.</p>
+      <div class="shop-balance">${w.paid || 0} <span>ink</span></div>
+      <p class="helptext"><b>The story is free.</b> You get ${w.free_per_day || 30} free story turns a day (${w.free_left || 0} left today); they refill at midnight. Out of free turns? Pause and come back tomorrow, or use ink: ${costs.gm} per turn.</p>
+      <p class="helptext">Ink is for extras: an AI-painted portrait costs ${costs.portrait}, a painted scene ${costs.scene || 10}. Uploading your own pictures, rolls, sheets, maps and everything else are always free. Bought ink never expires.</p>
       <div class="shop-packs">${store}</div>
       ${SHOP_STATUS ? `<p class="helptext shop-status">${escapeHtml(SHOP_STATUS)}</p>` : ''}
       ${accountNudgeHTML()}
