@@ -295,6 +295,10 @@ window.LEDGER_ROADMAP = [
   },
   {
     title: "Tap-to-play mini kits",
-    detail: "Tapping a mini already works. Next: printed kits of blank hero minis you can forge your own hero onto, with monsters and loot coins."
+    detail: "Tapping a mini already works. Next: printed starter kits with blank hero minis you forge your own heroes onto, plus single-use loot coins and treasure chests."
+  },
+  {
+    title: "Shops and trading",
+    detail: "A Store tab that opens only in town or during a long rest, where each hero buys and sells armour, weapons, potions and gear with their own coin. Heroes will also be able to trade items with each other."
   },
 ];

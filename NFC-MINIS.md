@@ -77,7 +77,7 @@ Columns to add when building this: `owner text`, `status text default 'active'`,
 
 ## Blank minis, claim codes and the register (built 2026-11-13)
 - **Making a batch:** `node scripts/make-blank-minis.js KIT1 20` writes `kits/KIT1.sql` (run once in Supabase) and `kits/KIT1.csv` (serial, sticker link, claim code). `kits/` is git-ignored; the CSV is the only copy of the codes. The database keeps only `sha256("claim:" + code)`.
-- **Loot coins:** `node scripts/make-loot-coins.js LOOT1` writes `kits/LOOT1.sql` and `kits/LOOT1.csv` (serial, sticker link, item) for the standard 12-coin pack (potions, gold, silver, antitoxin, healer's kit, alchemist's fire, holy water, a scroll, a driftglobe). Add a JSON file of `{ name, description }` for a custom pack. Coins need no claim codes. A **loot chest** is one tag holding up to 10 items: give the entry `"items": ["1 Potion of Healing", "10 silver", "1 gold"]`. `node scripts/make-loot-coins.js CHEST1 scripts/loot-chests.json` makes the 6 sample chests. The tap screen lists what's inside and the hero takes it all. Each coin gives its item once per table per session, and it stacks with matching items (coins join the purse).
+- **Loot coins:** `node scripts/make-loot-coins.js LOOT1` writes `kits/LOOT1.sql` and `kits/LOOT1.csv` (serial, sticker link, item) for the standard 12-coin pack (potions, gold, silver, antitoxin, healer's kit, alchemist's fire, holy water, a scroll, a driftglobe). Add a JSON file of `{ name, description }` for a custom pack. Coins need no claim codes. A **loot chest** is one tag holding up to 10 items: give the entry `"items": ["1 Potion of Healing", "10 silver", "1 gold"]`. `node scripts/make-loot-coins.js CHEST1 scripts/loot-chests.json` makes the 6 sample chests. The tap screen lists what's inside and the hero takes it all. **Loot minis are single-use** (`supabase/loot.sql`): the first hero to open one gets everything and the tag is marked `used`, in one transaction, so two phones can't both claim it. They're sold in kits; story loot comes from the GM. Items stack with matching ones (coins join the purse).
 - **Register:** `tag_batches` (one row per print run, `active` switch) and `tag_claims` (tag, batch, serial, code hash, claimed at/by). A code works once, only if registered and its batch is active. Set `active = false` to kill a leaked batch.
 - **Log:** `tag_events` records every tap, forge, bad code, save, restore, move and recovery with a hashed player key. The `tag_copy_watch` view lists minis tapped by 5+ different players in 24 hours (a likely cloned sticker).
 - **Owners** are stored as `sha256(ink key)`, never the raw key (tags are publicly readable).
@@ -109,9 +109,9 @@ Anyone can read and copy an NFC tag in seconds. Each kit therefore includes a **
 ## Kits and pricing (draft)
 | Product | Contents | Price |
 |---|---|---|
-| **Starter Table Kit** | 4 hero minis + 4 monster minis + 6 loot tokens + 300-ink card | $34.99 |
+| **Starter Table Kit** | 4 blank hero minis + 2 loot chests + 4 loot coins (all single-use) + 300-ink card | $34.99 |
 | Monster pack | 6 themed monsters (undead, goblins, dragons…) | $12.99 |
-| Loot coins | 12 item tokens | $9.99 |
+| Loot pack | 12 single-use loot coins, or 4 coins + 2 chests | $9.99 |
 | **Custom hero token** | Their character's name and class symbol on a 2-color token, tag pre-written to their hero | $14.99 |
 | Ink card only | 500 ink | $4.99 (sold on the web, so no Google 15% cut) |
 

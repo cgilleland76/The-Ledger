@@ -4324,7 +4324,7 @@ let TAG_ROOM = null;   // { code, name } of the table this device is at, if it s
 async function openTag(id) {
   VIEW = 'tag'; TAG = null; TAG_STATE = 'loading'; TAG_MSG = ''; TAG_ROOM = null;
   render();
-  const { data, error } = await supabase.from('tags').select('id, kind, data, status, moved_to').eq('id', id).maybeSingle();
+  const { data, error } = await supabase.from('tags').select('id, kind, data, status, moved_to, used_at, used_by').eq('id', id).maybeSingle();
   minisCall('tap', { tagId: id }).catch(() => {}); // every tap is logged, so copied stickers show up
   if (error) { console.error(error); TAG_STATE = 'error'; }
   else if (!data || !['hero', 'monster', 'item'].includes(data.kind)) TAG_STATE = 'missing';
@@ -4522,9 +4522,9 @@ async function tagMonsterCheckCode() {
 }
 
 /* ---- loot minis (i_ tags) ----
-   Tapping a loot coin puts its item into your character's inventory at your table. Each coin can be
-   claimed once per table per session (tracked in the room's meta.loot), so it can't be tapped for
-   endless potions, but it can turn up again in a later session.
+   Loot coins and chests come in bought kits and are single-use: the first hero to open one gets its
+   items, and the tag is marked used (supabase/loot.sql, loot_open, one transaction). Loot found in the
+   story comes from the GM instead.
    A loot chest is one tag holding several items: data { name: "Treasure Chest", description, items:
    ["1 Potion of Healing", "10 silver", "1 gold"] }. Without items, the tag gives the one item it's named for. */
 const withArticle = name => `${/^[aeiou]/i.test(name) ? 'an' : 'a'} ${name}`;
@@ -4555,11 +4555,15 @@ function addLoot(c, line) {
 function tagItemHTML() {
   const it = TAG.data || {};
   const chest = isChest(it);
+  if (TAG.status === 'used') return `
+    <h2>${escapeHtml(it.name || 'A mysterious item')}</h2>
+    <p class="helptext">${chest ? 'This chest has already been opened' : 'This loot has already been taken'}${TAG.used_by ? ` by ${escapeHtml(TAG.used_by)}` : ''}${TAG.used_at ? ` on ${fallenWhen(TAG.used_at)}` : ''}. Each loot mini can be used once.</p>
+    ${TAG_MSG ? `<p class="helptext"><b>${escapeHtml(TAG_MSG)}</b></p>` : ''}`;
   return `
     <h2>${escapeHtml(it.name || 'A mysterious item')}</h2>
     ${it.description ? `<p class="helptext">${escapeHtml(it.description)}</p>` : ''}
     ${chest ? `<p><b>Inside:</b></p><ul class="loot-list">${lootItems(it).map(x => `<li>${escapeHtml(x)}</li>`).join('')}</ul>` : ''}
-    <p class="helptext">Your character takes ${chest ? 'everything inside' : 'it'} and it goes into their inventory. Each loot token can be claimed once per table each session.</p>
+    <p class="helptext">Your hero takes ${chest ? 'everything inside' : 'it'} and it goes into their inventory. <b>This loot can be used once</b>, so make sure the right hero takes it.</p>
     ${TAG_ROOM ? `<button class="btn solid wide" ${TAG_BUSY ? 'disabled' : ''} onclick="tagClaimItem('${escapeAttr(TAG_ROOM.code)}')">Give it to your hero in ${escapeHtml(TAG_ROOM.name)}</button>` : ''}
     ${tagCodeRow(TAG_ROOM ? 'Or claim it at another table' : 'Which table are you playing at? Enter its room code', 'tagClaimItemCode()')}`;
 }
@@ -4574,19 +4578,25 @@ async function tagClaimItem(code) {
     const mem = recallCharacter(code);
     const row = mem ? (await dbGetCharacters(code)).find(r => r.id === mem.characterId) : null;
     if (!row) { TAG_MSG = `You don't have a hero at ${tableName} on this device. Join the table first, then tap the loot again.`; return; }
-    const meta = room.meta || {};
-    const session = meta.session || 1;
-    const loot = meta.loot && typeof meta.loot === 'object' ? meta.loot : {};
-    if (loot[TAG.id] === session) { TAG_MSG = 'This loot has already been claimed at that table this session. It can turn up again next session.'; return; }
     const item = String((TAG.data && TAG.data.name) || 'Mysterious item').slice(0, 80);
     const items = lootItems(TAG.data), chest = isChest(TAG.data);
     const c = row.data || {};
     const inv = Array.isArray(c.inventory) ? c.inventory.filter(i => String(i).trim()) : [];
     if (inv.length >= 40) { TAG_MSG = `${c.name || 'Your hero'}'s pack is full. Drop something from the Sheet tab first.`; return; }
+    if (!confirm(`Give ${chest ? 'everything in ' : ''}${item} to ${c.name || 'your hero'}? Loot minis can only be used once.`)) return;
     c.inventory = inv;
     items.forEach(x => addLoot(c, x));
-    await dbUpsertCharacter(row.id, code, c);
-    await dbUpdateRoomMeta(code, { ...meta, loot: { ...loot, [TAG.id]: session } });
+    const { data: res, error } = await supabase.rpc('loot_open', { p_tag: TAG.id, p_room: code, p_character: row.id, p_inventory: c.inventory, p_key_hash: MY_HASH.hash || null });
+    if (error || !res || !res.ok) {
+      const why = res && res.code;
+      if (why === 'used') { TAG.status = 'used'; TAG.used_by = res.used_by; TAG.used_at = res.used_at; TAG_MSG = 'Someone opened it first.'; }
+      else if (why === 'no_room') TAG_MSG = `You aren't seated at ${tableName}. Join the table first, then tap the loot again.`;
+      else if (why === 'no_character') TAG_MSG = `Your hero isn't at ${tableName} any more.`;
+      else if (why === 'not_active' || why === 'missing') TAG_MSG = 'This loot mini is not active. If it came in a kit, contact support.';
+      else { if (error) console.error(error); TAG_MSG = "Couldn't open the loot right now. Check your connection and try again."; }
+      return;
+    }
+    TAG.status = 'used'; TAG.used_by = c.name || ''; TAG.used_at = new Date().toISOString();
     const desc = String((TAG.data && TAG.data.description) || '').slice(0, 300);
     await dbInsertLog(code, { id: uid(6), author: 'The Ledger', type: 'system', text: chest
       ? `🎁 ${c.name || 'A hero'} opened ${withArticle(item)} and found: ${items.join(', ')}! (from a loot token)${desc ? ' ' + desc : ''}`

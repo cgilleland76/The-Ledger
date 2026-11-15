@@ -9,8 +9,8 @@
 // Writes, into kits/ (git-ignored):
 //   kits/LOOT1.sql  run once in the Supabase SQL Editor (registers the batch and its coins)
 //   kits/LOOT1.csv  serial, the link to write onto each NFC sticker, and the item it gives
-// Tapping a coin puts its item into the tapping player's hero at their table, once per table per
-// session (app.js tagClaimItem). Coins carry no secret, so there are no claim codes.
+// Loot minis are single-use: the first hero to open one gets its items and the tag is marked used
+// (supabase/loot.sql). They are sold in kits; loot found in the story comes from the GM.
 
 const fs = require("fs");
 const path = require("path");
@@ -19,7 +19,7 @@ const crypto = require("crypto");
 const SITE = process.env.LEDGER_SITE || "https://thedndledger.com";
 const ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"; // no look-alikes (i, l, o, 0, 1)
 
-// The standard pack: mostly things that get used up, since a coin can be claimed again each session.
+// The standard pack: one coin each.
 const STANDARD = [
   { name: "Potion of Healing", description: "A red liquid that glimmers when shaken. Drinking it restores 2d4 + 2 hit points." },
   { name: "Potion of Greater Healing", description: "A deep crimson draught. Drinking it restores 4d4 + 4 hit points." },
