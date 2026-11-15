@@ -4524,14 +4524,42 @@ async function tagMonsterCheckCode() {
 /* ---- loot minis (i_ tags) ----
    Tapping a loot coin puts its item into your character's inventory at your table. Each coin can be
    claimed once per table per session (tracked in the room's meta.loot), so it can't be tapped for
-   endless potions, but it can turn up again in a later session. */
+   endless potions, but it can turn up again in a later session.
+   A loot chest is one tag holding several items: data { name: "Treasure Chest", description, items:
+   ["1 Potion of Healing", "10 silver", "1 gold"] }. Without items, the tag gives the one item it's named for. */
 const withArticle = name => `${/^[aeiou]/i.test(name) ? 'an' : 'a'} ${name}`;
+const LOOT_MAX_ITEMS = 10;
+function lootItems(data) {
+  const d = data || {};
+  const list = Array.isArray(d.items) ? d.items.map(x => String(x || '').trim().slice(0, 80)).filter(Boolean).slice(0, LOOT_MAX_ITEMS) : [];
+  return list.length ? list : [String(d.name || 'Mysterious item').slice(0, 80)];
+}
+const isChest = data => !!(data && Array.isArray(data.items) && data.items.length);
+// "1 Potion of Healing" -> "Potion of Healing", "3 Torches" -> "Torches x3" (coins and ammo keep their own words)
+function lootLine(s) {
+  const n = normalizeItem(s);
+  if (n.length !== 1 || n[0] !== s) return s; // coins, ammunition and rations already read their own counts
+  const m = /^(\d+)\s+(.+)$/.exec(s);
+  if (!m) return s;
+  return parseInt(m[1]) > 1 ? `${m[2]} x${m[1]}` : m[2];
+}
+// Puts one loot line into a pack, stacking it with a match (coins join the purse, potions count up).
+function addLoot(c, line) {
+  for (const l of normalizeItem(lootLine(line))) {
+    const inv = Array.isArray(c.inventory) ? c.inventory.filter(i => String(i).trim()) : [];
+    const have = inv.some(i => stackKey(i) === stackKey(l));
+    c.inventory = [...inv, have && !QTY_RE.test(l) ? withCount(l, 1) : l];
+    normalizeInventory(c);
+  }
+}
 function tagItemHTML() {
   const it = TAG.data || {};
+  const chest = isChest(it);
   return `
     <h2>${escapeHtml(it.name || 'A mysterious item')}</h2>
     ${it.description ? `<p class="helptext">${escapeHtml(it.description)}</p>` : ''}
-    <p class="helptext">Your character picks it up and it goes into their inventory. Each loot token can be claimed once per table each session.</p>
+    ${chest ? `<p><b>Inside:</b></p><ul class="loot-list">${lootItems(it).map(x => `<li>${escapeHtml(x)}</li>`).join('')}</ul>` : ''}
+    <p class="helptext">Your character takes ${chest ? 'everything inside' : 'it'} and it goes into their inventory. Each loot token can be claimed once per table each session.</p>
     ${TAG_ROOM ? `<button class="btn solid wide" ${TAG_BUSY ? 'disabled' : ''} onclick="tagClaimItem('${escapeAttr(TAG_ROOM.code)}')">Give it to your hero in ${escapeHtml(TAG_ROOM.name)}</button>` : ''}
     ${tagCodeRow(TAG_ROOM ? 'Or claim it at another table' : 'Which table are you playing at? Enter its room code', 'tagClaimItemCode()')}`;
 }
@@ -4551,20 +4579,24 @@ async function tagClaimItem(code) {
     const loot = meta.loot && typeof meta.loot === 'object' ? meta.loot : {};
     if (loot[TAG.id] === session) { TAG_MSG = 'This loot has already been claimed at that table this session. It can turn up again next session.'; return; }
     const item = String((TAG.data && TAG.data.name) || 'Mysterious item').slice(0, 80);
+    const items = lootItems(TAG.data), chest = isChest(TAG.data);
     const c = row.data || {};
     const inv = Array.isArray(c.inventory) ? c.inventory.filter(i => String(i).trim()) : [];
     if (inv.length >= 40) { TAG_MSG = `${c.name || 'Your hero'}'s pack is full. Drop something from the Sheet tab first.`; return; }
-    c.inventory = [...inv, item];
+    c.inventory = inv;
+    items.forEach(x => addLoot(c, x));
     await dbUpsertCharacter(row.id, code, c);
     await dbUpdateRoomMeta(code, { ...meta, loot: { ...loot, [TAG.id]: session } });
     const desc = String((TAG.data && TAG.data.description) || '').slice(0, 300);
-    await dbInsertLog(code, { id: uid(6), author: 'The Ledger', type: 'system', text: `🎁 ${c.name || 'A hero'} found ${withArticle(item)}! (from a loot token)${desc ? ' ' + desc : ''}` });
+    await dbInsertLog(code, { id: uid(6), author: 'The Ledger', type: 'system', text: chest
+      ? `🎁 ${c.name || 'A hero'} opened ${withArticle(item)} and found: ${items.join(', ')}! (from a loot token)${desc ? ' ' + desc : ''}`
+      : `🎁 ${c.name || 'A hero'} found ${withArticle(item)}! (from a loot token)${desc ? ' ' + desc : ''}` });
     // Go to the table to see it land in the log.
     const err = await enterRoom(code);
     if (!err && VIEW === 'game') { TAG = null; return; }
     VIEW = 'tag';
     TAG_ROOM = { code, name: tableName };
-    TAG_MSG = `${item} is now in ${c.name || 'your hero'}'s inventory.`;
+    TAG_MSG = `${chest ? items.join(', ') : item} ${chest && items.length > 1 ? 'are' : 'is'} now in ${c.name || 'your hero'}'s inventory.`;
   } finally {
     TAG_BUSY = false;
     if (VIEW === 'tag') render();

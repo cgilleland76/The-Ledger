@@ -523,3 +523,7 @@ button.spell-chip:hover{ background:rgba(217,180,90,0.35); }
 .fallen-row.returned{ opacity:0.6; }
 .fallen-deed{ margin:4px 0 2px; font-style:italic; }
 .fallen-epitaph{ font-size:0.9rem; opacity:0.85; }
+
+/* loot chests */
+.loot-list{ margin:4px 0 10px 18px; padding:0; }
+.loot-list li{ margin:2px 0; }

@@ -1,0 +1,8 @@
+[
+  { "name": "Treasure Chest", "description": "A small iron-banded chest, its lock long rusted through.", "items": ["1 Potion of Healing", "10 silver", "1 gold"] },
+  { "name": "Adventurer's Satchel", "description": "A worn leather bag left behind by someone who didn't make it out.", "items": ["Healer's Kit", "3 Torches", "5 silver"] },
+  { "name": "Alchemist's Crate", "description": "Straw-packed bottles, most of them still intact.", "items": ["Antitoxin", "Alchemist's Fire", "1 Potion of Healing"] },
+  { "name": "Temple Offering Box", "description": "Coins and a blessed flask, given by the faithful.", "items": ["Holy Water", "15 silver", "2 gold"] },
+  { "name": "Dragon's Hoard (small)", "description": "A glittering heap. Only a fraction of it fits in your pack.", "items": ["50 gold", "1 Potion of Greater Healing", "Spell Scroll of Cure Wounds"] },
+  { "name": "Quartermaster's Chest", "description": "Army stores, stamped with a long-forgotten crest.", "items": ["20 Arrows", "20 Crossbow bolts", "5 days of rations"] }
+]
