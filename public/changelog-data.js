@@ -9,6 +9,12 @@ window.LEDGER_CHANGELOG = [
   {
     date: "2026-11-14",
     type: "feature",
+    title: "Death is permanent, unless you strike a bargain",
+    detail: "A hero who fails three death saves, or takes a blow big enough, dies. A party cleric can still raise them with Revivify or Raise Dead (paid in gold for the diamond). Otherwise, for a few days, the Gravewarden will send them back for ink: at 1 HP, with the Mark of Return (-4 to rolls, easing each long rest) and a debt it will one day call in. Hosts can make a table permanent-death only."
+  },
+  {
+    date: "2026-11-14",
+    type: "feature",
     title: "What does this do? Tap the !",
     detail: "Spells, class features, races and classes (when you make a character), weapons, armour and gear, skills, ability scores and conditions like prone or frightened now have a small ! next to them. Hover over it, or tap it on a phone, for a short note. Foes on the battle map have one too: it starts with just what you can see, and a good Perception or knowledge check reveals more."
   },

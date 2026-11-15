@@ -7,6 +7,10 @@ and the server keeps every balance, so nobody can get ink by editing the app.
 | What | Ink | Where to change it |
 |---|---|---|
 | Free story turns per day (refill at the player's midnight; needs `supabase/billing-daily.sql`) | 30 | `FREE_STORY_TURNS_PER_DAY` env var |
+| Story turn past the free ones | 3 ink | `INK_COST_GM` |
+| AI portrait | 15 ink | `INK_COST_PORTRAIT` |
+| AI painted scene | 20 ink | `INK_COST_SCENE` |
+| The Gravewarden (1st, 2nd, 3rd+ return) | 30, 60, 120 ink | `REVIVE_INK` (and `REVIVE_DAYS`, default 3) |
 | GM reply (story turn or character generation) | 1 | `COSTS` in `netlify/functions/lib/billing.js` |
 | Character portrait | 8 | same |
 | Packs | 150 / 500 / 1200 | `PACKS` in `billing.js` (IDs must match Play Console) |

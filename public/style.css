@@ -512,3 +512,6 @@ button.spell-chip:hover{ background:rgba(217,180,90,0.35); }
 .pick-row{ display:flex; align-items:center; gap:6px; }
 .pick-row select{ flex:1; min-width:0; }
 .pick-info:empty{ display:none; }
+
+.death-saves.fallen{ border-color:rgba(60,40,20,0.55); background:rgba(40,28,16,0.08); }
+.death-saves.fallen .btn{ margin-top:8px; }

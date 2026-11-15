@@ -25,7 +25,8 @@ exports.handler = async function (event) {
     return { statusCode: 400, headers, body: JSON.stringify({ error: "Invalid JSON body." }) };
   }
 
-  const base = { enforced: billing.enforced(), free_per_day: billing.freePerDay(), costs: billing.COSTS };
+  const c = billing.COSTS;
+  const base = { enforced: billing.enforced(), free_per_day: billing.freePerDay(), costs: { gm: c.gm, portrait: c.portrait, scene: c.scene } };
   if (!billing.enforced()) return { statusCode: 200, headers, body: JSON.stringify({ ...base, added: 0 }) };
   if (!billing.validPlayer(playerId)) return { statusCode: 400, headers, body: JSON.stringify({ error: "Invalid player id." }) };
 

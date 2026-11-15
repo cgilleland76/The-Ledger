@@ -247,7 +247,7 @@ async function loadSiteConfig() {
     const resp = await fetch(api('/api/site-config'));
     if (!resp.ok) return;
     const conf = await resp.json();
-    SITE = { sceneImages: conf.sceneImages === true, sceneMax: parseInt(conf.sceneMaxPerRoom) || 3, sceneInk: parseInt(conf.sceneInk) || 0 };
+    SITE = { sceneImages: conf.sceneImages === true, sceneMax: parseInt(conf.sceneMaxPerRoom) || 3, sceneInk: parseInt(conf.sceneInk) || 0, revive: conf.revive && Array.isArray(conf.revive.ink) ? conf.revive : { ink: [0, 0, 0], days: 3 } };
     if (VIEW === 'game' && (ACTIVE_TAB === 'map' || ACTIVE_TAB === 'help')) render();
     const email = String(conf.supportEmail || '').trim();
     if (!email || email === CONTACT_EMAIL) return;
@@ -1504,10 +1504,32 @@ function resolveCast(x) {
   else slot = slots[Math.max(sp.level, asked) - 1];
   if (!slot) return sysEntry(`✨ ${c.name} can't cast ${sp.name} at that level yet, so it isn't cast.`);
   if (slot.left < 1) return sysEntry(`✨ ${c.name} has no ${ordinal(slot.level)}-level spell slots left, so ${sp.name} isn't cast.`);
+  const raise = REVIVAL_SPELLS[sp.name];
+  let raiseText = '';
+  if (raise) {
+    const t = findTarget(x.target || '');
+    if (!t || !t.dead) return sysEntry(`✨ ${sp.name} needs a dead companion as its target, so it isn't cast.`);
+    if (raise.turns && gmCount() - (parseInt(t.diedTurn) || 0) > raise.turns) return sysEntry(`✨ Too late for ${sp.name}: ${t.name} has been dead too long, so it isn't cast.`);
+    normalizeInventory(c);
+    const gi = findStack(c, 'Gold pieces');
+    if (gi === undefined || stackCount(c.inventory[gi]) < raise.gold) return sysEntry(`✨ ${sp.name} needs a diamond worth ${raise.gold} gp, and ${c.name} can't pay for one, so it isn't cast.`);
+    takeFromStack(c, gi, raise.gold);
+    t.dead = false; delete t.diedAt; delete t.diedTurn; delete t.deathCause; delete t.dying; delete t.stable;
+    t.hp = raise.full ? (parseInt(t.maxhp) || 1) : 1;
+    if (raise.mark) t.markOfReturn = Math.max(parseInt(t.markOfReturn) || 0, raise.mark);
+    raiseText = ` ${t.name} lives again at ${t.hp} HP${raise.mark ? `, with the Mark of Return (-${raise.mark})` : ''}. (${raise.gold} gp for the diamond.)`;
+  }
   if (cs.pact) c.pactUsed = (parseInt(c.pactUsed) || 0) + 1;
   else { c.slotsUsed = { ...(c.slotsUsed || {}) }; c.slotsUsed[slot.level] = (parseInt(c.slotsUsed[slot.level]) || 0) + 1; }
-  return sysEntry(`✨ ${c.name} casts ${sp.name} with a ${ordinal(slot.level)}-level slot (${slot.left - 1}/${slot.total} left).`, { saveAll: true });
+  return sysEntry(`✨ ${c.name} casts ${sp.name} with a ${ordinal(slot.level)}-level slot (${slot.left - 1}/${slot.total} left).${raiseText}`, { saveAll: true });
 }
+// Bringing back the dead in the story: SRD costs (gold stands in for the diamond); Revivify only right after death.
+const REVIVAL_SPELLS = {
+  'Revivify': { gold: 300, turns: 2 },
+  'Raise Dead': { gold: 500, mark: 4 },
+  'Resurrection': { gold: 1000, mark: 4, full: true },
+  'True Resurrection': { gold: 25000, full: true },
+};
 
 /* ---------------- Death saves ----------------
    A hero at 0 HP is dying (c.dying = { s, f }) until three successes (stable), three failures (dead), a
@@ -1522,8 +1544,9 @@ function dyingText(c) {
 const isDying = c => !!c && (parseInt(c.hp) || 0) <= 0 && !c.dead && !c.stable;
 function deathSaveDue(c) { return isDying(c) && (c.dying || {}).at !== gmCount(); }
 function deathSaveHTML(c) {
-  if (!c || (parseInt(c.hp) || 0) > 0) return '';
-  if (c.dead) return `<p class="error-text" style="margin:8px 0 0;">${escapeHtml(c.name)} has died.</p>`;
+  if (!c) return '';
+  if (c.dead) return gravewardenHTML(c);
+  if ((parseInt(c.hp) || 0) > 0) return markOfReturnHTML(c);
   if (c.stable) return `<p class="helptext" style="margin:8px 0 0;">Unconscious but stable at 0 HP. Any healing wakes ${escapeHtml(c.name)}.</p>`;
   const d = c.dying || { s: 0, f: 0 };
   const pips = (n, cls) => [0, 1, 2].map(i => `<span class="ds-pip ${i < n ? cls : ''}"></span>`).join('');
@@ -1535,6 +1558,53 @@ function deathSaveHTML(c) {
       : `<p class="helptext">Death save rolled. Roll the next one on your next turn, after the GM's reply.</p>`) : ''}
   </div>`;
 }
+function markOfReturnHTML(c) {
+  const m = parseInt(c.markOfReturn) || 0;
+  return m ? `<p class="helptext" style="margin:6px 0 0;">${infoDotHTML('Mark of Return', 'from the Gravewarden', `-${m} to attack rolls, saving throws and ability checks. It eases by 1 with each long rest.`, `<b>Mark of Return</b>`)} &minus;${m}</p>` : '';
+}
+// The Gravewarden: a hooded being with a pale lantern who returns the dead for a price (paid in ink,
+// rising each time), within a few real days of death, unless the host chose permanent death.
+function gravewardenHTML(c) {
+  const head = `<div class="death-saves fallen"><b>${escapeHtml(c.name)} has fallen.</b>`;
+  if (META && META.permadeath === true) return head + `<p class="helptext">This table plays with permanent death.</p></div>`;
+  const days = (SITE.revive && SITE.revive.days) || 3;
+  const left = c.diedAt ? c.diedAt + days * 86400000 - Date.now() : -1;
+  if (left <= 0) return head + `<p class="helptext">The Gravewarden's lantern has gone out for ${escapeHtml(c.name)}. Their death is final.</p></div>`;
+  const times = parseInt(c.revivals) || 0;
+  const prices = (SITE.revive && SITE.revive.ink) || [0];
+  const cost = prices[Math.min(times, prices.length - 1)] || 0;
+  const hrs = Math.ceil(left / 3600000);
+  const when = hrs > 48 ? `${Math.ceil(hrs / 24)} days` : `${hrs} hour${hrs === 1 ? '' : 's'}`;
+  return head + `<p class="helptext">A hooded figure with a pale lantern waits at the edge of death. For ${cost ? `<b>${cost} ink</b>` : 'a price'}, the Gravewarden will send ${escapeHtml(c.name)} back: at 1 HP, bearing the Mark of Return (&minus;4 to attacks, saves and checks, easing with each long rest), and owing a debt it will one day call in. It waits ${when} more.${times ? ` ${escapeHtml(c.name)} has returned ${times} time${times > 1 ? 's' : ''} before; each return costs more.` : ''} Anyone at the table may pay.</p>
+    <button class="btn rust wide" onclick="seekGravewarden('${escapeAttr(charIdOf(c) || '')}')">Seek the Gravewarden${cost ? ` (${cost} ink)` : ''}</button></div>`;
+}
+async function seekGravewarden(id) {
+  const c = ROSTER[id];
+  if (!c || !c.dead) return;
+  if (!confirm(`Pay the Gravewarden to bring ${c.name} back?`)) return;
+  try {
+    const resp = await fetch(api('/api/revive'), { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ roomCode: ROOM, characterId: id, playerId: playerId(), tz: new Date().getTimezoneOffset() }) });
+    let data = {}; try { data = await resp.json(); } catch (e) {}
+    if (data.wallet) setWallet(data.wallet);
+    if (data.outOfInk) { openShop(data.error); return; }
+    if (!resp.ok || !data.ok) { alert(data.error || 'The Gravewarden can\'t be reached right now. Try again in a minute.'); return; }
+    ROSTER = rosterFromRows(await dbGetCharacters(ROOM));
+    LOG = logFromRows(await dbGetLog(ROOM));
+    render();
+  } catch (e) { alert('The Gravewarden can\'t be reached right now. Try again in a minute.'); }
+}
+window.seekGravewarden = seekGravewarden;
+async function setPermadeath(on) {
+  if (!ROOM || !isRoomHost()) return;
+  const room = await dbGetRoom(ROOM);
+  if (!room) return;
+  META = room.meta || {};
+  META.permadeath = !!on;
+  await dbUpdateRoomMeta(ROOM, META);
+  if (VIEW === 'game') render();
+}
+window.setPermadeath = setPermadeath;
 async function rollDeathSave() {
   const c = ROSTER[MY_CHAR_ID];
   if (!deathSaveDue(c)) return;
@@ -1545,7 +1615,7 @@ async function rollDeathSave() {
   else {
     if (n === 1) d.f += 2; else if (n >= 10) d.s += 1; else d.f += 1;
     d.s = Math.min(3, d.s); d.f = Math.min(3, d.f); d.at = gmCount(); c.dying = d;
-    if (d.f >= 3) { c.dead = true; delete c.dying; outcome = 'three failures: ' + c.name + ' has died.'; }
+    if (d.f >= 3) { markDead(c, 'saves'); outcome = 'three failures: ' + c.name + ' has died.'; }
     else if (d.s >= 3) { c.stable = true; delete c.dying; outcome = 'three successes: stable, unconscious at 0 HP.'; }
     else outcome = `${n === 1 ? 'natural 1: two failures' : n >= 10 ? 'success' : 'failure'} (${dyingText(c)})`;
   }
@@ -1605,6 +1675,8 @@ function rollOptions(c) {
     opts.push({ key: 'f:unarmedd', group: 'Class features', name: 'Unarmed strike damage', mod: best, dice: `1d${lvl >= 17 ? 10 : lvl >= 11 ? 8 : lvl >= 5 ? 6 : 4}` });
   }
   opts.push({ key: 'i', group: 'Other', name: 'Initiative', mod: initiativeBonus(c) });
+  const mark = parseInt(c.markOfReturn) || 0; // the Gravewarden's Mark: -N to every d20 roll
+  if (mark) opts.forEach(o => { if (!o.dice) o.mod -= mark; });
   return opts;
 }
 function rollPickerHTML() {
@@ -2081,7 +2153,7 @@ function cancelGM() {
      billing is on. Runs in scene-background.js, progress arrives through scene_status.
    - Upload your own background: host only, free, unlimited, works even with painting switched off.
    Every picture is content-checked on the server before it's stored. */
-let SITE = { sceneImages: false, sceneMax: 3, sceneInk: 0 };
+let SITE = { sceneImages: false, sceneMax: 3, sceneInk: 0, revive: { ink: [0, 0, 0], days: 3 } };
 let SCENE = null; // { url, status, at, count } from the room row
 const SCENE_URL_PREFIX = (cfg.SUPABASE_URL || '').replace(/\/$/, '') + '/storage/v1/object/public/scenes/';
 function sceneFromRow(r) { return r ? { url: r.scene_url || '', status: r.scene_status || '', at: r.scene_updated_at || '', count: r.scene_count || 0 } : null; }
@@ -3187,7 +3259,7 @@ function extractFoeAttacks(text) {
     return '';
   }).replace(CAST_DIRECTIVE, (_, body) => {
     const p = body.split('|').map(x => x.trim());
-    if (p[0] && p[1] && casts.length < 4) casts.push({ who: p[0], spell: p[1], level: p[2] || '' });
+    if (p[0] && p[1] && casts.length < 4) casts.push({ who: p[0], spell: p[1], level: p[2] || '', target: p[3] || '' });
     return '';
   }).replace(STABLE_DIRECTIVE, (_, body) => {
     const name = body.split('|')[0].trim();
@@ -3222,11 +3294,20 @@ function rollSpec(d, mult) {
 }
 function charIdOf(c) { return Object.keys(ROSTER).find(k => ROSTER[k] === c); }
 // Moves a character's HP (never below 0 or above max) and reports before/after.
+// A hero is dead: no more death saves, no healing; the Gravewarden may answer for a few real days.
+function markDead(c, cause) {
+  c.dead = true; c.diedAt = Date.now(); c.diedTurn = gmCount(); c.deathCause = cause || 'saves';
+  delete c.dying; delete c.stable;
+}
 function changeHP(c, delta, crit) {
   const before = parseInt(c.hp) || 0;
   const max = parseInt(c.maxhp) || Math.max(before, 1);
   if (c.dead && delta > 0) return { before, after: before, max }; // the dead aren't healed by a potion
   c.hp = Math.max(0, Math.min(max, before + delta));
+  if (!c.ally && delta < 0 && before + delta < 0 && -(before + delta) >= max && !c.dead) {
+    markDead(c, 'massive'); // massive damage: what's left after reaching 0 is at least their max HP
+    return { before, after: c.hp, max };
+  }
   if (!c.ally) {
     if (c.hp > 0) { delete c.dying; delete c.stable; }
     else if (before > 0) { c.dying = { s: 0, f: 0 }; delete c.stable; }
@@ -3235,7 +3316,7 @@ function changeHP(c, delta, crit) {
       const d = c.dying || { s: 0, f: 0 };
       d.f = Math.min(3, d.f + (crit ? 2 : 1));
       c.dying = d; delete c.stable;
-      if (d.f >= 3) { c.dead = true; delete c.dying; }
+      if (d.f >= 3) markDead(c, 'saves');
     }
   }
   return { before, after: c.hp, max };
@@ -3275,7 +3356,7 @@ function resolveFoeAttack(a) {
     } else {
       const { before, after, max } = changeHP(target, -dmg.total, crit);
       hpChar = charIdOf(target);
-      text += ` — ${target.name}: HP ${before} → ${after}/${max}${after === 0 ? (target.dead ? ' — three failed death saves: ' + target.name + ' is dead.' : before === 0 ? ` (a failed death save: ${dyingText(target)})` : ' (down! dying)') : ''}`;
+      text += ` — ${target.name}: HP ${before} → ${after}/${max}${after === 0 ? (target.dead ? (target.deathCause === 'massive' ? ` — the blow is so great that ${target.name} dies outright.` : ' — three failed death saves: ' + target.name + ' is dead.') : before === 0 ? ` (a failed death save: ${dyingText(target)})` : ' (down! dying)') : ''}`;
     }
   }
   return { id: uid(6), author: a.who, type: 'roll', text, hpChar, saveMeta: foeTouched, saveAll: foeTouched };
@@ -3570,7 +3651,7 @@ async function askGM() {
   if (GM_PENDING) return;
   const rerolls = rerollIds();
   const recent = LOG.slice(-30).map(e => `${e.author} (${e.type}): ${e.text}${rerolls.has(e.id) ? ' ' + REROLL_TAG : ''}`).join('\n');
-  const party = Object.values(ROSTER).map(c => `${c.name} — Lv${c.level} ${c.race} ${c.klass}, HP ${c.hp}/${c.maxhp} (current, from the sheet)${spellPromptText(c)}${featurePromptText(c)}${(parseInt(c.hp) || 0) <= 0 ? ` — ${c.dead ? 'DEAD' : c.stable ? 'UNCONSCIOUS, stable' : `DYING, ${dyingText(c)}${deathSaveDue(c) ? ', death save not yet rolled this turn' : ', death save already rolled this turn'}`}` : ''}, AC ${c.ac}, XP ${xpOf(c)}, inventory: ${earnedItems(c).join(', ') || 'none'}${handItems(c).length ? `; written in by the player, never given in the story (NOT owned): ${handItems(c).join(', ')}` : ''}
+  const party = Object.values(ROSTER).map(c => `${c.name} — Lv${c.level} ${c.race} ${c.klass}, HP ${c.hp}/${c.maxhp} (current, from the sheet)${spellPromptText(c)}${featurePromptText(c)}${parseInt(c.markOfReturn) ? `, bears the Mark of Return (-${parseInt(c.markOfReturn)} to attacks, saves and checks)` : ''}${parseInt(c.gravewardenDebt) ? `, owes the Gravewarden ${parseInt(c.gravewardenDebt) > 1 ? parseInt(c.gravewardenDebt) + ' debts' : 'a debt'}` : ''}${(parseInt(c.hp) || 0) <= 0 ? ` — ${c.dead ? 'DEAD' : c.stable ? 'UNCONSCIOUS, stable' : `DYING, ${dyingText(c)}${deathSaveDue(c) ? ', death save not yet rolled this turn' : ', death save already rolled this turn'}`}` : ''}, AC ${c.ac}, XP ${xpOf(c)}, inventory: ${earnedItems(c).join(', ') || 'none'}${handItems(c).length ? `; written in by the player, never given in the story (NOT owned): ${handItems(c).join(', ')}` : ''}
   Sheet modifiers (the only d20 bonuses this character has): ${rollOptions(c).map(o => `${o.name} ${fmtMod(o.mod)}`).join(', ')}`).join('\n');
   const prompt = `You are the Game Master for a tabletop RPG ${MODE === 'solo' ? 'solo story' : 'session'} titled "${META.name}".
 Ruleset: ${META.ruleset}. Tone/genre: ${META.tone || 'unspecified — infer something fitting'}. Length: ${lengthLabel[META.length]}.
@@ -3599,6 +3680,7 @@ Roll resolution rules — follow these exactly:
 - Players never roll for monsters. For each attack a foe makes, write it in the fiction and put this directive on its own line: [[foe-attack: Goblin B | scimitar | +4 | 1d6+2 | Telilin]] (attacker | attack name | to-hit bonus from its stat block | damage dice | the target's exact character name). When an ally NPC attacks an enemy, add the enemy's AC as a sixth field, e.g. [[foe-attack: Scout | longbow | +4 | 1d8+2 | Goblin A | AC 15]]; the result tells you what happened and you track the enemy's HP. The game rolls the attack against the target's AC and the damage if it hits, and posts the result to the log; use one directive per attack (max 4). Then stop: don't say whether it hit and don't state the AC. Narrate the outcome next turn, once the result is in the log. The game subtracts the damage from the target's HP itself, so never ask players to take it off their HP. For damage that isn't a foe's attack (a trap, a fall, poison, fire, a failed save), put [[damage: <their name> | <dice or a number> | <source>]] on its own line and the game rolls it and takes it off their HP; when a successful save halves it, ask for the save first and add "| half" if they made it. Area effects roll once for everyone: list every character caught in it and mark those who made their save, e.g. [[damage: Brannoc, Sera half | 8d6 | fireball]], or use "party" for everyone at the table. Healing that reaches several characters works the same way: [[heal: Brannoc, Sera | 1d4+3 | mass healing word]]. Players can't change their own HP, so never ask them to. For any healing (a potion, a spell) put [[heal: Telilin | 2d4+2 | potion of healing]] on its own line (the character's exact name | dice or a flat number | source); the game rolls it and raises their HP up to their maximum. One per healing, max 4. A character at 0 HP is unconscious: never offer them options or actions, and never write choices for them; narrate what happens around them. Death saves belong to the game: when it's a DYING character's turn, ask that player to tap "Roll death save" (the game rolls it and counts it; its count is in the party list above, so never keep your own tally or roll it for them). Three successes leaves them stable, three failures means death, a natural 20 brings them back with 1 HP, and any healing wakes them. Damage to a character at 0 HP is a failed death save; the game counts that too. When someone stabilises a dying character, put [[stable: <their name>]] on its own line. Never use [[heal]] to stabilise a dying character: stabilising (a healer's kit, a Medicine check, spare the dying) restores no HP, it only ends their death saves, so ask the player for a Medicine check (DC 10, or a healer's kit with no roll) and narrate them stable at 0 HP. When a player's own character is doing the healing (their spell or potion), ask that player to /roll it; once that roll is in the log, put [[heal: <their name> | <that roll's total> | <source>]] with the total as a plain number, and the game adds it. Never state anyone's new HP total yourself (the game posts it), and never work HP out from older log lines: a character's current HP is only the "HP x/y (current, from the sheet)" in the party list above.
 - Spells: each caster's spells and remaining slots are in the party list above, kept by the game. A character can only cast spells on their own list. When a character casts a spell (a cantrip too), put [[cast: <their name> | <spell> | <slot level, only if cast at a higher level>]] on its own line before you narrate its effect; the game spends the slot. If the game says the spell isn't cast (not one of their spells, or no slot left), it fails: say so and let them choose something else. Never restore slots yourself: [[long-rest]] does that (warlock pact slots also come back on [[short-rest]]). Players change their spells on the Your Sheet tab, only after a long rest or when a new session begins.
 - What the party knows about foes is kept by the game: never state a foe's AC, resistances, immunities or special abilities outright. When a hero succeeds at a Perception, Insight or Investigation check made to study a foe, put [[learn: <foe> | look]] (reveals AC, speed and senses); when a hero succeeds at a knowledge check about it (Arcana, History, Nature or Religion, whichever fits; DC about 10 + its CR), put [[learn: <foe> | lore]] (reveals resistances, immunities, special traits and languages). Then describe what they notice or remember in the story.
+- Death is permanent. A hero at 0 HP who fails three death saves, or takes damage beyond 0 equal to their max HP, dies; the game marks it. Never bring a dead hero back yourself, and never use [[heal]] on the dead. In the story they can be raised only by a spell cast on them: [[cast: <caster> | Revivify | | <dead hero>]] (only right after death), or Raise Dead / Resurrection; the game checks the slot and the gold for the diamond. Otherwise the players may seek the Gravewarden, a hooded being with a pale lantern who returns the dead for a price; never offer, perform or describe that bargain yourself until the game posts it. A hero who owes the Gravewarden a debt will be asked to repay it: at a fitting moment, have the Gravewarden call in that debt with a task or a price in the story.
 - Class features: each character's limited-use features (Rage, Second Wind, Action Surge, Ki points, Lay on Hands, Channel Divinity, Wild Shape, Bardic Inspiration, Sorcery points, Arcane Recovery...) and what's left are in the party list, kept by the game. When a character uses one, put [[feature: <their name> | <feature>]] on its own line before narrating it; for pools add the amount ([[feature: Aldric | Lay on Hands | 10 | Mira]] heals Mira 10; [[feature: Kai | Ki points | 1]]). Divine Smite spends a spell slot: [[feature: Aldric | Divine Smite | <slot level> | <foe>]] and the game rolls the radiant damage onto that foe. Second Wind's healing is rolled by the game. If the game says none are left, it doesn't happen. Never refill them yourself: rests do.
 - Items: each character's inventory above is what they really carry. Items "written in by the player" were typed in by the player and never given in the story: they are NOT owned. If a player tries to use one, it isn't in their pack, and say so plainly. When the story gives a character an item (found, bought, looted, handed over), put [[give: <their name> | <item>]] on its own line and the game adds it. When a character uses up a consumable (drinks a potion, reads a scroll, spends a charge item), put [[use: <their name> | <item>]] on its own line and the game removes one. Max 4 of each per message. Only consumables are ever used up: weapons, armour, shields and other gear are always recovered after a fight, so never remove them. Consumables are counted, e.g. "Crossbow bolts (18)", "Gold pieces (5)"; when some are used up (a potion drunk, rope left tying prisoners, torches burned out, rations eaten on the road, coins spent) put [[use: <their name> | <item> | <how many>]], and [[give: <their name> | <item> | <how many>]] adds them. Ranged weapon attacks: ask the player to roll that weapon's attack from the Roll from sheet menu (e.g. /roll +4 Light crossbow attack); the game spends the ammunition and gives back half of it when the fight ends, so never [[use]] ammunition yourself, and a character with none left can't shoot. Items come only from the story (found, looted, given, earned or bought), never because a player asks for one. To buy something, first [[use]] the coins; if the game says they can't pay, they don't get it; otherwise [[give]] the item.
 - Battle map: when a fight starts, lay out a map before the first attack: [[map: 12x10]] (columns A-L, rows 1-10; at most 20x20), then [[place: <name> | <square>]] for every hero and foe (add "| ally" for a friendly NPC, e.g. [[place: Woman | E5 | ally]]), and [[wall: D2-D5, H7]] for walls or heavy cover. On later turns move foes with [[place]], use [[remove: <name>]] when one flees, surrenders or is otherwise out of the fight for good (the game takes it off the map and the Foes list; it gives no XP, so use [[defeat]] instead if the party beat it), and [[end-battle]] when the fight is over. Players move their own heroes on the map, so never move a hero yourself unless the story forces it (a shove, a fall). Use the map's distances: a melee attack needs 5 ft (10 ft with reach); a ranged attack past normal range has disadvantage and can't go past long range; an area spell hits everyone within its radius of the square it's centred on. With no battle map, give each foe's distance in the Foes line, e.g. **Foes:** Goblin A 4/7 HP, 30 ft.
@@ -3916,6 +3998,9 @@ function renderHelpTab() {
         ${SITE.sceneImages ? `<li><b>Painted scenes:</b> the AI can paint the current scene as a background for the battle map and the table display (up to ${SITE.sceneMax} per table${SITE.sceneInk ? `, ${SITE.sceneInk} ink each` : ''}). ${isRoomHost()
           ? `<label style="cursor:pointer;display:block;margin-top:6px;"><input type="checkbox" ${META && META.sceneImages === true ? 'checked' : ''} onchange="setSceneImages(this.checked)"> Let the AI paint scenes at this table</label>`
           : `It's ${META && META.sceneImages === true ? 'on' : 'off'} at this table; the host decides.`}</li>` : ''}
+        <li><b>Death is permanent.</b> A fallen hero can be raised in the story (Revivify, Raise Dead), or by the Gravewarden for ink within ${(SITE.revive && SITE.revive.days) || 3} days. ${isRoomHost()
+          ? `<label style="cursor:pointer;display:block;margin-top:6px;"><input type="checkbox" ${META && META.permadeath === true ? 'checked' : ''} onchange="setPermadeath(this.checked)"> Permanent death at this table (the Gravewarden won't answer)</label>`
+          : `The Gravewarden is ${META && META.permadeath === true ? 'off (permanent death)' : 'on'} at this table; the host decides.`}</li>
         <li><b>Field Notes:</b> your ${MODE === 'solo' ? '' : "party's "}journal. The GM writes down quests, people, places, clues, encounters and loot as the story goes, and you can add your own notes and search them any time.</li>
         <li><b>Battle map:</b> when a fight starts the GM lays out a grid on the <b>Battle Map</b> tab (1 square = 5 ft) with every hero and foe. Tap your hero, then a highlighted square, to move; you can move up to your speed each turn (30 ft for most, 25 ft for dwarves, halflings and gnomes). Tap anything to see how far away it is.</li>
         <li><b>XP and levels:</b> you earn XP for defeating foes (shared by the table) and for checks you pass against a DC with a real roll. Once you have enough XP, <b>Level Up</b> unlocks on Your Sheet after a <b>long rest</b>. A <b>short rest</b> lets you spend hit dice there to heal.</li>
@@ -4666,6 +4751,7 @@ function resolveLongRest() {
     c.hp = parseInt(c.maxhp) || c.hp;
     c.hitDiceUsed = Math.max(0, (parseInt(c.hitDiceUsed) || 0) - Math.max(1, Math.floor((parseInt(c.level) || 1) / 2)));
     c.slotsUsed = {}; c.pactUsed = 0;
+    if (parseInt(c.markOfReturn) > 0) c.markOfReturn = parseInt(c.markOfReturn) - 1;
     const need = nextLevelXp(c);
     c.levelReady = need !== null && xpOf(c) >= need;
     if (c.levelReady) ready.push(c.name);

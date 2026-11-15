@@ -15,10 +15,18 @@
 
 const { SUPABASE_URL } = require("./shared");
 
-// The story is free to play: GM replies come out of a daily free allowance, then 1 bought ink each.
-// Extras (portraits, AI scenes) are paid with bought ink only.
-const COSTS = { gm: 1, portrait: 8, scene: 10 }; // ink per GM reply / portrait / AI scene background
-const EXTRAS = new Set(["portrait", "scene"]);
+// The story is free to play: GM replies come out of a daily free allowance, then bought ink.
+// Extras (portraits, AI scenes, the Gravewarden) are paid with bought ink only.
+// Prices can be changed in Netlify without code: INK_COST_GM, INK_COST_PORTRAIT, INK_COST_SCENE
+// (and REVIVE_INK in revive.js). At ~1 cent per ink before Google's 15%, the defaults cover what each
+// costs to run (a GM reply ~1-3 cents, an image ~5-10 cents).
+const inkSetting = (name, dflt) => { const n = parseInt(process.env[name], 10); return Number.isFinite(n) && n > 0 ? n : dflt; };
+const COSTS = {
+  get gm() { return inkSetting("INK_COST_GM", 3); },             // a story turn past the free daily turns
+  get portrait() { return inkSetting("INK_COST_PORTRAIT", 15); }, // an AI-painted portrait
+  get scene() { return inkSetting("INK_COST_SCENE", 20); },       // an AI-painted scene background
+};
+const EXTRAS = new Set(["portrait", "scene", "revive"]);
 const DEFAULT_FREE_PER_MONTH = 40;
 const DEFAULT_FREE_PER_DAY = 30;
 
@@ -69,15 +77,16 @@ const rpc = (fn, args) => sbAdmin(`rpc/${fn}`, { method: "POST", body: args });
 // Spends ink for an action. Returns { ok, free_left, paid, from_free, from_paid }.
 // When billing is off it always succeeds without touching the database.
 // Daily rules need supabase/billing-daily.sql; until it's run, the old monthly allowance applies.
-async function spend(playerId, kind, tz) {
+async function spend(playerId, kind, tz, costOverride) {
   if (!enforced()) return { ok: true, skipped: true };
   if (!validPlayer(playerId)) return { ok: false, free_left: 0, paid: 0, invalid: true };
+  const cost = costOverride || COSTS[kind];
   try {
-    const r = await rpc("spend_credits_daily", { p_player: playerId, p_cost: COSTS[kind], p_free_daily: freePerDay(), p_today: todayFor(tz), p_use_free: !EXTRAS.has(kind) });
+    const r = await rpc("spend_credits_daily", { p_player: playerId, p_cost: cost, p_free_daily: freePerDay(), p_today: todayFor(tz), p_use_free: !EXTRAS.has(kind) });
     return { ...r, daily: true };
   } catch (e) {
     if (!/\((404|400)\)/.test(e.message)) throw e;
-    return rpc("spend_credits", { p_player: playerId, p_cost: COSTS[kind], p_free_monthly: EXTRAS.has(kind) ? 0 : freePerMonth() });
+    return rpc("spend_credits", { p_player: playerId, p_cost: cost, p_free_monthly: EXTRAS.has(kind) ? 0 : freePerMonth() });
   }
 }
 
