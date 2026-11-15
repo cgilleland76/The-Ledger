@@ -330,6 +330,7 @@ function renderLanding() {
       ${ACCT.msg && !ACCT.merge ? `<p class="${ACCT.ok ? 'hero-note' : 'error-text'}" style="text-align:center;">${escapeHtml(ACCT.msg)}</p>` : ''}
       ${myTablesHTML()}
       ${accountChipHTML()}
+      ${hallHTML()}
       ${whatsNewHTML()}
     </div>
   `;
@@ -543,7 +544,11 @@ async function enterRoom(code) {
   pausedStory = null;
   if (mine && ROSTER[mine.characterId]) {
     MY_CHAR_ID = mine.characterId;
-    if (normalizeInventory(ROSTER[MY_CHAR_ID])) dbUpsertCharacter(MY_CHAR_ID, code, ROSTER[MY_CHAR_ID]);
+    const mineC = ROSTER[MY_CHAR_ID];
+    let changed = normalizeInventory(mineC);
+    if (MY_HASH.key !== playerId()) await refreshMyHash();
+    if (MY_HASH.hash && mineC.ownerHash !== MY_HASH.hash) { mineC.ownerHash = MY_HASH.hash; changed = true; }
+    if (changed) dbUpsertCharacter(MY_CHAR_ID, code, mineC);
     rememberCurrentRoom(code);
     VIEW = 'game'; subscribeRealtime(code); render();
   } else {
@@ -897,6 +902,8 @@ async function submitCharacter() {
     }
 
     draftChar.levelSession = (META && META.session) || 1;
+    if (MY_HASH.key !== playerId()) await refreshMyHash();
+    if (MY_HASH.hash) draftChar.ownerHash = MY_HASH.hash;
     const charId = uid(10);
     await dbUpsertCharacter(charId, ROOM, draftChar);
     ROSTER[charId] = draftChar;
@@ -1627,6 +1634,7 @@ async function rollDeathSave() {
   await dbUpsertCharacter(MY_CHAR_ID, ROOM, c);
   await dbInsertLog(ROOM, entry);
   LOG.push({ ...entry, ts: Date.now() });
+  if (c.dead) callFallen('record', MY_CHAR_ID);
   render();
 }
 window.rollDeathSave = rollDeathSave;
@@ -2128,6 +2136,7 @@ async function callGM(prompt, fallbackEntry) {
   }
   // Damage, healing and items change the sheet itself: save every character that changed.
   // XP is awarded before a rest, so a long rest in the same message can unlock a level-up.
+  const deadBefore = Object.fromEntries(Object.entries(ROSTER).map(([id, c]) => [id, !!c.dead]));
   const results = [resolveMapOps(mapOps), ...casts.map(resolveCast), ...foesAdded.map(resolveFoe), ...attacks.map(resolveFoeAttack), ...hits.map(resolveHit), ...damages.map(resolveDamage), ...heals.map(resolveHeal), ...usesThenGives(uses, gives),
     ...defeats.map(resolveDefeat), ...successes.map(resolveSuccess), ...notes.map(resolveNote), ...rests.map(k => k === 'long' ? resolveLongRest() : resolveShortRest()), ...stables.map(resolveStable), ...features.map(resolveFeature), ...learns.map(resolveLearn)];
   for (const r of results.filter(Boolean)) {
@@ -2138,7 +2147,56 @@ async function callGM(prompt, fallbackEntry) {
     else if (hpChar && ROSTER[hpChar]) await dbUpsertCharacter(hpChar, ROOM, ROSTER[hpChar]);
     if (saveMeta && META) await dbUpdateRoomMeta(ROOM, META);
   }
+  fallenChanges(deadBefore);
   if (VIEW === 'game') render();
+}
+// The Hall of the Fallen (netlify/functions/fallen.js): the server records a death (and writes the
+// hero's best achievement from the story), and takes a hero out of the Hall when they come back.
+function fallenChanges(before) {
+  for (const [id, c] of Object.entries(ROSTER)) {
+    if (c.dead && !before[id]) callFallen('record', id);
+    else if (!c.dead && before[id]) callFallen('returned', id);
+  }
+}
+function callFallen(action, id) {
+  fetch(api('/api/fallen'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, roomCode: ROOM, characterId: id }) })
+    .then(() => { HALL = null; MY_FALLEN = null; }, () => {});
+}
+let HALL = null, MY_FALLEN = null; // null = not loaded yet
+async function loadHall() {
+  if (!supabase || !supabase.rpc) { HALL = []; return; }
+  try { const { data } = await supabase.rpc('hall_of_fallen', { p_limit: 35 }); HALL = Array.isArray(data) ? data : []; } catch (e) { HALL = []; }
+  if (VIEW === 'landing') render();
+}
+async function loadMyFallen() {
+  if (MY_HASH.key !== playerId()) await refreshMyHash();
+  if (!supabase || !supabase.rpc || !MY_HASH.hash) { MY_FALLEN = []; if (VIEW === 'account') render(); return; }
+  try { const { data } = await supabase.rpc('my_fallen', { p_owner: MY_HASH.hash }); MY_FALLEN = Array.isArray(data) ? data : []; } catch (e) { MY_FALLEN = []; }
+  if (VIEW === 'account') render();
+}
+const fallenWhen = d => { try { return new Date(d).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }); } catch (e) { return ''; } };
+function fallenRowHTML(f, mine) {
+  return `<div class="fallen-row${f.returned ? ' returned' : ''}">
+    <div class="fallen-head"><b>${escapeHtml(f.name)}</b> <span class="helptext">Lv${parseInt(f.level) || 1} ${escapeHtml([f.race, f.klass].filter(Boolean).join(' '))} &middot; ${escapeHtml(f.story || '')}</span></div>
+    ${f.achievement ? `<div class="fallen-deed">${escapeHtml(f.achievement)}</div>` : ''}
+    ${f.epitaph ? `<div class="fallen-epitaph">&ldquo;${escapeHtml(f.epitaph)}&rdquo;</div>` : ''}
+    <div class="notes-meta">${escapeHtml(f.cause || 'fell')} &middot; ${fallenWhen(f.died_at)}${mine && f.returned ? ' &middot; <b>returned</b>' : ''}</div>
+  </div>`;
+}
+// Home page: the last 35 heroes who stayed dead, best achievement first.
+function hallHTML() {
+  if (HALL === null) { loadHall(); return ''; }
+  if (!HALL.length) return '';
+  return `<details class="hall"><summary>&#x1F56F; Hall of the Fallen <span class="helptext">(${HALL.length})</span></summary>
+    <p class="helptext">Heroes who fell and stayed fallen, newest first.</p>
+    ${HALL.map(f => fallenRowHTML(f, false)).join('')}</details>`;
+}
+// Account page: every one of this player's heroes who died, including any who came back.
+function myFallenHTML() {
+  if (MY_FALLEN === null) { loadMyFallen(); return '<p class="thinking">Opening your memorial...</p>'; }
+  return `<div class="panel" style="max-width:560px;margin:18px auto 0;">
+    <h3>Your fallen heroes</h3>
+    ${MY_FALLEN.length ? MY_FALLEN.map(f => fallenRowHTML(f, true)).join('') : '<p class="helptext">None of your heroes has fallen. Long may it last.</p>'}</div>`;
 }
 
 function cancelGM() {
@@ -2476,7 +2534,7 @@ async function mergeNo() {
   TABLES = null; loadTables(); render();
 }
 
-function openAccount() { closeShop(); VIEW = 'account'; ACCT.msg = ''; if (!signedIn()) ACCT.step = ACCT.step === 'code' ? 'code' : 'email'; render(); }
+function openAccount() { closeShop(); VIEW = 'account'; ACCT.msg = ''; MY_FALLEN = null; if (!signedIn()) ACCT.step = ACCT.step === 'code' ? 'code' : 'email'; render(); }
 async function accountSend() {
   const email = ((el('acctEmail') || {}).value || '').trim();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { ACCT.ok = false; ACCT.msg = 'Enter a valid email address.'; return render(); }
@@ -2569,7 +2627,8 @@ function renderAccount() {
       <div class="eyebrow">Account</div>
       ${msg}
       ${body}
-    </div>`;
+    </div>
+    ${ACCT.merge ? '' : myFallenHTML()}`;
 }
 function ACCT_back() { ACCT.step = 'email'; ACCT.msg = ''; render(); }
 async function accountResend() { ACCT.step = 'email'; render(); const box = el('acctEmail'); if (box) { box.value = ACCT.email; await accountSend(); } }

@@ -54,6 +54,7 @@ exports.handler = async function (event) {
       await billing.refund(b.playerId, charge);
       throw e;
     }
+    await sbRest(`fallen_heroes?room_code=eq.${encodeURIComponent(roomCode)}&character_id=eq.${encodeURIComponent(characterId)}&returned=eq.false`, { method: "PATCH", body: { returned: true } }).catch(() => {});
     const text = `🕯 A hooded figure with a pale lantern steps out of the dark where ${c.name} fell. "Not yet," says the Gravewarden, and breath returns. ${c.name} is back at 1 HP, bearing the Mark of Return (-${MARK} to attacks, saves and checks, easing with each long rest), and now owes the Gravewarden a debt.`;
     await sbRest("log_entries", { method: "POST", body: { id: "gw" + Date.now().toString(36), room_code: roomCode, author: "The Gravewarden", type: "system", text } }).catch(() => {});
     return reply(200, { ok: true, cost: charge.skipped ? 0 : cost, nextCost: reviveCost(times + 1), wallet: charge.skipped ? undefined : { free_left: charge.free_left, paid: charge.paid } });

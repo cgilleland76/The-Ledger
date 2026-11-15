@@ -515,3 +515,11 @@ button.spell-chip:hover{ background:rgba(217,180,90,0.35); }
 
 .death-saves.fallen{ border-color:rgba(60,40,20,0.55); background:rgba(40,28,16,0.08); }
 .death-saves.fallen .btn{ margin-top:8px; }
+
+/* Hall of the Fallen */
+.hall{ max-width:720px; margin:18px auto 0; padding:10px 14px; border:1px solid rgba(139,104,50,0.35); border-radius:8px; background:rgba(20,14,8,0.25); }
+.hall > summary{ cursor:pointer; font-family:var(--font-display); letter-spacing:0.06em; color:var(--glow, #d9b45a); }
+.fallen-row{ border-top:1px dashed rgba(139,104,50,0.4); padding:10px 0; }
+.fallen-row.returned{ opacity:0.6; }
+.fallen-deed{ margin:4px 0 2px; font-style:italic; }
+.fallen-epitaph{ font-size:0.9rem; opacity:0.85; }

@@ -9,6 +9,12 @@ window.LEDGER_CHANGELOG = [
   {
     date: "2026-11-14",
     type: "feature",
+    title: "The Hall of the Fallen",
+    detail: "Heroes who die are remembered. The home page has a Hall of the Fallen with the last 35 heroes who stayed dead, each with their finest moment from the story and an epitaph. Your own fallen heroes, including any who came back, are listed on your Account page."
+  },
+  {
+    date: "2026-11-14",
+    type: "feature",
     title: "Death is permanent, unless you strike a bargain",
     detail: "A hero who fails three death saves, or takes a blow big enough, dies. A party cleric can still raise them with Revivify or Raise Dead (paid in gold for the diamond). Otherwise, for a few days, the Gravewarden will send them back for ink: at 1 HP, with the Mark of Return (-4 to rolls, easing each long rest) and a debt it will one day call in. Hosts can make a table permanent-death only."
   },
