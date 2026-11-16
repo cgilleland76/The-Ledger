@@ -2083,13 +2083,26 @@ function friendlyTrouble(e) {
 
 // kind 'story' = a Game Master story turn: the server adds its GM playbook and looks up stat blocks
 // for any monsters named in `lore` (the recent log text).
+// A dropped connection (fetch throws a TypeError: weak signal, a phone switching networks) is retried
+// once after a short pause. Anything the server actually answered, and a player's Cancel, is never retried.
+const GM_RETRY_MS = 2500;
 async function fetchGM(prompt, signal, kind, lore) {
-  const resp = await fetch(api('/api/gm'), {
+  const send = () => fetch(api('/api/gm'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ prompt, roomCode: ROOM, kind, lore, playerId: playerId(), tz: new Date().getTimezoneOffset() }),
     signal,
   });
+  let resp;
+  try { resp = await send(); }
+  catch (e) {
+    if (signal && signal.aborted) throw new DOMException('Cancelled', 'AbortError');
+    if (e.name !== 'TypeError') throw e;
+    console.warn('GM connection dropped, retrying once:', e.message);
+    await new Promise(r => setTimeout(r, GM_RETRY_MS));
+    if (signal && signal.aborted) throw new DOMException('Cancelled', 'AbortError');
+    resp = await send();
+  }
   let data = {};
   try { data = await resp.json(); } catch (e) { /* a non-JSON error page; handled below */ }
   if (data.wallet) setWallet(data.wallet);
