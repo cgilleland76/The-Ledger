@@ -262,7 +262,7 @@ begin
   if not found then return room_reply(false, 'no_room'); end if;
   if r.kind <> 'guest' then return room_reply(false, 'already_account'); end if;
   select ink_key into k from accounts where user_id = uid;
-  if r.meta ? 'host' and coalesce(r.meta->>'host', '') <> '' and (k is null or r.meta->>'host' not in (ink_hash(k), k)) then
+  if r.meta ? 'host' and coalesce(r.meta->>'host', '') <> '' and (k is null or r.meta->>'host' <> ink_hash(k)) then
     return room_reply(false, 'not_host');
   end if;
   arch := archive_to_fit(uid, null);

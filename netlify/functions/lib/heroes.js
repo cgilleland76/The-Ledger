@@ -93,7 +93,9 @@ function heroFromCharacter(c) {
   const typed = Array.isArray(d.handItems) ? [...d.handItems] : [];
   const inventory = (Array.isArray(d.inventory) ? d.inventory : []).slice().reverse()
     .filter((i) => { const k = typed.indexOf(i); if (k >= 0) { typed.splice(k, 1); return false; } return true; }).reverse();
-  return { ...d, inventory, xp: Number.isFinite(d.xp) ? d.xp : XP_FOR_LEVEL[parseInt(d.level, 10) || 1] };
+  // The hero on a mini keeps their sheet, never who is playing them (ownerHash, the player's name).
+  const { ownerHash: _o, player: _p, ...sheet } = d;
+  return { ...sheet, inventory, xp: Number.isFinite(d.xp) ? d.xp : XP_FOR_LEVEL[parseInt(d.level, 10) || 1] };
 }
 
 module.exports = { XP_FOR_LEVEL, sha256, ownerHash, claimHash, normaliseClaim, validateHero, heroText, heroFromCharacter, levelForXp };
