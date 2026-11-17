@@ -310,14 +310,8 @@ function feedbackBoxHTML() {
 function renderLanding() {
   el('app').innerHTML = `
     <div class="landing">
-      <svg class="lantern" viewBox="0 0 64 64" fill="none" aria-hidden="true">
-        <path d="M32 24 C24 20 14 20 7 23 L7 49 C14 46 24 46 32 50 C40 46 50 46 57 49 L57 23 C50 20 40 20 32 24 Z" fill="rgba(217,180,90,0.14)" stroke="#d9b45a" stroke-width="2" stroke-linejoin="round"/>
-        <line x1="32" y1="24" x2="32" y2="50" stroke="#d9b45a" stroke-width="2"/>
-        <path d="M12 29 C18 27 25 27 28 29 M12 35 C18 33 25 33 28 35 M12 41 C18 39 25 39 28 41 M36 29 C39 27 46 27 52 29 M36 35 C39 33 46 33 52 35 M36 41 C39 39 46 39 52 41" stroke="#d9b45a" stroke-width="1.2" opacity="0.6" stroke-linecap="round"/>
-        <path d="M32 4 L34.4 11 L41.5 11.4 L36 15.8 L38 22.5 L32 18.6 L26 22.5 L28 15.8 L22.5 11.4 L29.6 11 Z" fill="#d9b45a"/>
-      </svg>
+      <h1 class="brand-logo"><img src="brand/ledger-primary-color-dark.svg" alt="The Ledger" width="574" height="540"></h1>
       <div class="eyebrow">Remote Tabletop</div>
-      <h1>The Ledger</h1>
       <p class="sub">A shared table for you and your party, or a story just for you — either way, a tireless Game Master keeps the tale moving.</p>
       <div class="choice-row">
         <div class="choice-card">
