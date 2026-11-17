@@ -2,8 +2,9 @@
 -- after schema.sql, billing.sql, tags.sql and minis.sql. Safe to re-run.
 --
 -- Two kinds of room (rooms.kind):
--- * guest   — as before: the code is the only key, anyone holding the public site key can read and write.
---             Capped site-wide (guest_room_cap); when full, the least recently played guest room is removed.
+-- * guest   — anyone with the code can join, and only those who joined can read or write. Players without an
+--             account join with Supabase's anonymous sign-in. Made by create_guest_room(), a few per player a day.
+--             Not capped: idle guest rooms are deleted after 30 days (soft-launch.sql, cleanup_idle_rooms).
 -- * account — made by a signed-in player. Only members (room_members) can read or write. Joined with a
 --             separate join code (8 characters) that the host can rotate; the internal room code is not a
 --             key. Never removed for space; each account keeps at most account_room_limit() active
@@ -66,9 +67,9 @@ alter table room_members enable row level security; -- read through my_tables();
 create or replace function is_room_member(p_room text) returns boolean language sql stable security definer set search_path = public as $$
   select exists (select 1 from room_members where room_code = p_room and user_id = auth.uid());
 $$;
+-- Every table, guest or account, is members-only: joining with the code (join_room) makes you a member.
 create or replace function can_use_room(p_room text) returns boolean language sql stable security definer set search_path = public as $$
-  select exists (select 1 from rooms where code = p_room and (kind = 'guest' or exists (
-    select 1 from room_members m where m.room_code = p_room and m.user_id = auth.uid())));
+  select is_room_member(p_room);
 $$;
 
 -- ---------- the rules ----------
@@ -89,12 +90,12 @@ drop policy if exists "characters: add in guest room or as member" on characters
 drop policy if exists "characters: edit in guest room or as member" on characters;
 drop policy if exists "log: guest room or member" on log_entries;
 drop policy if exists "log: write in guest room or as member" on log_entries;
+drop policy if exists "rooms: members" on rooms;
+drop policy if exists "rooms: members can play" on rooms;
 
-create policy "rooms: guest or member" on rooms for select using (kind = 'guest' or is_room_member(code));
-create policy "rooms: new guest rooms" on rooms for insert with check (kind = 'guest' and owner_id is null and join_code is null);
-create policy "rooms: guest or member can play" on rooms for update
-  using (kind = 'guest' or is_room_member(code)) with check (kind = 'guest' or is_room_member(code));
--- No delete policy: guest rooms are only removed by make_room_space(), account rooms only archived.
+create policy "rooms: members" on rooms for select using (is_room_member(code));
+create policy "rooms: members can play" on rooms for update using (is_room_member(code)) with check (is_room_member(code));
+-- No delete policy: guest rooms are only removed by cleanup_idle_rooms() (soft-launch.sql), account rooms only archived.
 create policy "characters: guest room or member" on characters for select using (can_use_room(room_code));
 create policy "characters: add in guest room or as member" on characters for insert with check (can_use_room(room_code));
 create policy "characters: edit in guest room or as member" on characters for update using (can_use_room(room_code)) with check (can_use_room(room_code));
@@ -103,9 +104,9 @@ create policy "log: write in guest room or as member" on log_entries for insert 
 
 -- Browsers may only write the game itself: never a room's kind, owner, join code or archive state, and
 -- never a character's portrait columns (the server stores those after its content check).
+-- Rooms are made only by create_guest_room() and create_account_room().
 revoke insert, update, delete on rooms from anon, authenticated;
-grant insert (code, mode, meta) on rooms to anon, authenticated;
-grant update (meta) on rooms to anon, authenticated;
+grant update (meta) on rooms to authenticated;
 revoke insert, update on characters from anon, authenticated;
 grant insert (id, room_code, data) on characters to anon, authenticated;
 grant update (id, room_code, data) on characters to anon, authenticated;
@@ -119,8 +120,25 @@ end $$;
 drop trigger if exists log_touches_room on log_entries;
 create trigger log_touches_room after insert on log_entries for each row execute function touch_room();
 
+-- Who made a room (for the daily limit on new guest rooms).
+alter table rooms add column if not exists created_by uuid;
+create index if not exists idx_rooms_created_by on rooms(created_by, created_at);
+
+-- A table's host (meta.host) is set when the table is made and changed only by the server's own functions.
+-- A browser that sends a different host keeps the old one; the rest of its change goes through.
+create or replace function keep_room_host() returns trigger language plpgsql set search_path = public as $$
+begin
+  if current_user in ('anon', 'authenticated') and (new.meta -> 'host') is distinct from (old.meta -> 'host') then
+    new.meta := case when old.meta ? 'host' then jsonb_set(coalesce(new.meta, '{}'::jsonb), '{host}', old.meta -> 'host')
+                     else coalesce(new.meta, '{}'::jsonb) - 'host' end;
+  end if;
+  return new;
+end $$;
+drop trigger if exists rooms_keep_host on rooms;
+create trigger rooms_keep_host before update on rooms for each row execute function keep_room_host();
+
 -- ---------- limits ----------
-create or replace function guest_room_cap() returns integer language sql immutable as 'select 20';
+create or replace function guest_rooms_per_day() returns integer language sql immutable as 'select 6';
 create or replace function account_room_limit() returns integer language sql immutable as 'select 5';
 
 create or replace function new_room_code(n integer default 8) returns text language plpgsql volatile set search_path = public as $$
@@ -134,18 +152,10 @@ begin
   return c;
 end $$;
 
--- Before a new guest room: remove least recently played guest rooms until there's space.
-create or replace function make_room_space() returns integer language plpgsql security definer set search_path = public as $$
-declare n integer; removed integer := 0;
-begin
-  perform pg_advisory_xact_lock(7710);
-  select count(*) into n from rooms where kind = 'guest';
-  while n >= guest_room_cap() loop
-    delete from rooms where code = (select code from rooms where kind = 'guest' order by last_played asc, created_at asc limit 1);
-    n := n - 1; removed := removed + 1;
-  end loop;
-  return removed;
-end $$;
+-- Guest rooms used to be capped here (the least recently played was removed to make space). The cap is
+-- gone: idle guest rooms are cleaned up after 30 days instead (soft-launch.sql, cleanup_idle_rooms).
+-- Kept as a no-op because older app builds still call it before making a room.
+create or replace function make_room_space() returns integer language sql security definer set search_path = public as 'select 0';
 
 -- Archives an owner's least recently played active tables until one more fits. Returns their codes.
 create or replace function archive_to_fit(p_owner uuid, p_keep text default null) returns text[] language plpgsql security definer set search_path = public as $$
@@ -178,7 +188,28 @@ begin
   return jsonb_build_object('ok', true, 'room', c, 'join_code', j, 'archived', to_jsonb(arch));
 end $$;
 
--- Joins by code. Guest rooms: just returns the room. Account rooms: only by their join code; adds the
+-- A new guest table, made by the server so browsers never insert rooms. The caller (signed in or anonymous)
+-- becomes its host member. meta.host is stored as a hash of the ink key. At most guest_rooms_per_day() each.
+create or replace function create_guest_room(p_mode text, p_meta jsonb) returns jsonb language plpgsql security definer set search_path = public as $$
+declare uid uuid := auth.uid(); c text; m jsonb := coalesce(p_meta, '{}'::jsonb); h text;
+begin
+  if uid is null then return room_reply(false, 'sign_in'); end if;
+  if jsonb_typeof(m) <> 'object' or length(m::text) > 20000 then return room_reply(false, 'bad_request'); end if;
+  if (select count(*) from rooms where created_by = uid and created_at > now() - interval '1 day') >= guest_rooms_per_day() then
+    return room_reply(false, 'too_many');
+  end if;
+  h := m ->> 'host';
+  m := case when h is null or h = '' then m - 'host'
+            when h ~ '^[0-9a-f]{64}$' then m
+            else jsonb_set(m, '{host}', to_jsonb(ink_hash(h))) end;
+  c := new_room_code(8);
+  insert into rooms(code, mode, meta, kind, created_by, last_played)
+  values (c, case when p_mode = 'solo' then 'solo' else 'group' end, m, 'guest', uid, now());
+  insert into room_members(room_code, user_id, role) values (c, uid, 'host');
+  return jsonb_build_object('ok', true, 'room', c);
+end $$;
+
+-- Joins by code. Guest rooms: adds the caller as a member. Account rooms: only by their join code; adds the
 -- caller as a member (signed in: 'player'; anonymous: 'guest', if the host allows guests). p_character
 -- keeps a player who was already at the table on their hero (after the room was saved to an account).
 create or replace function join_room(p_code text, p_character text default null) returns jsonb language plpgsql security definer set search_path = public as $$
@@ -188,6 +219,10 @@ begin
   if not found then
     select * into r from rooms where code = cc and kind = 'guest';
     if not found then return room_reply(false, 'no_room'); end if;
+    if uid is null then return room_reply(false, 'sign_in'); end if;
+    insert into room_members(room_code, user_id, role)
+    values (r.code, uid, case when is_anon_user() then 'guest' else 'player' end)
+    on conflict (room_code, user_id) do nothing;
     return jsonb_build_object('ok', true, 'room', r.code, 'kind', 'guest');
   end if;
   if uid is null then return room_reply(false, 'sign_in'); end if;
@@ -217,11 +252,12 @@ begin
 end $$;
 
 -- "Save this table to my account": the guest room's host (by ink key) turns it into an account room.
--- The code keeps working as its join code; players already there keep their heroes when they rejoin.
+-- It gets a new join code (the old guest code stops working); players already at the table stay members.
 create or replace function upgrade_room(p_room text, p_character text default null) returns jsonb language plpgsql security definer set search_path = public as $$
-declare uid uuid := auth.uid(); r rooms; k text; arch text[];
+declare uid uuid := auth.uid(); r rooms; k text; arch text[]; j text;
 begin
   if uid is null or is_anon_user() then return room_reply(false, 'sign_in'); end if;
+  if not is_room_member(p_room) then return room_reply(false, 'not_host'); end if;
   select * into r from rooms where code = p_room for update;
   if not found then return room_reply(false, 'no_room'); end if;
   if r.kind <> 'guest' then return room_reply(false, 'already_account'); end if;
@@ -230,13 +266,14 @@ begin
     return room_reply(false, 'not_host');
   end if;
   arch := archive_to_fit(uid, null);
-  update rooms set kind = 'account', owner_id = uid, join_code = r.code, allow_guests = true, last_played = now(),
+  j := new_room_code(8);
+  update rooms set kind = 'account', owner_id = uid, join_code = j, allow_guests = true, last_played = now(),
          meta = case when k is null then meta else jsonb_set(meta, '{host}', to_jsonb(ink_hash(k))) end
    where code = r.code;
   insert into room_members(room_code, user_id, role, character_id)
   values (r.code, uid, 'host', case when exists (select 1 from characters where id = p_character and room_code = r.code) then p_character end)
   on conflict (room_code, user_id) do update set role = 'host';
-  return jsonb_build_object('ok', true, 'room', r.code, 'join_code', r.code, 'archived', to_jsonb(arch));
+  return jsonb_build_object('ok', true, 'room', r.code, 'join_code', j, 'archived', to_jsonb(arch));
 end $$;
 
 create or replace function is_room_host(p_room text) returns boolean language sql stable security definer set search_path = public as $$
@@ -372,6 +409,7 @@ do $$ declare f text; begin
   foreach f in array array[
     'ink_hash(text)', 'is_anon_user()', 'is_room_member(text)', 'can_use_room(text)', 'touch_room()', 'new_room_code(integer)',
     'make_room_space()', 'archive_to_fit(uuid, text)', 'create_account_room(text, jsonb)', 'join_room(text, text)',
+    'create_guest_room(text, jsonb)', 'guest_rooms_per_day()', 'keep_room_host()',
     'claim_seat(text, text)', 'upgrade_room(text, text)', 'is_room_host(text)', 'rotate_room_code(text)',
     'set_room_guests(text, boolean)', 'archive_room(text, boolean)', 'my_tables()', 'room_info(text)',
     'key_assets(text)', 'account_merge(text, text)', 'account_link(uuid, text, text)', 'account_merge_device(uuid, text)',
@@ -380,10 +418,10 @@ do $$ declare f text; begin
 end $$;
 -- the rules call these as the signed-in (or anonymous) player
 grant execute on function is_room_member(text), can_use_room(text), is_anon_user(), room_reply(boolean, text) to anon, authenticated;
--- the site, for anyone
-grant execute on function make_room_space(), join_room(text, text), room_info(text) to anon, authenticated;
+-- the site, for anyone (join_room answers 'sign_in' to a caller without a session)
+grant execute on function join_room(text, text), room_info(text) to anon, authenticated;
 -- signed-in players (anonymous guests included; each function checks what it needs)
-grant execute on function create_account_room(text, jsonb), claim_seat(text, text), upgrade_room(text, text),
+grant execute on function create_account_room(text, jsonb), create_guest_room(text, jsonb), claim_seat(text, text), upgrade_room(text, text),
   rotate_room_code(text), set_room_guests(text, boolean), archive_room(text, boolean), my_tables() to authenticated;
 -- the server only
 grant execute on function ink_hash(text), key_assets(text), account_merge(text, text), account_link(uuid, text, text),

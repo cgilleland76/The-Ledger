@@ -72,7 +72,21 @@
   const initials = n => String(n || '?').split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase();
   let room = null, chars = [];
 
+  // Tables are members-only: this screen sits down at the table with the code in its link (signed in on
+  // this device, or as an anonymous guest), the same way a player joins.
+  let joined = false;
+  async function join() {
+    if (joined) return;
+    try {
+      const { data } = await sb.auth.getSession();
+      if (!(data && data.session) && sb.auth.signInAnonymously) await sb.auth.signInAnonymously();
+      const { data: j } = await sb.rpc('join_room', { p_code: code });
+      joined = !!(j && j.ok);
+    } catch (e) { console.error(e); }
+  }
+
   async function load() {
+    await join();
     const [r, c] = await Promise.all([
       sb.from('rooms').select('code, meta, scene_url').eq('code', code).maybeSingle(),
       sb.from('characters').select('id, data, portrait_url').eq('room_code', code),

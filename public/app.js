@@ -43,7 +43,6 @@ const el = id => document.getElementById(id);
 // picking from 32 slots used to produce an empty character about 1 time in 32 (short codes/IDs).
 const ID_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789";
 const uid = (n = 8) => Array.from({ length: n }, () => ID_ALPHABET[Math.floor(Math.random() * ID_ALPHABET.length)]).join('');
-const roomCode = () => uid(8).toUpperCase(); // older rooms have 5-character codes; both work
 
 /* ---------------- Android app + ink (the paywall) ----------------
    In the Android app (Capacitor) the pages are bundled inside the app, so server calls go to the
@@ -107,7 +106,6 @@ function checkConfigured() {
 
 /* ---------------- Capacity limits ---------------- */
 const MAX_PLAYERS_PER_ROOM = 6;
-const MAX_TOTAL_ROOMS = 20;
 
 /* ---------------- Supabase helpers ---------------- */
 async function dbGetRoom(code) {
@@ -115,20 +113,33 @@ async function dbGetRoom(code) {
   if (error) { console.error(error); return null; }
   return data;
 }
-async function dbCountRooms() {
-  const { count, error } = await supabase.from('rooms').select('code', { count: 'exact', head: true });
-  if (error) { console.error(error); return 0; }
-  return count || 0;
+// Guest tables aren't capped. The database deletes guest tables with no story activity for 30 days,
+// unless paused with their story code in that time (supabase/soft-launch.sql). Account tables are kept.
+// Every table is members-only, so a player without an account plays on an anonymous session.
+async function ensureSession() {
+  if (!supabase || !supabase.auth) return false;
+  try {
+    const { data } = await supabase.auth.getSession();
+    if (data && data.session) { setAuthFrom(data.session); return true; }
+    if (!supabase.auth.signInAnonymously) return false;
+    const a = await supabase.auth.signInAnonymously();
+    if (a.error) { console.error(a.error); return false; }
+    setAuthFrom(a.data && a.data.session);
+    return true;
+  } catch (e) { console.error(e); return false; }
 }
-// Guest tables are capped site-wide; the database removes the least recently played guest table to make
-// space (supabase/accounts.sql, make_room_space). Account tables are never removed for space.
-async function dbEvictOldestRoomIfAtCapacity() {
-  const { error } = await supabase.rpc('make_room_space');
-  if (error) console.error(error);
+// The player's session token, sent to the server functions so they can check who is at the table.
+async function accessToken() {
+  try { const { data } = await supabase.auth.getSession(); return (data && data.session && data.session.access_token) || ''; }
+  catch (e) { return (AUTH.session && AUTH.session.access_token) || ''; }
 }
-async function dbInsertRoom(code, mode, meta) {
-  const { error } = await supabase.from('rooms').insert({ code, mode, meta });
-  if (error) console.error(error);
+// A new guest table, made by the server (supabase/accounts.sql, create_guest_room). Returns its code or an error.
+async function dbCreateGuestRoom(mode, meta) {
+  if (!(await ensureSession())) return { error: "The table couldn't be made just now. Try again in a moment." };
+  const { data: r, error } = await supabase.rpc('create_guest_room', { p_mode: mode, p_meta: meta });
+  if (error || !r) { if (error) console.error(error); return { error: "The table couldn't be made just now. Try again in a moment." }; }
+  if (!r.ok) return { error: r.code === 'too_many' ? "You've started a lot of tables today. Pick up one you already have, or try again tomorrow." : "The table couldn't be made just now. Try again in a moment." };
+  return { room: r.room };
 }
 async function dbUpdateRoomMeta(code, meta) {
   const { error } = await supabase.from('rooms').update({ meta }).eq('code', code);
@@ -247,8 +258,8 @@ async function loadSiteConfig() {
     const resp = await fetch(api('/api/site-config'));
     if (!resp.ok) return;
     const conf = await resp.json();
-    SITE = { sceneImages: conf.sceneImages === true, sceneMax: parseInt(conf.sceneMaxPerRoom) || 3, sceneInk: parseInt(conf.sceneInk) || 0, revive: conf.revive && Array.isArray(conf.revive.ink) ? conf.revive : { ink: [0, 0, 0], days: 3 } };
-    if (VIEW === 'game' && (ACTIVE_TAB === 'map' || ACTIVE_TAB === 'help')) render();
+    SITE = { portraitGeneration: conf.portraitGeneration === true, sceneImages: conf.sceneImages === true, sceneMax: parseInt(conf.sceneMaxPerRoom) || 3, sceneInk: parseInt(conf.sceneInk) || 0, revive: conf.revive && Array.isArray(conf.revive.ink) ? conf.revive : { ink: [0, 0, 0], days: 3 } };
+    if (VIEW === 'game' && (ACTIVE_TAB === 'map' || ACTIVE_TAB === 'help' || ACTIVE_TAB === 'sheet')) render();
     const email = String(conf.supportEmail || '').trim();
     if (!email || email === CONTACT_EMAIL) return;
     CONTACT_EMAIL = email;
@@ -418,7 +429,7 @@ function renderCreate() {
         ${createDraft.seedMode === 'custom' ? `<textarea id="seed" placeholder="Describe the opening situation, setting, and hook..." oninput="setCreateSeed(this.value)">${escapeAttr(createDraft.seed)}</textarea>` : `<p class="helptext">Leave this — once you continue, the GM will generate an opening scene from the genre and tone above.</p>`}
       </div>
 
-      <p class="helptext">${signedIn() ? 'This will be a private table on your account: only players you invite with its code can see it.' : 'Guest tables are open to anyone with the code, and can be removed when space is needed. <button class="link-btn" onclick="openAccount()">Sign in</button> to make a private table.'}</p>
+      <p class="helptext">${signedIn() ? 'This will be a private table on your account: only players you invite with its code can see it.' : 'Guest tables are open to anyone with the code, and are deleted after 30 days without play. <button class="link-btn" onclick="openAccount()">Sign in</button> to make a private table.'}</p>
       <button class="btn solid wide" onclick="submitCreate()">${MODE === 'solo' ? 'Create My Story' : 'Create Room'}</button>
     </div>
   `;
@@ -442,7 +453,6 @@ async function submitCreate() {
     if (createDraft.seedMode === 'custom') createDraft.seed = el('seed').value.trim();
     if (createDraft.seedMode === 'custom' && !createDraft.seed) createDraft.seedMode = 'blank'; // an empty premise: the GM invents one
 
-    const code = roomCode();
     META = {
       name: createDraft.name,
       length: createDraft.length,
@@ -464,10 +474,12 @@ async function submitCreate() {
       TABLES = null;
       ACCT.notice = r.archived && r.archived.length ? 'To make room, the table you played least recently was archived. Restore it from My tables.' : '';
     } else {
-      ROOM = code;
+      const made = await dbCreateGuestRoom(MODE, META);
+      if (made.error) { alert(made.error); return; }
+      ROOM = made.room;
       ROOM_INFO = { kind: 'guest' };
-      await dbEvictOldestRoomIfAtCapacity();
-      await dbInsertRoom(code, MODE, META);
+      const row = await dbGetRoom(ROOM);
+      if (row && row.meta) META = row.meta; // the server stores the host as a hash
     }
     if (!typedName || !META.tone) {
       const btn = document.querySelector('button[onclick="submitCreate()"]');
@@ -947,12 +959,15 @@ function privacyBadge() {
   if (!ROOM_INFO) return '';
   return ROOM_INFO.kind === 'account'
     ? ' <span class="badge" title="Only members can see this table">Private</span>'
-    : ' <span class="badge" title="Guest tables are open to anyone with the code, and can be removed when space is needed. Sign in to make a private table.">Guest table</span>';
+    : ' <span class="badge" title="Guest tables are open to anyone with the code, and are deleted after 30 days without play. Sign in to make a private table.">Guest table</span>';
 }
 let pausedStory = null;   // { code, name, error? } shown on the landing page right after pausing
 function pauseStory() {
   pausedStory = { code: inviteCode(), name: META.name };
   try { navigator.clipboard?.writeText(inviteCode()); } catch (e) {}
+  // Marks the pause on the server, so the 30-day cleanup keeps this story (supabase/soft-launch.sql).
+  // Best effort: a failure here never stops the pause.
+  supabase.rpc('pause_room', { p_room: ROOM }).then(({ error }) => { if (error) console.warn('pause_room:', error.message); }, () => {});
   leaveTable();
 }
 function pausedNote() {
@@ -1591,7 +1606,7 @@ async function seekGravewarden(id) {
   if (!confirm(`Pay the Gravewarden to bring ${c.name} back?`)) return;
   try {
     const resp = await fetch(api('/api/revive'), { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ roomCode: ROOM, characterId: id, playerId: playerId(), tz: new Date().getTimezoneOffset() }) });
+      body: JSON.stringify({ roomCode: ROOM, characterId: id, playerId: playerId(), tz: new Date().getTimezoneOffset(), accessToken: await accessToken() }) });
     let data = {}; try { data = await resp.json(); } catch (e) {}
     if (data.wallet) setWallet(data.wallet);
     if (data.outOfInk) { openShop(data.error); return; }
@@ -2078,6 +2093,8 @@ function friendlyTrouble(e) {
   if (e && e.name === 'TypeError') return "The road to the Game Master is washed out. Check your connection, then try again.";
   if (e && e.reason === 'room') return "The Game Master can't find this table in the ledger. Reopen the story with its code and try again.";
   if (e && e.reason === 'setup_limit') return e.message;
+  if (e && e.reason === 'not_member') return "The Game Master doesn't see you at this table. Leave, then join again with the table's code.";
+  if (e && e.reason === 'gm_rest') return "The Game Master needs to rest. Their candle has burned down to a stub and they've gone to bed. Come back tomorrow.";
   return GM_TROUBLE[Math.floor(Math.random() * GM_TROUBLE.length)];
 }
 
@@ -2087,10 +2104,10 @@ function friendlyTrouble(e) {
 // once after a short pause. Anything the server actually answered, and a player's Cancel, is never retried.
 const GM_RETRY_MS = 2500;
 async function fetchGM(prompt, signal, kind, lore) {
-  const send = () => fetch(api('/api/gm'), {
+  const send = async () => fetch(api('/api/gm'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt, roomCode: ROOM, kind, lore, playerId: playerId(), tz: new Date().getTimezoneOffset() }),
+    body: JSON.stringify({ prompt, roomCode: ROOM, kind, lore, playerId: playerId(), tz: new Date().getTimezoneOffset(), accessToken: await accessToken() }),
     signal,
   });
   let resp;
@@ -2171,8 +2188,10 @@ function fallenChanges(before) {
     else if (!c.dead && before[id]) callFallen('returned', id);
   }
 }
-function callFallen(action, id) {
-  fetch(api('/api/fallen'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, roomCode: ROOM, characterId: id }) })
+async function callFallen(action, id) {
+  const room = ROOM;
+  const accessTokenNow = await accessToken();
+  fetch(api('/api/fallen'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, roomCode: room, characterId: id, accessToken: accessTokenNow }) })
     .then(() => { HALL = null; MY_FALLEN = null; }, () => {});
 }
 let HALL = null, MY_FALLEN = null; // null = not loaded yet
@@ -2224,7 +2243,7 @@ function cancelGM() {
      billing is on. Runs in scene-background.js, progress arrives through scene_status.
    - Upload your own background: host only, free, unlimited, works even with painting switched off.
    Every picture is content-checked on the server before it's stored. */
-let SITE = { sceneImages: false, sceneMax: 3, sceneInk: 0, revive: { ink: [0, 0, 0], days: 3 } };
+let SITE = { portraitGeneration: false, sceneImages: false, sceneMax: 3, sceneInk: 0, revive: { ink: [0, 0, 0], days: 3 } };
 let SCENE = null; // { url, status, at, count } from the room row
 const SCENE_URL_PREFIX = (cfg.SUPABASE_URL || '').replace(/\/$/, '') + '/storage/v1/object/public/scenes/';
 function sceneFromRow(r) { return r ? { url: r.scene_url || '', status: r.scene_status || '', at: r.scene_updated_at || '', count: r.scene_count || 0 } : null; }
@@ -2269,7 +2288,7 @@ async function paintScene() {
   scenePaintRequested = Date.now();
   if (SCENE) SCENE.status = '';
   rerenderMap();
-  const body = JSON.stringify({ roomCode: ROOM, playerId: playerId(), platform: IS_APP ? 'android' : 'web' });
+  const body = JSON.stringify({ roomCode: ROOM, playerId: playerId(), platform: IS_APP ? 'android' : 'web', accessToken: await accessToken() });
   try {
     // A background function answers 202 at once; progress arrives through the room's scene_status.
     await fetch(api('/.netlify/functions/scene-background'), IS_APP
@@ -2320,7 +2339,7 @@ async function onSceneFile(input) {
     const resp = await fetch(api('/api/scene-upload'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ roomCode: room, playerId: playerId(), platform: IS_APP ? 'android' : 'web', image }),
+      body: JSON.stringify({ roomCode: room, playerId: playerId(), platform: IS_APP ? 'android' : 'web', image, accessToken: await accessToken() }),
     });
     let data = {};
     try { data = await resp.json(); } catch (e) { /* non-JSON error page */ }
@@ -2344,7 +2363,6 @@ async function setSceneImages(on) {
   if (!room) return;
   META = room.meta || {};
   META.sceneImages = !!on;
-  if (!META.host) META.host = myHostId(); // older rooms: whoever switches it on becomes the host
   await dbUpdateRoomMeta(ROOM, META);
   if (VIEW === 'game' && ACTIVE_TAB === 'help') renderHelpTab();
 }
@@ -2504,6 +2522,8 @@ async function switchInkKey(key) {
 }
 async function afterSignIn() {
   if (ACCT.linking || !signedIn()) return;
+  // Signing in changes who this device is, so sit back down at the guest table it's playing.
+  if (ROOM && ROOM_INFO && ROOM_INFO.kind === 'guest') supabase.rpc('join_room', { p_code: ROOM, p_character: MY_CHAR_ID || null }).then(() => {}, () => {});
   ACCT.linking = true;
   try {
     const r = await accountCall('link');
@@ -2632,7 +2652,7 @@ function renderAccount() {
     body = `<h2>Sign in</h2>
       <p class="helptext">Optional. Signing in keeps your ink, hero minis and tables safe if you clear this browser, reinstall the app or switch devices, and lets you make private tables. No password: we email you a sign-in link and code.</p>
       <div class="notes-add-row"><input type="email" id="acctEmail" autocomplete="email" placeholder="you@example.com" value="${escapeAttr(ACCT.email)}"><button class="btn solid" ${ACCT.busy ? 'disabled' : ''} onclick="accountSend()">Email me a sign-in code</button></div>
-      <p class="helptext" style="margin-top:12px;">You can keep playing without an account. Guest tables are open to anyone with the code, and can be removed when space is needed.</p>`;
+      <p class="helptext" style="margin-top:12px;">You can keep playing without an account. Guest tables are open to anyone with the code, and are deleted after 30 days without play.</p>`;
   }
   el('app').innerHTML = `
     <div class="top-nav"><button class="link-btn" onclick="goToLanding()">&larr; The Ledger</button></div>
@@ -2660,7 +2680,7 @@ function accountChipHTML() {
   return signedIn()
     ? `<p style="text-align:center;margin:10px 0 0;" class="helptext">Signed in as ${escapeHtml(AUTH.user.email)} &middot; <button class="link-btn" onclick="openAccount()">Account</button> &middot; <button class="link-btn" onclick="openMyMinis()">My minis</button></p>`
     : `<p style="text-align:center;margin:10px 0 0;"><button class="link-btn" onclick="openAccount()">Sign in</button> &middot; <button class="link-btn" onclick="openMyMinis()">My minis</button></p>
-       <p class="helptext" style="text-align:center;margin:6px 0 0;">Guest tables are open to anyone with the code, and can be removed when space is needed. Sign in to make a private table and keep your ink.</p>`;
+       <p class="helptext" style="text-align:center;margin:6px 0 0;">Guest tables are open to anyone with the code, and are deleted after 30 days without play. Sign in to make a private table and keep your ink.</p>`;
 }
 function myTablesHTML() {
   if (!signedIn()) return '';
@@ -2734,7 +2754,7 @@ async function upgradeTable() {
   ROOM_INFO = await dbRoomInfo(ROOM);
   TABLES = null;
   const note = data.archived && data.archived.length ? ' To make room, the table you played least recently was archived.' : '';
-  alert('Saved. This table is now private on your account. The code still works for your players.' + note);
+  alert(`Saved. This table is now private on your account. Everyone already here stays. New players join with the code ${(ROOM_INFO && ROOM_INFO.join_code) || ''}; the old code no longer works.` + note);
   render();
 }
 function openTableSettings() {
@@ -3833,7 +3853,7 @@ function portraitBoxHTML(c) {
   const action = state === 'pending'
     ? `<div class="gm-pending"><span class="thinking">Painting your portrait<span class="thinking-dots"><span>.</span><span>.</span><span>.</span></span></span></div><p class="helptext">Usually under a minute — keep playing, it will appear here.</p>`
     : `<div class="portrait-actions">
-        <button class="btn" onclick="generatePortrait()">${img ? 'Regenerate portrait' : 'Generate portrait'}${inkCostLabel('portrait')}</button>
+        ${SITE.portraitGeneration ? `<button class="btn" onclick="generatePortrait()">${img ? 'Regenerate portrait' : 'Generate portrait'}${inkCostLabel('portrait')}</button>` : ''}
         ${uploadPortraitButtonHTML()}
       </div>${state === 'error' ? `<div class="error-text" style="margin-top:8px;">${escapeHtml(portraitErrorText(c))}</div>` : ''}`;
   return `<div class="portrait-box">
@@ -3917,7 +3937,7 @@ async function onPortraitFile(input) {
     const resp = await fetch(api('/api/portrait-upload'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ roomCode: room, characterId: charId, platform: IS_APP ? 'android' : 'web', image }),
+      body: JSON.stringify({ roomCode: room, characterId: charId, platform: IS_APP ? 'android' : 'web', image, accessToken: await accessToken() }),
     });
     let data = {};
     try { data = await resp.json(); } catch (e) { /* non-JSON error page */ }
@@ -3961,7 +3981,7 @@ function startPortraitPoll() {
 
 async function generatePortrait() {
   const c = ROSTER[MY_CHAR_ID];
-  if (!c || portraitState(c) === 'pending') return;
+  if (!c || portraitState(c) === 'pending' || !SITE.portraitGeneration) return;
   const box = el('charAppearance');
   if (box) { c.appearance = box.value.trim().slice(0, 500); appearanceDraft = null; }
   if (el('charGender')) { c.gender = el('charGender').value.trim().slice(0, 30); genderDraft = null; }
@@ -3971,7 +3991,7 @@ async function generatePortrait() {
   portraitBaseline = c.portraitAt || '';
   render();
   try {
-    const body = JSON.stringify({ roomCode: ROOM, characterId: MY_CHAR_ID, playerId: playerId(), platform: IS_APP ? 'android' : 'web' });
+    const body = JSON.stringify({ roomCode: ROOM, characterId: MY_CHAR_ID, playerId: playerId(), platform: IS_APP ? 'android' : 'web', accessToken: await accessToken() });
     // The app is on a different origin than the server, and background functions can't answer a CORS
     // preflight, so it sends a "simple" request it can't read the reply to. Progress arrives on the row either way.
     const resp = await fetch(api('/.netlify/functions/portrait-background'), IS_APP
@@ -4080,7 +4100,7 @@ function renderHelpTab() {
         <li>Dice are <b>only</b> rolled when you type <code>/roll</code>. For a plain d20 check, just add the number, e.g. <code>/roll +5</code>. For any other dice — your own damage or healing, anything the GM asks you to roll — use full notation like <code>/roll 2d6+3</code> or <code>/roll 1d4</code>.</li>
         <li>For advantage or disadvantage on a d20 roll: <code>/roll +5 adv</code> or <code>/roll 1d20+5 dis</code> — rolls two d20s and keeps the higher or lower.</li>
         <li><b>Ask the GM to continue the story</b> sends the recent log and character/party status to the Game Master, who narrates what happens next.</li>
-        <li>Your <b>Sheet</b> tab is where you track your own HP and inventory, and where you can describe your character and paint a <b>portrait</b> (one at a time, a few per table).</li>
+        <li>Your <b>Sheet</b> tab is where you track your own HP and inventory, and where you can describe your character and ${SITE.portraitGeneration ? 'paint a <b>portrait</b> (one at a time, a few per table)' : 'upload a <b>portrait</b>'}.</li>
         <li><b>Advance Session</b> in the header marks a new session in the log — useful for pacing a Short Arc or longer story.</li>
       </ul>
       ${feedbackBoxHTML()}
@@ -4325,7 +4345,7 @@ async function useInkKey() {
 
 /* ---------------- NFC minis: tap-to-play tags (see NFC-MINIS.md) ----------------
    A sticker in a mini's base holds https://<site>/t/<tag id>, which netlify.toml redirects to /?tag=<id>.
-   Tags point at lasting heroes and monsters, never at a room (rooms get evicted), and are added into
+   Tags point at lasting heroes and monsters, never at a room (idle guest rooms get deleted), and are added into
    whatever table this device is sitting at (CURRENT_ROOM_KEY) or one picked by code. */
 const TAG_ID_RE = /^[hmik]_[a-z0-9]{10,40}$/;
 let TAG = null;        // { id, kind, data } once loaded
@@ -4337,7 +4357,7 @@ let TAG_ROOM = null;   // { code, name } of the table this device is at, if it s
 async function openTag(id) {
   VIEW = 'tag'; TAG = null; TAG_STATE = 'loading'; TAG_MSG = ''; TAG_ROOM = null;
   render();
-  const { data, error } = await supabase.from('tags').select('id, kind, data, status, moved_to, used_at, used_by').eq('id', id).maybeSingle();
+  const { data, error } = await supabase.rpc('tag_public', { p_id: id }); // one tag by its ID; tags can't be listed
   minisCall('tap', { tagId: id }).catch(() => {}); // every tap is logged, so copied stickers show up
   if (error) { console.error(error); TAG_STATE = 'error'; }
   else if (!data || !['hero', 'monster', 'item'].includes(data.kind)) TAG_STATE = 'missing';

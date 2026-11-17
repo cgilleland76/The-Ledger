@@ -7,7 +7,7 @@
 // Everything is read from the database (the character must really be dead), so nobody can write their own
 // epitaph or add a hero who didn't die. The Gravewarden (revive.js) marks returns itself as well.
 
-const { ROOM_CODE_RE, sbRest, corsHeaders } = require("./lib/shared");
+const { ROOM_CODE_RE, sbRest, corsHeaders, requireMember } = require("./lib/shared");
 
 const enc = encodeURIComponent;
 const clean = (v, n) => String(v || "").replace(/\s+/g, " ").trim().slice(0, n);
@@ -42,6 +42,9 @@ exports.handler = async function (event) {
   try { b = JSON.parse(event.body || "{}"); } catch (e) { return reply(400, { error: "That request couldn't be read." }); }
   const roomCode = String(b.roomCode || "").toUpperCase(), characterId = String(b.characterId || "");
   if (!ROOM_CODE_RE.test(roomCode) || !/^[a-z0-9]{4,20}$/i.test(characterId)) return reply(400, { error: "That request couldn't be read." });
+  // Only a player at this table (session token + membership) can record or clear one of its heroes.
+  const member = await requireMember(b.accessToken, roomCode);
+  if (!member.ok) return reply(member.status, { error: member.status === 503 ? "Try again in a moment." : "You aren't at this table. Join it again with its code.", reason: member.reason });
 
   try {
     const rows = await sbRest(`characters?id=eq.${enc(characterId)}&room_code=eq.${enc(roomCode)}&select=data`);

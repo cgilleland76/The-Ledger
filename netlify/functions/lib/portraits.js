@@ -12,6 +12,10 @@
 
 const { SUPABASE_URL } = require("./shared");
 
+// AI portrait generation (portrait-background.js) is off unless PORTRAIT_GENERATION_ENABLED is "true".
+// Uploading your own picture, and the moderation check it goes through, work either way.
+const portraitGenerationEnabled = () => String(process.env.PORTRAIT_GENERATION_ENABLED || "").trim().toLowerCase() === "true";
+
 // Highest category score allowed per platform (0..1, as returned by the moderation API).
 // The website allows up to NC-17; the Android app (Google Play) up to R. A missing or unknown
 // platform is treated as android, the stricter one.
@@ -145,4 +149,4 @@ async function storePortrait(roomCode, characterId, bytes, contentType, tag) {
 
 const REJECTED_MESSAGE = "That picture can't be used. Try a different one.";
 
-module.exports = { PORTRAIT_MAX_RATING, ALWAYS_BLOCKED, checkImage, checkText, storePortrait, storeImage, deleteImageByUrl, extFor, platformOf, REJECTED_MESSAGE };
+module.exports = { portraitGenerationEnabled, PORTRAIT_MAX_RATING, ALWAYS_BLOCKED, checkImage, checkText, storePortrait, storeImage, deleteImageByUrl, extFor, platformOf, REJECTED_MESSAGE };

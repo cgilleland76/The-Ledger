@@ -39,7 +39,7 @@ https://<ledger-site>/t/<TAG_ID>      e.g. /t/h_7Kq2mX9pLw
 - Later, Android App Links (an `assetlinks.json` file) can make the link open the installed app instead of the browser.
 
 ### Important: tags must never point at a room
-Rooms are capped at **20 total, and the oldest is evicted** (`MAX_TOTAL_ROOMS` in `app.js`). A mini linked to a room would stop working when its room is evicted. So tags point at **lasting records** (a hero, a monster, an item) and get *added into* whatever room you're in. This is the Golem Arcana lesson: a mini should never become useless.
+Guest rooms don't last forever: one with **no play for 30 days is deleted** (`supabase/soft-launch.sql`). A mini linked to a room would stop working when its room is deleted. So tags point at **lasting records** (a hero, a monster, an item) and get *added into* whatever room you're in. This is the Golem Arcana lesson: a mini should never become useless.
 
 ## Tag types
 | Prefix | Tap it and… | Data |

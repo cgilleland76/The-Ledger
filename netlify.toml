@@ -22,3 +22,7 @@
   from = "/display"
   to = "/display.html"
   status = 200
+
+# Daily: delete guest tables idle for 30 days (netlify/functions/room-cleanup.js, supabase/soft-launch.sql).
+[functions."room-cleanup"]
+  schedule = "@daily"

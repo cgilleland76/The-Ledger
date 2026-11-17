@@ -63,4 +63,36 @@ async function roomExists(code) {
   }
 }
 
-module.exports = { SUPABASE_URL, SUPABASE_ANON_KEY, ALLOWED_ORIGINS, ROOM_CODE_RE, sbRest, roomExists, corsHeaders };
+// Who is calling: the Supabase access token the app sends (a signed-in player or an anonymous guest).
+// Returns the user's id, or "" when the token is missing or not valid.
+const TOKEN_RE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+async function callerId(token) {
+  if (typeof token !== "string" || token.length > 4096 || !TOKEN_RE.test(token)) return "";
+  try {
+    const resp = await fetch(`${SUPABASE_URL}/auth/v1/user`, { headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${token}` } });
+    if (!resp.ok) return "";
+    const u = await resp.json().catch(() => null);
+    return u && typeof u.id === "string" ? u.id : "";
+  } catch (e) {
+    return "";
+  }
+}
+
+// The caller must be at this table (a room_members row, read with the service-role key).
+// Returns { ok: true, userId } or { ok: false, status, reason }: 401 no or bad token, 403 not at the table,
+// 503 the check couldn't run (refused, never waved through).
+async function requireMember(token, roomCode) {
+  if (!roomCode || typeof roomCode !== "string" || !ROOM_CODE_RE.test(roomCode)) return { ok: false, status: 403, reason: "room" };
+  const userId = await callerId(token);
+  if (!userId) return { ok: false, status: 401, reason: "not_member" };
+  if (!process.env.SUPABASE_SERVICE_ROLE_KEY) return { ok: false, status: 503, reason: "unavailable" };
+  try {
+    const rows = await sbRest(`room_members?room_code=eq.${encodeURIComponent(roomCode)}&user_id=eq.${encodeURIComponent(userId)}&select=user_id`);
+    if (!Array.isArray(rows) || !rows.length) return { ok: false, status: 403, reason: "not_member" };
+    return { ok: true, userId };
+  } catch (e) {
+    return { ok: false, status: 503, reason: "unavailable" };
+  }
+}
+
+module.exports = { SUPABASE_URL, SUPABASE_ANON_KEY, ALLOWED_ORIGINS, ROOM_CODE_RE, sbRest, roomExists, corsHeaders, callerId, requireMember };

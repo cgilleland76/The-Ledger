@@ -1,6 +1,6 @@
 // netlify/functions/revive.js
 //
-// POST /api/revive  { roomCode, characterId, playerId, tz }
+// POST /api/revive  { roomCode, characterId, playerId, tz, accessToken }  (caller must be at the table)
 // The Gravewarden: a paid way back from death. Anyone at the table may pay for a fallen hero.
 //   * only while the hero is dead and within REVIVE_DAYS (default 3) real days of dying
 //   * not at a table the host set to permanent death (rooms.meta.permadeath)
@@ -9,7 +9,7 @@
 //     long rest) and a debt to the Gravewarden the GM will call in
 // Ink is spent from bought ink only (an extra). With billing off, the return is free.
 
-const { ROOM_CODE_RE, sbRest, corsHeaders } = require("./lib/shared");
+const { ROOM_CODE_RE, sbRest, corsHeaders, requireMember } = require("./lib/shared");
 const billing = require("./lib/billing");
 
 const REVIVE_DAYS = () => { const n = parseFloat(process.env.REVIVE_DAYS); return Number.isFinite(n) && n > 0 ? n : 3; };
@@ -28,6 +28,8 @@ exports.handler = async function (event) {
   const roomCode = String(b.roomCode || "").toUpperCase(), characterId = String(b.characterId || "");
   if (!ROOM_CODE_RE.test(roomCode) || !/^[a-z0-9]{4,20}$/i.test(characterId)) return reply(400, { error: "That request couldn't be read." });
   if (!billing.validPlayer(b.playerId)) return reply(400, { error: "Your ink key is missing." });
+  const member = await requireMember(b.accessToken, roomCode);
+  if (!member.ok) return reply(member.status, { error: member.status === 503 ? "Try again in a moment." : "You aren't at this table. Join it again with its code.", reason: member.reason });
 
   try {
     const rooms = await sbRest(`rooms?code=eq.${encodeURIComponent(roomCode)}&select=meta`);

@@ -74,7 +74,15 @@ gh repo create the-ledger --private --source=. --push
 3. Before the first deploy finishes, go to **Site configuration → Environment
    variables** and add:
    - `ANTHROPIC_API_KEY` = your key from step 3
-   - `OPENAI_API_KEY` = your OpenAI key (portraits only; without it the rest of the app works and Generate says portraits aren't enabled)
+   - `OPENAI_API_KEY` = your OpenAI key. It runs the content check on every uploaded portrait and scene (that check fails closed, so uploads stop working without it), and draws AI portraits when they're switched on.
+   - optional: `PORTRAIT_GENERATION_ENABLED` = `true` turns on AI-generated portraits. Anything else, or unset, keeps them off: the Generate button is hidden (the app learns this from `/api/site-config`) and `portrait-background` refuses before any ink, Claude or OpenAI is spent. Uploading your own portrait, and its content check, work either way.
+   - optional, GM daily limits (need `supabase/soft-launch.sql` run once). Every Claude call the GM makes (story replies, opening scenes, AI character building) is counted in the `gm_usage` table. A day is a calendar day in New York time (`LIMIT_TZ` in `netlify/functions/lib/gm-limits.js`). Past a limit, players see "The GM needs to rest. Come back tomorrow."; which limit was hit goes to the function log only. Each reply also logs a `gm usage` line with its input, output and cache tokens and an estimated cost.
+     - `GM_MAX_PER_ROOM_PER_DAY` (default 60): calls per table per day.
+     - `GM_MAX_PER_IP_PER_DAY` (default 100): calls per player IP per day. Only a keyed hash of the IP is stored, never the IP itself.
+     - `GM_MAX_PER_USER_PER_DAY` (default 80): calls per player session per day.
+     - `GM_MAX_PER_DAY` (unset by default = no site-wide cap): calls per day across the whole site.
+     - `PORTRAIT_MAX_PER_USER_PER_DAY` and `SCENE_MAX_PER_USER_PER_DAY` (default 5 each): AI images per player per day, when those are switched on.
+   - Every server function that works on a table (GM, portraits, scenes, revive, Hall of the Fallen) takes the player's Supabase session token and only answers players who have joined that table.
    - optional: `OPENAI_IMAGE_MODEL` (default `gpt-image-2.5-flare`) and `PORTRAIT_MAX_PER_ROOM` (default 10)
    - optional: `PORTRAIT_MAX_RATING` (JSON) to change the portrait/scene content ceilings (website NC-17, Android R by default; see `netlify/functions/lib/portraits.js`)
    - optional: `SCENE_IMAGES_ENABLED` = `true` turns on AI-painted scene backgrounds (off by default, so they cost nothing until you opt in; hosts then switch them on per table in Field Notes). `SCENE_MAX_PER_ROOM` (default 3) limits painted scenes per table. Uploading your own background works either way. Needs `supabase/scenes.sql` run once.
@@ -119,8 +127,14 @@ The footer, the Field Notes feedback box, and `changelog.html` also show a "Buy 
   character-setup and in-game screens); anyone who enters that code builds
   their own character and joins the same shared log and roster. Supabase
   realtime pushes updates to everyone instantly — no polling. Capped at 6
-  players per room and 20 rooms total; creating a room past the cap evicts
-  the oldest one. Use "Leave Table" to exit and start another.
+  players per room; there's no cap on rooms. Every table is members-only:
+  entering its code joins you (players without an account get an anonymous
+  Supabase session), and rooms are created by the database
+  (`create_guest_room`, a few per player per day). A guest room with no story
+  activity for 30 days is deleted with its characters and log, unless it was
+  paused with its story code in that time (`supabase/soft-launch.sql`, run
+  daily by `netlify/functions/room-cleanup.js`). Rooms on an account are kept.
+  Use "Leave Table" to exit and start another.
 - **Character creation:** defaults to "Let the GM build it" — Claude fills in
   ability scores, HP/AC, skills, and class/tone-appropriate starting gear;
   flip to "I'll roll my own" for fully manual entry. Character tiles show all
@@ -180,8 +194,8 @@ The footer, the Field Notes feedback box, and `changelog.html` also show a "Buy 
   was added carry no tag.
 - **Pausing a solo story:** the story code is the room code. *Pause Story* returns to the landing page
   with the code shown; entering it under *Join or Resume with Code* (any device) reopens the story, and a
-  solo story's single character is re-adopted automatically. Rooms are still subject to the
-  `MAX_TOTAL_ROOMS` cap, which evicts the oldest room when it is full.
+  solo story's single character is re-adopted automatically. Pausing records `rooms.paused_at`
+  (`pause_room`), which keeps the story through the 30-day cleanup of idle guest rooms.
   The SRD 5.1 is licensed under CC BY 4.0; the credit is in `changelog.html#credits` and the site footer.
 - **What's New:** a collapsible teaser on the landing page and a full
   `changelog.html` page track shipped fixes/features and what's planned next

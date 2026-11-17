@@ -5,7 +5,7 @@
 // painting is switched off. The browser has already cropped it to 16:9. Same content check as
 // portraits (fail closed); only then is it stored, replacing the room's previous background.
 
-const { corsHeaders } = require("./lib/shared");
+const { corsHeaders, requireMember } = require("./lib/shared");
 const { checkImage, REJECTED_MESSAGE } = require("./lib/portraits");
 const scenes = require("./lib/scenes");
 
@@ -18,9 +18,9 @@ exports.handler = async function (event) {
   if (event.httpMethod !== "POST") return { statusCode: 405, headers, body: "Method Not Allowed" };
   const reply = (statusCode, obj) => ({ statusCode, headers, body: JSON.stringify(obj) });
 
-  let roomCode, playerId, platform, image;
+  let roomCode, playerId, platform, image, accessToken;
   try {
-    ({ roomCode, playerId, platform, image } = JSON.parse(event.body || "{}"));
+    ({ roomCode, playerId, platform, image, accessToken } = JSON.parse(event.body || "{}"));
   } catch (e) {
     return reply(400, { error: "That picture couldn't be read.", reason: "bad_request" });
   }
@@ -29,6 +29,9 @@ exports.handler = async function (event) {
   if (!/^[A-Z0-9]{3,10}$/.test(roomCode) || !m) return reply(400, { error: "That picture couldn't be read.", reason: "bad_request" });
   const bytes = Buffer.from(m[2], "base64");
   if (!bytes.length || bytes.length > MAX_BYTES) return reply(400, { error: "That picture is too large.", reason: "too_large" });
+
+  const member = await requireMember(accessToken, roomCode);
+  if (!member.ok) return reply(member.status, { error: member.status === 503 ? "Try again in a moment." : "You aren't at this table. Join it again with its code.", reason: member.reason });
 
   let room;
   try { room = await scenes.loadRoom(roomCode); } catch (e) { return reply(503, { error: "Try again in a moment.", reason: "unavailable" }); }

@@ -16,11 +16,14 @@
 //   ANTHROPIC_API_KEY       already set for the GM; used to write the image prompt
 //   OPENAI_IMAGE_MODEL      optional, default gpt-image-2.5-flare
 //   PORTRAIT_MAX_PER_ROOM   optional, default 10
+//   PORTRAIT_GENERATION_ENABLED  "true" turns generation on. Anything else (or unset): every request is
+//                           refused before any ink, Claude or OpenAI is spent. Uploads are unaffected.
 
 const crypto = require("crypto");
-const { ROOM_CODE_RE, sbRest } = require("./lib/shared");
+const { ROOM_CODE_RE, sbRest, requireMember } = require("./lib/shared");
+const gmLimits = require("./lib/gm-limits");
 const billing = require("./lib/billing");
-const { checkImage, storePortrait, REJECTED_MESSAGE } = require("./lib/portraits");
+const { checkImage, storePortrait, REJECTED_MESSAGE, portraitGenerationEnabled } = require("./lib/portraits");
 
 const COOLDOWN_MS = 60 * 1000;
 const STALE_PENDING_MS = 4 * 60 * 1000;
@@ -87,9 +90,10 @@ exports.handler = async function (event) {
   if (event.httpMethod !== "POST") return;
 
   // The Android app sends this as text/plain (no CORS preflight); it's still JSON.
-  let roomCode, characterId, playerId, platform;
+  let roomCode, characterId, playerId, platform, accessToken;
   try {
     const body = JSON.parse(event.body || "{}");
+    accessToken = body.accessToken;
     roomCode = body.roomCode;
     characterId = body.characterId;
     playerId = body.playerId;
@@ -105,6 +109,15 @@ exports.handler = async function (event) {
   // Reports the outcome to the character row (which the browsers are watching).
   const report = (patch) =>
     sbRest(charPath, { method: "PATCH", body: { ...patch, portrait_updated_at: new Date().toISOString() } }).catch(() => {});
+
+  // Only a player at this table (session token + membership); nothing is reported to a stranger.
+  const member = await requireMember(accessToken, roomCode);
+  if (!member.ok) { console.warn(`portrait-background: refused (${member.reason}) room=${roomCode}`); return; }
+  // Switched off (the default): refuse before anything is spent. The app hides the button too.
+  if (!portraitGenerationEnabled()) {
+    console.warn(`portrait-background: refused, PORTRAIT_GENERATION_ENABLED is off (room=${roomCode})`);
+    return report({ portrait_status: "error:AI portraits are switched off for now. You can upload your own picture instead." });
+  }
 
   let ch, room;
   try {
@@ -130,14 +143,22 @@ exports.handler = async function (event) {
   const openAiKey = process.env.OPENAI_API_KEY;
   if (!openAiKey) return report({ portrait_status: "error:Portraits aren't enabled on this server yet." });
 
+  // Daily cap per player and IP (lib/gm-limits.js), on top of the per-table cap above.
+  const use = await gmLimits.useGM(billing.sbAdmin, { roomCode, event, userId: member.userId, what: "portrait" });
+  if (!use.ok) {
+    console.warn(`portrait-background: daily limit (${use.reason}) room=${roomCode}`);
+    return report({ portrait_status: "error:The painter needs to rest. Come back tomorrow." });
+  }
+
   // Paywall: spend the portrait's ink now; refunded below if no portrait is delivered.
   let charge;
   try {
     charge = await billing.spend(playerId, "portrait");
   } catch (e) {
+    await use.undo();
     return report({ portrait_status: "error:The ink ledger is unavailable right now. Try again in a minute." });
   }
-  if (!charge.ok) return report({ portrait_status: "error:" + billing.outOfInkMessage("portrait") });
+  if (!charge.ok) { await use.undo(); return report({ portrait_status: "error:" + billing.outOfInkMessage("portrait") }); }
 
   await report({ portrait_status: "pending" });
 
@@ -198,7 +219,7 @@ exports.handler = async function (event) {
   } catch (e) {
     await report({ portrait_status: "error:Something went wrong making the portrait. Try again." });
   } finally {
-    if (!delivered) await billing.refund(playerId, charge);
+    if (!delivered) { await billing.refund(playerId, charge); await use.undo(); }
   }
 };
 

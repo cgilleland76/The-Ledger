@@ -12,7 +12,8 @@
 // it (1536x1024; screens crop it to 16:9) -> content check (lib/portraits.js, fail closed) -> stored in
 // the "scenes" bucket, replacing the room's previous background. Ink is refunded if nothing is delivered.
 
-const { sbRest } = require("./lib/shared");
+const { sbRest, requireMember } = require("./lib/shared");
+const gmLimits = require("./lib/gm-limits");
 const billing = require("./lib/billing");
 const { checkImage, REJECTED_MESSAGE } = require("./lib/portraits");
 const scenes = require("./lib/scenes");
@@ -55,14 +56,17 @@ exports.handler = async function (event) {
   if (event.httpMethod !== "POST") return;
   if (!scenes.sceneImagesEnabled()) { console.warn("scene-background: refused, SCENE_IMAGES_ENABLED is off"); return; }
 
-  let roomCode, playerId, platform;
+  let roomCode, playerId, platform, accessToken;
   try {
-    ({ roomCode, playerId, platform } = JSON.parse(event.body || "{}"));
+    ({ roomCode, playerId, platform, accessToken } = JSON.parse(event.body || "{}"));
   } catch (e) {
     return;
   }
   roomCode = String(roomCode || "").toUpperCase();
   if (!/^[A-Z0-9]{3,10}$/.test(roomCode)) return;
+  // Only a player at this table (session token + membership); nothing is reported to a stranger.
+  const member = await requireMember(accessToken, roomCode);
+  if (!member.ok) { console.warn(`scene-background: refused (${member.reason}) room=${roomCode}`); return; }
 
   let room;
   try { room = await scenes.loadRoom(roomCode); } catch (e) { return; }
@@ -79,9 +83,16 @@ exports.handler = async function (event) {
   const openAiKey = process.env.OPENAI_API_KEY;
   if (!openAiKey) return report("error:Scene painting isn't set up on this server yet.");
 
+  // Daily cap per player and IP (lib/gm-limits.js), on top of the per-table cap above.
+  const use = await gmLimits.useGM(billing.sbAdmin, { roomCode, event, userId: member.userId, what: "scene" });
+  if (!use.ok) {
+    console.warn(`scene-background: daily limit (${use.reason}) room=${roomCode}`);
+    return report("error:The painter needs to rest. Come back tomorrow.");
+  }
+
   let charge;
-  try { charge = await billing.spend(playerId, "scene"); } catch (e) { return report("error:The ink ledger is unavailable right now. Try again in a minute."); }
-  if (!charge.ok) return report(`error:Not enough ink to paint a scene (it costs ${billing.COSTS.scene}).`);
+  try { charge = await billing.spend(playerId, "scene"); } catch (e) { await use.undo(); return report("error:The ink ledger is unavailable right now. Try again in a minute."); }
+  if (!charge.ok) { await use.undo(); return report(`error:Not enough ink to paint a scene (it costs ${billing.COSTS.scene}).`); }
 
   await scenes.setScene(roomCode, { scene_status: "pending", scene_updated_at: new Date().toISOString() }).catch(() => {});
 
@@ -125,6 +136,6 @@ exports.handler = async function (event) {
     console.error("scene-background: failed:", e.message);
     await report("error:The painter couldn't finish this one. Try again in a minute.");
   } finally {
-    if (!delivered) await billing.refund(playerId, charge);
+    if (!delivered) { await billing.refund(playerId, charge); await use.undo(); }
   }
 };

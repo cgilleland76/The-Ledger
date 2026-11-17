@@ -23,11 +23,13 @@ async function loadRoom(code) {
   const rows = await sbRest(`rooms?code=eq.${encodeURIComponent(code)}&select=code,meta,scene_url,scene_status,scene_updated_at,scene_count`);
   return rows && rows[0] ? rows[0] : null;
 }
-// The room's host is the ink key that created it (meta.host); rooms from before hosts existed accept anyone.
+// The room's host is the ink key that created it, stored as its hash (meta.host). Only the key itself
+// proves it: the hash is visible to everyone at the table. A room with no host (from before hosts existed)
+// accepts any player at the table; callers check membership first.
 function isHost(room, playerId) {
   const host = room && room.meta && room.meta.host;
-  // Hosts are stored as a hash of the ink key (supabase/accounts.sql); older rooms may still hold the raw key.
-  return !host || host === playerId || host === require("./heroes").ownerHash(playerId);
+  if (!host) return true;
+  return require("./billing").validPlayer(playerId) && host === require("./heroes").ownerHash(playerId);
 }
 function setScene(code, patch) {
   return sbRest(`rooms?code=eq.${encodeURIComponent(code)}`, { method: "PATCH", body: patch });

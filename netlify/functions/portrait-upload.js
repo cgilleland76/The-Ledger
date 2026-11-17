@@ -1,11 +1,12 @@
 // netlify/functions/portrait-upload.js
 //
-// POST /api/portrait-upload  { roomCode, characterId, platform: "web" | "android", image: "data:image/webp;base64,..." }
+// POST /api/portrait-upload  { roomCode, characterId, platform: "web" | "android", image: "data:image/webp;base64,...", accessToken }
+// The caller must be at the table (session token + membership).
 // A player's own picture for their character. The browser has already cropped it to a small square;
 // here it is content-checked (lib/portraits.js) and only then stored and linked on the character.
 // Rejected or unchecked pictures are never stored. The reason goes to the function log only.
 
-const { ROOM_CODE_RE, sbRest, corsHeaders } = require("./lib/shared");
+const { ROOM_CODE_RE, sbRest, corsHeaders, requireMember } = require("./lib/shared");
 const { checkImage, storePortrait, REJECTED_MESSAGE } = require("./lib/portraits");
 
 const MAX_BYTES = 1.5 * 1024 * 1024;
@@ -17,9 +18,9 @@ exports.handler = async function (event) {
   if (event.httpMethod !== "POST") return { statusCode: 405, headers, body: "Method Not Allowed" };
   const reply = (statusCode, obj) => ({ statusCode, headers, body: JSON.stringify(obj) });
 
-  let roomCode, characterId, platform, image;
+  let roomCode, characterId, platform, image, accessToken;
   try {
-    ({ roomCode, characterId, platform, image } = JSON.parse(event.body || "{}"));
+    ({ roomCode, characterId, platform, image, accessToken } = JSON.parse(event.body || "{}"));
   } catch (e) {
     return reply(400, { error: "That picture couldn't be read.", reason: "bad_request" });
   }
@@ -31,6 +32,9 @@ exports.handler = async function (event) {
   const contentType = m[1];
   const bytes = Buffer.from(m[2], "base64");
   if (!bytes.length || bytes.length > MAX_BYTES) return reply(400, { error: "That picture is too large.", reason: "too_large" });
+
+  const member = await requireMember(accessToken, roomCode);
+  if (!member.ok) return reply(member.status, { error: member.status === 503 ? "Try again in a moment." : "You aren't at this table. Join it again with its code.", reason: member.reason });
 
   const enc = encodeURIComponent;
   const charPath = `characters?id=eq.${enc(characterId)}&room_code=eq.${enc(roomCode)}`;

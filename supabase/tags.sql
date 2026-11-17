@@ -17,7 +17,7 @@ create table if not exists tags (
 
 alter table tags enable row level security;
 drop policy if exists "tags are readable" on tags;
-create policy "tags are readable" on tags for select using (true);
+-- No direct reads: the tap screen looks up one tag by its ID with tag_public() (access.sql).
 
 -- ---- Test tags for the phase 1 proof of concept ----
 -- Write these links onto NFC stickers (e.g. with the free "NFC Tools" app → Write → Add a record → URL):

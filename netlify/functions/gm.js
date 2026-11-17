@@ -5,10 +5,12 @@
 // and only the resulting text goes back to the client.
 //
 // Set ANTHROPIC_API_KEY in Netlify: Site configuration > Environment variables.
+// Daily limits on these calls (per table, per IP, site-wide): lib/gm-limits.js and supabase/soft-launch.sql.
 
-const { roomExists, corsHeaders } = require("./lib/shared");
+const { requireMember, corsHeaders } = require("./lib/shared");
 const { PLAYBOOK, statBlocksFor } = require("./lib/gm-knowledge");
 const billing = require("./lib/billing");
+const gmLimits = require("./lib/gm-limits");
 const SETUP_MAX = () => parseInt(process.env.SETUP_MAX_PER_ROOM, 10) || 12;
 
 exports.handler = async function (event) {
@@ -30,13 +32,14 @@ exports.handler = async function (event) {
     };
   }
 
-  let prompt, roomCode, kind, lore, playerId, tz;
+  let prompt, roomCode, kind, lore, playerId, tz, accessToken;
   try {
     const body = JSON.parse(event.body || "{}");
     prompt = body.prompt;
     roomCode = body.roomCode;
     playerId = body.playerId;
     tz = body.tz;
+    accessToken = body.accessToken;
     kind = body.kind === "story" ? "story" : body.kind === "setup" ? "setup" : "";
     lore = typeof body.lore === "string" ? body.lore.slice(-6000) : "";
     if (!prompt || typeof prompt !== "string") {
@@ -46,18 +49,39 @@ exports.handler = async function (event) {
     return { statusCode: 400, headers, body: JSON.stringify({ error: "That request couldn't be read.", reason: "bad_request" }) };
   }
 
-  if (!(await roomExists(roomCode))) {
-    return { statusCode: 403, headers, body: JSON.stringify({ error: "That table isn't in the ledger.", reason: "room" }) };
+  if (kind === "setup" && prompt.length > 6000) {
+    return { statusCode: 400, headers, body: JSON.stringify({ error: "That request couldn't be read.", reason: "bad_request" }) };
+  }
+
+  // Only a player sitting at this table (their session token, and a membership row) can ask its GM.
+  const member = await requireMember(accessToken, roomCode);
+  if (!member.ok) {
+    console.warn(`gm: refused (${member.reason}) room=${roomCode}`);
+    return { statusCode: member.status, headers, body: JSON.stringify({ error: "The Game Master is unavailable.", reason: member.reason === "unavailable" ? "gm_down" : member.reason }) };
+  }
+
+  // Daily limits, counted before anything is spent. Which limit was hit goes to the function log only;
+  // players get one in-world message. Every way out below that produces no reply gives the call back.
+  const use = await gmLimits.useGM(billing.sbAdmin, { roomCode, event, userId: member.userId });
+  if (!use.ok) {
+    if (use.reason === "unavailable") {
+      console.error(`gm: usage limits unavailable, refusing (has supabase/soft-launch.sql been run?): ${use.detail || ""}`);
+      return { statusCode: 503, headers, body: JSON.stringify({ error: "The Game Master is unavailable.", reason: "gm_down" }) };
+    }
+    console.warn(`gm: daily limit reached (${use.reason}) room=${roomCode} kind=${kind || "other"}`);
+    return { statusCode: 429, headers, body: JSON.stringify({ error: gmLimits.REST_MESSAGE, reason: "gm_rest" }) };
   }
 
   // Setup requests (story title/tone, Generate Character, filling a character's blanks) are free, but
   // each table gets SETUP_MAX_PER_ROOM of them (supabase/setup-cap.sql) and short answers only.
   if (kind === "setup") {
-    if (prompt.length > 6000) return { statusCode: 400, headers, body: JSON.stringify({ error: "That request couldn't be read.", reason: "bad_request" }) };
     let allowed = true;
     try { allowed = (await billing.sbAdmin("rpc/use_setup", { method: "POST", body: { p_room: roomCode, p_max: SETUP_MAX() } })) === true; }
     catch (e) { console.warn("gm: setup cap unavailable, allowing:", e.message); } // setup-cap.sql not run yet
-    if (!allowed) return { statusCode: 429, headers, body: JSON.stringify({ error: "The GM has done all the setup it can for this table. Fill in the rest yourself.", reason: "setup_limit" }) };
+    if (!allowed) {
+      await use.undo();
+      return { statusCode: 429, headers, body: JSON.stringify({ error: "The GM has done all the setup it can for this table. Fill in the rest yourself.", reason: "setup_limit" }) };
+    }
   }
 
   // Paywall: spend 1 ink before calling Claude (given back below if the call fails). Setup is free.
@@ -66,9 +90,11 @@ exports.handler = async function (event) {
     charge = kind === "setup" ? { ok: true, skipped: true } : await billing.spend(playerId, "gm", tz);
   } catch (e) {
     console.error("billing spend failed:", e.message);
+    await use.undo();
     return { statusCode: 503, headers, body: JSON.stringify({ error: "The ink ledger is unavailable right now. Try again in a minute." }) };
   }
   if (!charge.ok) {
+    await use.undo();
     return {
       statusCode: 402,
       headers,
@@ -109,21 +135,25 @@ exports.handler = async function (event) {
       const errText = await resp.text();
       console.error(`gm: Anthropic API error ${resp.status}: ${errText.slice(0, 800)}`);
       await billing.refund(playerId, charge);
+      await use.undo();
       return { statusCode: 503, headers, body: JSON.stringify({ error: "The Game Master is unavailable.", reason: "gm_down" }) };
     }
 
     const data = await resp.json();
+    // Real cost per reply, readable in the function log after a few days ("gm usage").
+    console.log(gmLimits.usageLine(kind, roomCode, payload.model, data.usage));
     const text = (data.content || [])
       .filter((b) => b.type === "text")
       .map((b) => b.text)
       .join("\n")
       .trim();
 
-    if (!text) await billing.refund(playerId, charge);
+    if (!text) { await billing.refund(playerId, charge); await use.undo(); }
     return { statusCode: 200, headers, body: JSON.stringify({ text, wallet }) };
   } catch (err) {
     console.error("gm: request failed:", err && err.message);
     await billing.refund(playerId, charge);
+    await use.undo();
     return { statusCode: 503, headers, body: JSON.stringify({ error: "The Game Master is unavailable.", reason: "gm_down" }) };
   }
 };
