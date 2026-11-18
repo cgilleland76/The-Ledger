@@ -11,6 +11,7 @@ const db = { rooms: [], characters: [], gm_usage: [], setup: {}, room_members: [
 // Session tokens the fake auth server knows: the user id sits in the middle part, like a JWT's payload.
 const tokenFor = (userId) => `eyJ.${Buffer.from(userId).toString("base64url")}.sig`;
 const userOf = (token) => { try { return Buffer.from(String(token).split(".")[1], "base64url").toString(); } catch (e) { return ""; } };
+const FAKE = { anthropicDown: false };
 const calls = { anthropic: 0, openaiImages: 0, moderation: 0, storage: 0, storageDeletes: [] };
 
 function resetDb() {
@@ -74,6 +75,7 @@ global.fetch = async (url, opts = {}) => {
   const body = opts.body && typeof opts.body === "string" ? JSON.parse(opts.body) : opts.body;
   if (url === "https://api.anthropic.com/v1/messages") {
     calls.anthropic++;
+    if (FAKE.anthropicDown) return json({ type: "error", error: { type: "overloaded_error" } }, 529);
     return json({ content: [{ type: "text", text: "The tavern door creaks open." }], usage: { input_tokens: 2000, output_tokens: 300, cache_read_input_tokens: 9000, cache_creation_input_tokens: 0 } });
   }
   if (url === "https://api.openai.com/v1/moderations") {
@@ -473,6 +475,72 @@ test("a mini gains at most two levels a day, however often it's saved", async ()
   assert(t.maxhp <= 12 + 4 * 12, "max HP still grows only by the hit die + CON per level");
 });
 
+
+// ---------- one GM turn at a time ----------
+// The fake mirrors supabase/gm-turn.sql. It's switched on only inside these tests, the way the live site
+// behaves only once gm-turn.sql has been run.
+function withTurns(fn) {
+  return async () => {
+    RPC.gm_turn_start = ({ p_room, p_user, p_ttl }) => {
+      const r = db.rooms.find((x) => x.code === p_room);
+      if (!r) return false;
+      if (r.gm_turn_at && Date.now() - r.gm_turn_at < p_ttl * 1000 && r.gm_turn_by !== p_user) return false;
+      r.gm_turn_at = Date.now(); r.gm_turn_by = p_user;
+      return true;
+    };
+    RPC.gm_turn_end = ({ p_room, p_user }) => {
+      const r = db.rooms.find((x) => x.code === p_room);
+      if (r && r.gm_turn_by === p_user) { r.gm_turn_at = null; r.gm_turn_by = null; }
+      return null;
+    };
+    try { await fn(); } finally { delete RPC.gm_turn_start; delete RPC.gm_turn_end; FAKE.anthropicDown = false; }
+  };
+}
+const turnOf = (code) => db.rooms.find((r) => r.code === code);
+
+test("a second story turn while one is running is refused, and not counted", withTurns(async () => {
+  setEnv({}); addRoom("TURN1");
+  assert.strictEqual((await askGM("TURN1", "198.51.100.1", "story", { user: "alice" })).statusCode, 200);
+  assert.strictEqual(turnOf("TURN1").gm_turn_by, "alice", "Alice's turn is held until her app logs the reply");
+  const usedBefore = sum(db.gm_usage);
+  const r = await askGM("TURN1", "198.51.100.2", "story", { user: "bob" });
+  assert.strictEqual(r.statusCode, 409);
+  assert.deepStrictEqual(parse(r), { error: "The GM is already answering. Their reply will appear in a moment.", reason: "gm_busy" });
+  assert.strictEqual(calls.anthropic, 1, "Claude asked once");
+  assert.strictEqual(sum(db.gm_usage), usedBefore, "Bob's refused ask isn't counted against any limit");
+  assert.strictEqual(db.gm_usage.filter((u) => u.user_id === "bob").length, 0);
+  assert.strictEqual((await askGM("TURN1", "198.51.100.1", "story", { user: "alice" })).statusCode, 200, "Alice asking again (a retry) keeps her turn");
+  assert.strictEqual((await askGM("TURN1", "198.51.100.2", "setup", { user: "bob" })).statusCode, 200, "setup requests aren't held up");
+}));
+
+test("a turn that fails is handed back at once; a turn over 90 seconds old is taken over", withTurns(async () => {
+  setEnv({}); addRoom("TURN2");
+  FAKE.anthropicDown = true;
+  assert.strictEqual((await askGM("TURN2", "198.51.100.3", "story", { user: "carol" })).statusCode, 503);
+  assert.strictEqual(turnOf("TURN2").gm_turn_at, null, "the failed turn freed the table");
+  assert.strictEqual(sum(db.gm_usage), 0, "the failed call was given back too");
+  FAKE.anthropicDown = false;
+  assert.strictEqual((await askGM("TURN2", "198.51.100.4", "story", { user: "dave" })).statusCode, 200);
+  assert.strictEqual((await askGM("TURN2", "198.51.100.3", "story", { user: "carol" })).statusCode, 409);
+  turnOf("TURN2").gm_turn_at = Date.now() - 91 * 1000; // Dave closed his tab before his reply was logged
+  assert.strictEqual((await askGM("TURN2", "198.51.100.3", "story", { user: "carol" })).statusCode, 200);
+  assert.strictEqual(turnOf("TURN2").gm_turn_by, "carol");
+}));
+
+test("refusals before the turn (not a member, paused) don't take the table's turn", withTurns(async () => {
+  setEnv({}); addRoom("TURN3");
+  assert.strictEqual((await askGM("TURN3", "198.51.100.5", "story", { user: "eve", seat: false })).statusCode, 403);
+  assert.strictEqual(turnOf("TURN3").gm_turn_at == null, true);
+  turnOf("TURN3").admin_paused_at = new Date().toISOString();
+  assert.strictEqual(parse(await askGM("TURN3", "198.51.100.6", "story", { user: "frank" })).reason, "paused");
+  assert.strictEqual(turnOf("TURN3").gm_turn_at == null, true);
+}));
+
+test("before gm-turn.sql has been run, turns go ahead as before", async () => {
+  setEnv({}); addRoom("TURN4");
+  assert.strictEqual((await askGM("TURN4", "198.51.100.7", "story", { user: "gina" })).statusCode, 200);
+  assert.strictEqual((await askGM("TURN4", "198.51.100.8", "story", { user: "hal" })).statusCode, 200);
+});
 
 // ---------- run ----------
 (async () => {

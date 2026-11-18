@@ -6,6 +6,9 @@
 //
 // Set ANTHROPIC_API_KEY in Netlify: Site configuration > Environment variables.
 // Daily limits on these calls (per table, per IP, site-wide): lib/gm-limits.js and supabase/soft-launch.sql.
+// One story turn at a time per table (supabase/gm-turn.sql): the first player to ask holds the table's turn
+// until their reply is logged (the app then calls gm_turn_done), the call fails, or TURN_TTL_S seconds pass.
+// A second ask meanwhile gets 409 "gm_busy" and is not counted against any limit.
 
 const { requireMember, corsHeaders } = require("./lib/shared");
 const { PLAYBOOK, statBlocksFor } = require("./lib/gm-knowledge");
@@ -15,8 +18,9 @@ const SETUP_MAX = () => parseInt(process.env.SETUP_MAX_PER_ROOM, 10) || 12;
 // Longest prompt accepted, in characters. A story turn carries the last 30 log lines, the party, notes and
 // the map, which stays well under this; the cap keeps any one call's cost bounded.
 const PROMPT_MAX = { story: 120000, setup: 6000 };
+const TURN_TTL_S = 90;
 
-exports.handler = async function (event) {
+async function handle(event, turn) {
   const headers = corsHeaders(event);
 
   if (event.httpMethod === "OPTIONS") {
@@ -74,6 +78,21 @@ exports.handler = async function (event) {
       return { statusCode: 409, headers, body: JSON.stringify({ error: "The game is paused. The GM will answer again when it resumes.", reason: "paused" }) };
     }
   } catch (e) { /* not set up yet: not paused */ }
+
+  // One story turn at a time: claim the table's turn before anything is counted or spent. Another player's
+  // turn in progress means this ask is refused (and not counted). The same player asking again (the app's
+  // one retry after a dropped connection) keeps their own turn. Before gm-turn.sql has been run the claim
+  // can't be made, and turns go ahead as before.
+  if (kind === "story") {
+    try {
+      const got = await billing.sbAdmin("rpc/gm_turn_start", { method: "POST", body: { p_room: roomCode, p_user: member.userId, p_ttl: TURN_TTL_S } });
+      if (got !== true) {
+        console.warn(`gm: turn already in progress room=${roomCode}`);
+        return { statusCode: 409, headers, body: JSON.stringify({ error: "The GM is already answering. Their reply will appear in a moment.", reason: "gm_busy" }) };
+      }
+      Object.assign(turn, { held: true, room: roomCode, user: member.userId });
+    } catch (e) { console.warn("gm: turn lock unavailable, going ahead (has supabase/gm-turn.sql been run?):", e.message); }
+  }
 
   // Daily limits, counted before anything is spent. Which limit was hit goes to the function log only;
   // players get one in-world message. Every way out below that produces no reply gives the call back.
@@ -171,4 +190,22 @@ exports.handler = async function (event) {
     await use.undo();
     return { statusCode: 503, headers, body: JSON.stringify({ error: "The Game Master is unavailable.", reason: "gm_down" }) };
   }
+}
+// Every answer goes through here: a turn that produced no story text is handed back at once, so the table
+// isn't held for the full TURN_TTL_S. A turn that did produce text stays held until the app logs it.
+exports.handler = async function (event) {
+  const turn = { held: false };
+  let res;
+  try { res = await handle(event, turn); }
+  catch (e) { console.error("gm: unexpected error:", e && e.message); res = { statusCode: 503, headers: corsHeaders(event), body: JSON.stringify({ error: "The Game Master is unavailable.", reason: "gm_down" }) }; }
+  if (turn.held && !gaveStory(res)) {
+    await billing.sbAdmin("rpc/gm_turn_end", { method: "POST", body: { p_room: turn.room, p_user: turn.user } })
+      .catch((e) => console.warn("gm: couldn't hand the turn back:", e.message));
+  }
+  return res;
 };
+function gaveStory(res) {
+  if (!res || res.statusCode !== 200) return false;
+  try { return !!String(JSON.parse(res.body).text || "").trim(); } catch (e) { return false; }
+}
+exports.TURN_TTL_S = TURN_TTL_S;

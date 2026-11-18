@@ -209,9 +209,12 @@ function subscribeRealtime(code) {
       META = r.meta;
       SCENE = sceneFromRow(r);
       const watcherWas = watcherShown();
+      const busyWas = gmBusyElsewhere();
       WATCHER_AT = r.watcher_at || null;
+      GM_TURN_AT = r.gm_turn_at || null;
+      scheduleGmTurnExpiry();
       if (VIEW !== 'game') return;
-      if (watcherShown() !== watcherWas) { render(); return; }
+      if (watcherShown() !== watcherWas || gmBusyElsewhere() !== busyWas) { render(); return; }
       if (onlyMap && ACTIVE_TAB !== 'map') {
         const tab = document.querySelector('.tab[onclick="setTab(\'map\')"]');
         if (tab) tab.textContent = mapState() ? 'Battle Map ⚔' : 'Battle Map';
@@ -545,7 +548,7 @@ async function enterRoom(code) {
     if (!room) return notFound;
   }
   ROOM_INFO = room.kind === 'account' ? await dbRoomInfo(code) : { kind: 'guest' };
-  ROOM = code; META = room.meta; MODE = room.mode || 'group'; SCENE = sceneFromRow(room); WATCHER_AT = room.watcher_at || null;
+  ROOM = code; META = room.meta; MODE = room.mode || 'group'; SCENE = sceneFromRow(room); WATCHER_AT = room.watcher_at || null; GM_TURN_AT = room.gm_turn_at || null; scheduleGmTurnExpiry();
   ROSTER = rosterFromRows(await dbGetCharacters(code));
   LOG = logFromRows(await dbGetLog(code));
   let mine = recallCharacter(code);
@@ -1052,6 +1055,8 @@ function renderStoryTab() {
   const sideHTML = MODE === 'group' ? `<div class="side-panel" id="rosterMini"></div>` : `<div class="side-panel">${sheetMiniHTML()}</div>`;
   const gmControlsHTML = GM_PENDING
     ? `<div class="gm-pending"><span class="thinking">The GM is thinking<span class="thinking-dots"><span>.</span><span>.</span><span>.</span></span></span><button class="btn rust" onclick="cancelGM()">Cancel</button></div>`
+    : gmBusyElsewhere()
+    ? `<div class="gm-pending"><span class="thinking">The GM is already answering another player<span class="thinking-dots"><span>.</span><span>.</span><span>.</span></span></span></div>`
     : `<button class="btn" id="gmBtn" onclick="askGM()">Ask the GM to continue the story</button>`;
   body.innerHTML = `
     <div class="game-grid">
@@ -2101,6 +2106,7 @@ function friendlyTrouble(e) {
   if (e && e.reason === 'setup_limit') return e.message;
   if (e && e.reason === 'not_member') return "The Game Master doesn't see you at this table. Leave, then join again with the table's code.";
   if (e && e.reason === 'gm_rest') return "The Game Master needs to rest. Their candle has burned down to a stub and they've gone to bed. Come back tomorrow.";
+  if (e && e.reason === 'gm_busy') return "The GM is already answering. Their reply will appear in a moment.";
   if (e && e.reason === 'paused') return "The game is paused. The GM will answer again when it resumes.";
   return GM_TROUBLE[Math.floor(Math.random() * GM_TROUBLE.length)];
 }
@@ -2145,6 +2151,9 @@ async function fetchGM(prompt, signal, kind, lore) {
 }
 
 async function callGM(prompt, fallbackEntry) {
+  if (gmBusyElsewhere()) { if (VIEW === 'game') render(); return; }
+  const turnRoom = ROOM;
+  MY_GM_TURN = true;
   GM_PENDING = true;
   GM_ABORT = new AbortController();
   if (VIEW === 'game') render();
@@ -2155,6 +2164,9 @@ async function callGM(prompt, fallbackEntry) {
   } catch (e) {
     if (e.name === 'AbortError') {
       entry = { id: uid(6), author: 'The Ledger', type: 'system', text: 'Cancelled — ' + fallbackEntry };
+    } else if (e.reason === 'gm_busy') {
+      // Another player's turn is running: nothing goes in the shared log; this screen shows it's busy.
+      entry = null;
     } else {
       console.error(e);
       entry = { id: uid(6), author: 'The Ledger', type: 'system', text: e.outOfInk ? e.message : friendlyTrouble(e) };
@@ -2163,6 +2175,13 @@ async function callGM(prompt, fallbackEntry) {
     GM_PENDING = false;
     GM_ABORT = null;
   }
+  if (!entry) {
+    MY_GM_TURN = false;
+    if (!gmTurnLeftMs()) { GM_TURN_AT = new Date().toISOString(); scheduleGmTurnExpiry(); }
+    if (VIEW === 'game') render();
+    return;
+  }
+  try {
   const { clean, attacks, heals, gives, uses, damages, notes, foesAdded, hits, mapOps, defeats, successes, rests, stables, casts, features, learns } = entry.type === 'gm' ? extractFoeAttacks(entry.text)
     : { clean: entry.text, attacks: [], heals: [], gives: [], uses: [], damages: [], notes: [], foesAdded: [], hits: [], mapOps: [], defeats: [], successes: [], rests: [], stables: [], casts: [], features: [], learns: [] };
   // A message that was nothing but directives has no story text of its own to log.
@@ -2185,6 +2204,10 @@ async function callGM(prompt, fallbackEntry) {
     if (saveMeta && META) await dbUpdateRoomMeta(ROOM, META);
   }
   fallenChanges(deadBefore);
+  } finally {
+    // The reply and everything it changed are logged (or something failed): the table's turn is free again.
+    await handBackGmTurn(turnRoom);
+  }
   if (VIEW === 'game') render();
 }
 // The Hall of the Fallen (netlify/functions/fallen.js): the server records a death (and writes the
@@ -2255,6 +2278,26 @@ let SCENE = null; // { url, status, at, count } from the room row
 // The admin's GOD view sets rooms.watcher_at about once a minute while it's open (supabase/admin.sql);
 // the table shows a small "Watcher" badge while that's recent.
 let WATCHER_AT = null;
+// One GM story turn at a time per table (supabase/gm-turn.sql): rooms.gm_turn_at is set by the server when a
+// player asks and cleared when their reply is logged. MY_GM_TURN is true from this browser's ask until it has
+// logged the reply (or cancelled) and handed the turn back, so its own turn never reads as someone else's.
+let GM_TURN_AT = null;
+let MY_GM_TURN = false;
+let GM_TURN_TIMER = null;
+const GM_TURN_TTL_MS = 90 * 1000; // matches TURN_TTL_S in netlify/functions/gm.js
+function gmTurnLeftMs() { const t = GM_TURN_AT ? Date.parse(GM_TURN_AT) : NaN; return Number.isFinite(t) ? GM_TURN_TTL_MS - (Date.now() - t) : 0; }
+function gmBusyElsewhere() { return MODE === 'group' && !GM_PENDING && !MY_GM_TURN && gmTurnLeftMs() > 0; }
+// Redraw when another player's turn would run out, in case its end never arrives (a closed tab).
+function scheduleGmTurnExpiry() {
+  clearTimeout(GM_TURN_TIMER);
+  const left = gmTurnLeftMs();
+  if (left > 0) GM_TURN_TIMER = setTimeout(() => { if (VIEW === 'game' && ROOM) render(); }, left + 500);
+}
+async function handBackGmTurn(room) {
+  MY_GM_TURN = false;
+  if (!room || !supabase || !supabase.rpc) return;
+  try { await supabase.rpc('gm_turn_done', { p_room: room }); } catch (e) { /* the turn runs out on its own */ }
+}
 const WATCHER_FRESH_MS = 3 * 60 * 1000;
 function watcherShown() { const t = WATCHER_AT ? Date.parse(WATCHER_AT) : NaN; return Number.isFinite(t) && Date.now() - t < WATCHER_FRESH_MS; }
 const SCENE_URL_PREFIX = (cfg.SUPABASE_URL || '').replace(/\/$/, '') + '/storage/v1/object/public/scenes/';
@@ -3761,7 +3804,8 @@ function rerollIds() {
 }
 
 async function askGM() {
-  if (GM_PENDING) return;
+  if (GM_PENDING || MY_GM_TURN) return;
+  if (gmBusyElsewhere()) { if (VIEW === 'game') render(); return; }
   const rerolls = rerollIds();
   const recent = LOG.slice(-30).map(e => `${e.author} (${e.type}): ${e.text}${rerolls.has(e.id) ? ' ' + REROLL_TAG : ''}`).join('\n');
   const party = Object.values(ROSTER).map(c => `${c.name} — Lv${c.level} ${c.race} ${c.klass}, HP ${c.hp}/${c.maxhp} (current, from the sheet)${spellPromptText(c)}${featurePromptText(c)}${parseInt(c.markOfReturn) ? `, bears the Mark of Return (-${parseInt(c.markOfReturn)} to attacks, saves and checks)` : ''}${parseInt(c.gravewardenDebt) ? `, owes the Gravewarden ${parseInt(c.gravewardenDebt) > 1 ? parseInt(c.gravewardenDebt) + ' debts' : 'a debt'}` : ''}${(parseInt(c.hp) || 0) <= 0 ? ` — ${c.dead ? 'DEAD' : c.stable ? 'UNCONSCIOUS, stable' : `DYING, ${dyingText(c)}${deathSaveDue(c) ? ', death save not yet rolled this turn' : ', death save already rolled this turn'}`}` : ''}, AC ${c.ac}, XP ${xpOf(c)}, inventory: ${earnedItems(c).join(', ') || 'none'}${handItems(c).length ? `; written in by the player, never given in the story (NOT owned): ${handItems(c).join(', ')}` : ''}
@@ -3806,7 +3850,8 @@ Roll resolution rules — follow these exactly:
 }
 
 async function generateOpening() {
-  if (GM_PENDING) return;
+  if (GM_PENDING || MY_GM_TURN) return;
+  if (gmBusyElsewhere()) { if (VIEW === 'game') render(); return; }
   const party = Object.values(ROSTER).map(c => `${c.name} — Lv${c.level} ${c.race} ${c.klass}`).join('\n');
   const prompt = META.seedMode === 'custom' && META.seed
     ? `Open the ${MODE === 'solo' ? 'solo story' : 'campaign'} "${META.name}" (tone: ${META.tone || 'unspecified'}) using this premise: ${META.seed}\n\n${MODE === 'solo' ? 'Character' : 'Party'}:\n${party}\n\nWrite an evocative opening scene (3-5 paragraphs) that establishes the setting and hooks the ${MODE === 'solo' ? 'character' : 'party'} into action, ending with a clear prompt for what they do first.`
