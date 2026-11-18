@@ -409,7 +409,12 @@
         h("div", {}, d.characters.map((c) => h("button", { type: "button", class: "small mini", onclick: () => openOverlay(characterTile(c, { adjust: true })) },
           `${(c.data && c.data.name) || c.id} · HP ${(c.data && c.data.hp) ?? "?"}/${(c.data && c.data.maxhp) ?? "?"}`))),
         h("p", { class: "hint" }, "Members:"),
-        h("div", {}, d.members.length ? d.members.map((m) => h("span", { class: "pill" }, `${m.role} ${short(m.user_id, 8)}${m.character_id ? " → " + m.character_id : ""}`)) : "none"));
+        h("div", {}, d.members.length ? d.members.map((m) => {
+          // Who they play, by the character's name; the user and character ids are in the hover text.
+          const ch = m.character_id ? d.characters.find((c) => c.id === m.character_id) : null;
+          const who = ch ? (ch.data && ch.data.name) || m.character_id : m.character_id ? `${m.character_id} (not at this table)` : "no character yet";
+          return h("span", { class: "pill", title: `user ${m.user_id}${m.character_id ? ` · character ${m.character_id}` : ""} · joined ${when(m.joined_at)}` }, `${m.role} · ${who}`);
+        }) : "none"));
     } catch (e) { if (!e.signedOut) box.replaceChildren(h("p", { class: "err" }, e.message)); }
   }
   async function deleteRoom(r, msg) {
