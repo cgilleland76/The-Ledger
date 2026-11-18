@@ -174,8 +174,16 @@ async function dbInsertLog(code, entry) {
 
 function rosterFromRows(rows) {
   const out = {};
-  rows.forEach(r => { out[r.id] = { ...r.data, portrait: r.portrait_url || null, portraitStatus: r.portrait_status || '', portraitAt: r.portrait_updated_at || '' }; });
+  rows.forEach(r => { out[r.id] = sanitizeChar({ ...r.data, portrait: r.portrait_url || null, portraitStatus: r.portrait_status || '', portraitAt: r.portrait_updated_at || '' }); });
   return out;
+}
+// A character row is editable by anyone at the table, and these numbers are written into the page as-is,
+// so they're forced to real numbers when loaded (text is escaped separately with escapeHtml).
+const CHAR_NUMERIC_FIELDS = ['hp', 'maxhp', 'ac', 'level', 'xp', 'str', 'dex', 'con', 'int', 'wis', 'cha'];
+function toNum(v, dflt = 0) { const n = Number(v); return Number.isFinite(n) ? n : dflt; }
+function sanitizeChar(c) {
+  for (const k of CHAR_NUMERIC_FIELDS) if (c[k] !== undefined) c[k] = toNum(c[k], k === 'level' || k === 'maxhp' ? 1 : 0);
+  return c;
 }
 function logFromRows(rows) {
   return rows.map(r => ({ id: r.id, ts: new Date(r.created_at).getTime(), author: r.author, type: r.type, text: r.text }));
@@ -200,7 +208,10 @@ function subscribeRealtime(code) {
       const onlyMap = strip(META) === strip(r.meta);
       META = r.meta;
       SCENE = sceneFromRow(r);
+      const watcherWas = watcherShown();
+      WATCHER_AT = r.watcher_at || null;
       if (VIEW !== 'game') return;
+      if (watcherShown() !== watcherWas) { render(); return; }
       if (onlyMap && ACTIVE_TAB !== 'map') {
         const tab = document.querySelector('.tab[onclick="setTab(\'map\')"]');
         if (tab) tab.textContent = mapState() ? 'Battle Map ⚔' : 'Battle Map';
@@ -534,7 +545,7 @@ async function enterRoom(code) {
     if (!room) return notFound;
   }
   ROOM_INFO = room.kind === 'account' ? await dbRoomInfo(code) : { kind: 'guest' };
-  ROOM = code; META = room.meta; MODE = room.mode || 'group'; SCENE = sceneFromRow(room);
+  ROOM = code; META = room.meta; MODE = room.mode || 'group'; SCENE = sceneFromRow(room); WATCHER_AT = room.watcher_at || null;
   ROSTER = rosterFromRows(await dbGetCharacters(code));
   LOG = logFromRows(await dbGetLog(code));
   let mine = recallCharacter(code);
@@ -1000,8 +1011,9 @@ function renderGame() {
         <h1>${escapeHtml(META.name)}</h1>
         ${codeBadge()}
         <span class="badge">${lengthLabel[META.length]}</span>
-        <span class="badge">Session ${META.session}</span>
+        <span class="badge">Session ${toNum(META.session, 1)}</span>
         ${inkBadgeHTML()}
+        ${watcherShown() ? '<span class="badge" title="The Ledger\'s admin is watching this table">👁 Watcher</span>' : ''}
       </div>
       <div style="display:flex;gap:8px;">
         <button class="btn" onclick="copyCode()">${MODE === 'solo' ? 'Copy Story Code' : 'Copy Invite Code'}</button>
@@ -1967,7 +1979,7 @@ function placeLogScroll() {
   LOG_VIEW = { room: ROOM, lastId, gmId: newestGm ? newestGm.id : null, scroll: box.scrollTop };
   box.onscroll = () => { LOG_VIEW.scroll = box.scrollTop; };
 }
-function escapeHtml(s) { return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>'); }
+function escapeHtml(s) { return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/\n/g, '<br>'); }
 
 function renderRosterMini() {
   const box = el('rosterMini'); if (!box) return;
@@ -2089,6 +2101,7 @@ function friendlyTrouble(e) {
   if (e && e.reason === 'setup_limit') return e.message;
   if (e && e.reason === 'not_member') return "The Game Master doesn't see you at this table. Leave, then join again with the table's code.";
   if (e && e.reason === 'gm_rest') return "The Game Master needs to rest. Their candle has burned down to a stub and they've gone to bed. Come back tomorrow.";
+  if (e && e.reason === 'paused') return "The game is paused. The GM will answer again when it resumes.";
   return GM_TROUBLE[Math.floor(Math.random() * GM_TROUBLE.length)];
 }
 
@@ -2239,6 +2252,11 @@ function cancelGM() {
    Every picture is content-checked on the server before it's stored. */
 let SITE = { portraitGeneration: false, sceneImages: false, sceneMax: 3, sceneInk: 0, revive: { ink: [0, 0, 0], days: 3 } };
 let SCENE = null; // { url, status, at, count } from the room row
+// The admin's GOD view sets rooms.watcher_at about once a minute while it's open (supabase/admin.sql);
+// the table shows a small "Watcher" badge while that's recent.
+let WATCHER_AT = null;
+const WATCHER_FRESH_MS = 3 * 60 * 1000;
+function watcherShown() { const t = WATCHER_AT ? Date.parse(WATCHER_AT) : NaN; return Number.isFinite(t) && Date.now() - t < WATCHER_FRESH_MS; }
 const SCENE_URL_PREFIX = (cfg.SUPABASE_URL || '').replace(/\/$/, '') + '/storage/v1/object/public/scenes/';
 function sceneFromRow(r) { return r ? { url: r.scene_url || '', status: r.scene_status || '', at: r.scene_updated_at || '', count: r.scene_count || 0 } : null; }
 function safeSceneUrl(u) { return typeof u === 'string' && cfg.SUPABASE_URL && u.startsWith(SCENE_URL_PREFIX) && !/[\s"'<>()]/.test(u) ? u : ''; }
@@ -3020,7 +3038,7 @@ window.recoverMini = recoverMini;
 const MAP_MAX = 20;
 const MAP_DIRECTIVE = /\[\[\s*(map|place|wall|remove|end-battle)\s*(?::([^\]]*))?\]\]/gi;
 const colName = x => String.fromCharCode(65 + x);
-const sq = (x, y) => `${colName(x)}${y + 1}`;
+const sq = (x, y) => `${colName(toNum(x))}${toNum(y) + 1}`;
 function parseSquare(s) {
   const m = /^\s*([A-Ta-t])\s*(\d{1,2})\s*$/.exec(String(s || ''));
   if (!m) return null;
@@ -3032,7 +3050,16 @@ function heroSpeed(c) {
   if (n >= 5 && n <= 120) return n;
   return /dwarf|halfling|gnome/i.test((c && c.race) || '') ? 25 : 30;
 }
-function mapState() { return META && META.grid && META.grid.w ? META.grid : null; }
+function mapState() {
+  const g = META && META.grid && META.grid.w ? META.grid : null;
+  if (!g) return null;
+  // The grid lives in rooms.meta, which any player at the table may rewrite, so its size and every token
+  // coordinate must be real numbers before they reach grid-template / the DOM.
+  g.w = Math.max(0, Math.min(60, toNum(g.w)));
+  g.h = Math.max(0, Math.min(60, toNum(g.h)));
+  if (Array.isArray(g.tokens)) g.tokens.forEach(t => { t.x = toNum(t.x); t.y = toNum(t.y); });
+  return g.w ? g : null;
+}
 function tokenKey(name) { return String(name || '').trim().toLowerCase(); }
 function inBounds(g, p) { return p && p.x >= 0 && p.y >= 0 && p.x < g.w && p.y < g.h; }
 function wallSet(g) { return new Set(g.walls || []); }
@@ -3199,7 +3226,7 @@ function renderMapTab() {
       cells += `<button class="${cls.join(' ')}" onclick="mapTap(${x},${y})" title="${t ? escapeAttr(t.name) + ' — ' : ''}${sq(x, y)}">${label}</button>`;
     }
   }
-  const legend = (g.tokens || []).map(t => `<span class="map-key ${t.kind === 'hero' ? 'map-hero' : t.kind === 'ally' ? 'map-ally' : 'map-foe'}">${escapeHtml(t.name.split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase())}</span> ${t.kind !== 'hero' ? asTerm(foeInfoHTML(t.name), escapeHtml(t.name)) : escapeHtml(t.name)} <span class="helptext">${sq(t.x, t.y)}${me && t !== me ? ' · ' + feetBetween(me, t) + ' ft' : ''}${t.kind !== 'hero' && findFoe(t.name) ? ' · ' + findFoe(t.name).hp + '/' + findFoe(t.name).maxhp + ' HP' : ''}</span>`).join('<br>');
+  const legend = (g.tokens || []).map(t => `<span class="map-key ${t.kind === 'hero' ? 'map-hero' : t.kind === 'ally' ? 'map-ally' : 'map-foe'}">${escapeHtml(t.name.split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase())}</span> ${t.kind !== 'hero' ? asTerm(foeInfoHTML(t.name), escapeHtml(t.name)) : escapeHtml(t.name)} <span class="helptext">${sq(t.x, t.y)}${me && t !== me ? ' · ' + feetBetween(me, t) + ' ft' : ''}${t.kind !== 'hero' && findFoe(t.name) ? ' · ' + toNum(findFoe(t.name).hp) + '/' + toNum(findFoe(t.name).maxhp) + ' HP' : ''}</span>`).join('<br>');
   const prevScroll = el('mapScroll') ? el('mapScroll').scrollLeft : null; // keep the view still across redraws
   body.innerHTML = `
     <div class="map-wrap">
@@ -3936,6 +3963,7 @@ async function onPortraitFile(input) {
     let data = {};
     try { data = await resp.json(); } catch (e) { /* non-JSON error page */ }
     if (data.reason === 'rejected') { PORTRAIT_UPLOAD.error = data.error || "That picture can't be used. Try a different one."; return; }
+    if (data.reason === 'limit') { PORTRAIT_UPLOAD.error = data.error || "That's enough new pictures for today. Try again tomorrow."; return; }
     if (!resp.ok || !data.url) throw new Error(data.reason || `HTTP ${resp.status}`);
     const url = data.url;
     const at = data.at || new Date().toISOString();
@@ -4981,10 +5009,11 @@ async function saveHeroToMini(quiet) {
   const c = ROSTER[MY_CHAR_ID];
   if (!c || !c.heroTag || !ROOM || !MY_CHAR_ID) return;
   if (MINI_SAVE.busy) { MINI_SAVE.again = true; return; } // e.g. Level Up pressed while the session-advance save runs
-  // Built before the first await, so leaving the table (which clears ROOM/ROSTER) can't change it.
-  const body = JSON.stringify({ tagId: c.heroTag, roomCode: ROOM, characterId: MY_CHAR_ID, playerId: playerId() });
+  // Read before the first await, so leaving the table (which clears ROOM/ROSTER) can't change it.
+  const save = { tagId: c.heroTag, roomCode: ROOM, characterId: MY_CHAR_ID, playerId: playerId() };
   const showSheet = () => { if (VIEW === 'game' && ACTIVE_TAB === 'sheet') renderSheetTab(); };
   MINI_SAVE.busy = true;
+  const body = JSON.stringify({ ...save, accessToken: await accessToken() }); // the server checks you're at the table
   if (quiet !== true) { MINI_SAVE.msg = 'Saving to your mini...'; showSheet(); }
   try {
     const resp = await fetch(api('/api/hero-save'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true });

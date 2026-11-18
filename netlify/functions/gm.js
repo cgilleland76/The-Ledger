@@ -12,6 +12,9 @@ const { PLAYBOOK, statBlocksFor } = require("./lib/gm-knowledge");
 const billing = require("./lib/billing");
 const gmLimits = require("./lib/gm-limits");
 const SETUP_MAX = () => parseInt(process.env.SETUP_MAX_PER_ROOM, 10) || 12;
+// Longest prompt accepted, in characters. A story turn carries the last 30 log lines, the party, notes and
+// the map, which stays well under this; the cap keeps any one call's cost bounded.
+const PROMPT_MAX = { story: 120000, setup: 6000 };
 
 exports.handler = async function (event) {
   const headers = corsHeaders(event);
@@ -49,7 +52,10 @@ exports.handler = async function (event) {
     return { statusCode: 400, headers, body: JSON.stringify({ error: "That request couldn't be read.", reason: "bad_request" }) };
   }
 
-  if (kind === "setup" && prompt.length > 6000) {
+  // Only the two kinds of request the app makes: story turns and setup. Anything else, or a prompt
+  // longer than that kind allows, is refused before any limit or money is touched.
+  if (!kind || prompt.length > PROMPT_MAX[kind]) {
+    console.warn(`gm: refused request (kind=${kind || "none"} length=${prompt.length})`);
     return { statusCode: 400, headers, body: JSON.stringify({ error: "That request couldn't be read.", reason: "bad_request" }) };
   }
 
@@ -59,6 +65,15 @@ exports.handler = async function (event) {
     console.warn(`gm: refused (${member.reason}) room=${roomCode}`);
     return { statusCode: member.status, headers, body: JSON.stringify({ error: "The Game Master is unavailable.", reason: member.reason === "unavailable" ? "gm_down" : member.reason }) };
   }
+
+  // Paused from the admin page (supabase/admin.sql, rooms.admin_paused_at): the GM waits until it's resumed.
+  // Before admin.sql has been run the column doesn't exist; that lookup fails and the table plays as usual.
+  try {
+    const rows = await billing.sbAdmin(`rooms?code=eq.${encodeURIComponent(roomCode)}&select=admin_paused_at`);
+    if (rows && rows[0] && rows[0].admin_paused_at) {
+      return { statusCode: 409, headers, body: JSON.stringify({ error: "The game is paused. The GM will answer again when it resumes.", reason: "paused" }) };
+    }
+  } catch (e) { /* not set up yet: not paused */ }
 
   // Daily limits, counted before anything is spent. Which limit was hit goes to the function log only;
   // players get one in-world message. Every way out below that produces no reply gives the call back.

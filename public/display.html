@@ -54,7 +54,7 @@
 <div class="fog"></div>
 <div class="disp" id="disp"><p class="err">Opening the table display...</p></div>
 
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.118.0/dist/umd/supabase.js" integrity="sha384-TcHRA3zBbn+Lexh5n+Oil4guNPOS3rjNDpGRAN46u/s/mB2IZ50ceC6TYDU2yvgK" crossorigin="anonymous"></script>
 <script src="config.js"></script>
 <script>
 (function () {
@@ -62,6 +62,7 @@
   const root = document.getElementById('disp');
   const code = (new URLSearchParams(location.search).get('room') || '').trim().toUpperCase();
   const esc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const num = (v, d = 0) => { const n = Number(v); return Number.isFinite(n) ? n : d; };
   if (!/^[A-Z0-9]{3,10}$/.test(code) || !window.supabase || !cfg.SUPABASE_URL) {
     root.innerHTML = '<p class="err">Open this page from a game: Battle Map tab &rarr; Table display.</p>';
     return;
@@ -101,6 +102,7 @@
   }
 
   function hpRow(name, hp, max, cls, img) {
+    hp = num(hp); max = num(max);
     const pct = max ? Math.max(0, Math.min(100, Math.round(hp / max * 100))) : 0;
     return `<div class="row"><div class="dot ${cls}" style="${img ? `background-image:url('${img}')` : ''}"></div>
       <div class="name">${esc(name)} <span class="hp">${hp}/${max}</span></div>
@@ -110,6 +112,12 @@
   function draw() {
     const meta = room.meta || {};
     const g = meta.grid && meta.grid.w ? meta.grid : null;
+    // meta is written by players at the table, so force every number that reaches the DOM to be numeric.
+    if (g) {
+      g.w = Math.max(0, Math.min(60, num(g.w)));
+      g.h = Math.max(0, Math.min(60, num(g.h)));
+      (g.tokens || []).forEach(t => { t.x = num(t.x); t.y = num(t.y); });
+    }
     const tracked = Object.values(meta.foes || {});
     const foes = tracked.filter(f => !f.ally);
     const allyNames = (g ? (g.tokens || []) : []).filter(t => t.kind === 'ally').map(t => t.name);

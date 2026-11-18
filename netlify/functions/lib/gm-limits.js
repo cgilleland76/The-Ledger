@@ -11,6 +11,8 @@
 //   GM_MAX_PER_DAY           calls per day across the whole site. Unset (or 0): no site-wide cap.
 // AI images are counted the same way when they're switched on, per player and per IP:
 //   PORTRAIT_MAX_PER_USER_PER_DAY (default 5), SCENE_MAX_PER_USER_PER_DAY (default 5).
+// Hall of the Fallen entries: MEMORIAL_MAX_PER_USER_PER_DAY (default 3). Uploaded portraits:
+//   UPLOAD_MAX_PER_USER_PER_DAY (default 20). Both need supabase/beta-hardening.sql.
 // A "day" is a calendar day in one fixed time zone, LIMIT_TZ below, the same for every player.
 
 const crypto = require("crypto");
@@ -24,6 +26,16 @@ const intEnv = (name, fallback) => {
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 };
 function limits(what = "gm") {
+  // Hall of the Fallen entries (each one writes a memorial with Claude): a few per player a day.
+  if (what === "memorial") {
+    const n = intEnv("MEMORIAL_MAX_PER_USER_PER_DAY", 3);
+    return { room: 0, ip: n * 2, user: n, global: 0 };
+  }
+  // Portraits uploaded by players (no AI, but each one is stored): per player and per IP.
+  if (what === "upload") {
+    const n = intEnv("UPLOAD_MAX_PER_USER_PER_DAY", 20);
+    return { room: 0, ip: n * 2, user: n, global: 0 };
+  }
   if (what === "portrait" || what === "scene") {
     const n = intEnv(what === "portrait" ? "PORTRAIT_MAX_PER_USER_PER_DAY" : "SCENE_MAX_PER_USER_PER_DAY", 5);
     return { room: 0, ip: n, user: n, global: 0 }; // per-table image caps live on the room row already
@@ -59,7 +71,7 @@ function hashIp(ip) {
 // Counts one call if it fits. Returns { ok: true, undo } or { ok: false, reason }.
 // reason is 'room', 'ip', 'user' or 'global' (limit reached) or 'unavailable' (the table couldn't be
 // reached: refused, so a database problem can never mean unlimited spending). undo() gives the call back.
-// what: 'gm' (default), 'portrait' or 'scene'. userId: the caller, from requireMember().
+// what: 'gm' (default), 'portrait', 'scene', 'memorial' or 'upload'. userId: the caller, from requireMember().
 async function useGM(sbAdmin, { roomCode, event, userId, what = "gm", now }) {
   const day = usageDay(now);
   const ipHash = hashIp(clientIp(event));

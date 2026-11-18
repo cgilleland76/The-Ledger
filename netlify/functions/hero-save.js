@@ -1,6 +1,6 @@
 // netlify/functions/hero-save.js
 //
-// POST /api/hero-save  { tagId, roomCode, characterId, playerId }
+// POST /api/hero-save  { tagId, roomCode, characterId, playerId, accessToken }  (caller must be at the table)
 // Saves a mini's hero progress (level, max HP, skills, gear, notes) back onto its NFC tag,
 // so the next tap brings the hero back as they are now.
 //
@@ -8,12 +8,12 @@
 //  - the character really exists in that room and was made from this tag (data.heroTag);
 //  - ownership: the first player (ink key) to save claims the mini; only they can save again.
 //    Anyone can still PLAY a mini; it's a physical object you can lend.
-//  - progress limits: at most +1 level per save, max HP can only grow by the class hit die +
+//  - progress limits: at most +1 level per save and +2 levels per day (tracked on the tag), max HP can only grow by the class hit die +
 //    CON per level gained, and ability scores and AC stay as the tag has them. Skills are
 //    recomputed from the tag (+1 each time the proficiency bonus goes up).
 //  - one save per 5 seconds per mini.
 
-const { ROOM_CODE_RE, sbRest, corsHeaders } = require("./lib/shared");
+const { ROOM_CODE_RE, sbRest, corsHeaders, requireMember } = require("./lib/shared");
 const { validPlayer, sbAdmin } = require("./lib/billing");
 const { ownerHash } = require("./lib/heroes");
 
@@ -21,6 +21,8 @@ const TAG_ID_RE = /^h_[a-z0-9]{10,40}$/;
 const CHAR_ID_RE = /^[a-z0-9]{4,20}$/i;
 const HIT_DIE = { barbarian: 12, fighter: 10, paladin: 10, ranger: 10, sorcerer: 6, wizard: 6 }; // everything else d8
 const MIN_SAVE_GAP_MS = 5 * 1000;
+const LEVELS_PER_DAY = 2;
+const today = () => new Date().toISOString().slice(0, 10);
 
 const int = (v, lo, hi, dflt) => { const n = parseInt(v, 10); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : dflt; };
 const hitDie = (klass) => {
@@ -34,14 +36,16 @@ const levelForXp = (xp) => { let l = 1; while (l < 20 && xp >= XP_FOR_LEVEL[l + 
 const mod = (score) => Math.floor((int(score, 1, 30, 10) - 10) / 2);
 
 // Works out what may be saved, given the tag as stored and the character as played.
-function progressFrom(tagData, ch) {
+// day: today's date (UTC), for the daily level allowance kept on the tag (levelDay / levelDayStart).
+function progressFrom(tagData, ch, day = today()) {
   const t = tagData || {};
   const oldLevel = int(t.level, 1, 20, 1);
+  const dayStart = t.levelDay === day ? int(t.levelDayStart, 1, 20, oldLevel) : oldLevel;
   // XP never goes down, and can't run more than two levels ahead of the mini.
   const oldXp = int(t.xp, 0, 400000, XP_FOR_LEVEL[oldLevel]);
   const xp = Math.min(Math.max(oldXp, int(ch.xp, 0, 400000, oldXp)), XP_FOR_LEVEL[Math.min(20, oldLevel + 2)] || 355000);
   // Never lower the mini's level; raise it by at most one per save, and only if the XP supports it.
-  const level = Math.max(oldLevel, Math.min(int(ch.level, 1, 20, oldLevel), oldLevel + 1, levelForXp(xp), 20));
+  const level = Math.max(oldLevel, Math.min(int(ch.level, 1, 20, oldLevel), oldLevel + 1, dayStart + LEVELS_PER_DAY, levelForXp(xp), 20));
   const gained = Math.max(level - oldLevel, 0);
   const oldMax = int(t.maxhp, 1, 999, 10);
   const perLevelMax = Math.max(hitDie(t.klass) + mod(t.con), 1);
@@ -57,7 +61,7 @@ function progressFrom(tagData, ch) {
     .filter((i) => { const k = typed.indexOf(i); if (k >= 0) { typed.splice(k, 1); return false; } return true; })
     .reverse().slice(0, 40).map((i) => String(i).slice(0, 80)).filter((i) => i.trim());
   const notes = String(ch.notes || "").slice(0, 2000);
-  return { ...t, level, xp, maxhp, hp: maxhp, skills, inventory, notes };
+  return { ...t, level, xp, maxhp, hp: maxhp, skills, inventory, notes, levelDay: day, levelDayStart: dayStart };
 }
 
 exports.handler = async function (event) {
@@ -66,15 +70,19 @@ exports.handler = async function (event) {
   if (event.httpMethod !== "POST") return { statusCode: 405, headers, body: "Method Not Allowed" };
   const reply = (statusCode, obj) => ({ statusCode, headers, body: JSON.stringify(obj) });
 
-  let tagId, roomCode, characterId, playerId;
+  let tagId, roomCode, characterId, playerId, accessToken;
   try {
-    ({ tagId, roomCode, characterId, playerId } = JSON.parse(event.body || "{}"));
+    ({ tagId, roomCode, characterId, playerId, accessToken } = JSON.parse(event.body || "{}"));
   } catch (e) {
     return reply(400, { error: "Invalid JSON body." });
   }
   if (!TAG_ID_RE.test(String(tagId)) || !ROOM_CODE_RE.test(String(roomCode)) || !CHAR_ID_RE.test(String(characterId)) || !validPlayer(playerId)) {
     return reply(400, { error: "Missing or invalid details." });
   }
+  roomCode = String(roomCode).toUpperCase();
+  // Only a player sitting at this table (session token + membership) can save one of its heroes to a mini.
+  const member = await requireMember(accessToken, roomCode);
+  if (!member.ok) return reply(member.status, { error: member.status === 503 ? "Couldn't reach the mini's record right now. Try again in a minute." : "You aren't at this table. Join it again with its code.", reason: member.reason });
 
   try {
     const enc = encodeURIComponent;

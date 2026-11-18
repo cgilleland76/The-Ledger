@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<title>Ledger Admin</title>
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="admin.css">
+</head>
+<body>
+<!-- Not linked from anywhere on the site. Everything here goes through /api/admin, which checks ADMIN_SECRET. -->
+<header class="top">
+  <strong>Ledger Admin</strong>
+  <nav id="nav" hidden>
+    <button data-tab="rooms">Rooms</button>
+    <button data-tab="characters">Characters</button>
+    <button data-tab="minis">Minis</button>
+    <button data-tab="chests">Chests</button>
+    <button data-tab="audit">Audit</button>
+    <button data-tab="god" id="godTab" hidden>GOD</button>
+  </nav>
+  <button id="signOut" class="small" hidden>Sign out</button>
+</header>
+<main id="main"></main>
+<div id="toast" role="status" aria-live="polite"></div>
+<script src="admin.js"></script>
+</body>
+</html>

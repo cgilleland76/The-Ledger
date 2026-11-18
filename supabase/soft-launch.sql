@@ -10,11 +10,12 @@
 --    (netlify/functions/room-cleanup.js). Account (signed-in) tables are never deleted by it.
 
 -- ---------- 1. GM usage ----------
--- what: 'gm' (every Claude call of the GM function), 'portrait' or 'scene' (AI images, while switched on).
+-- what: 'gm' (every Claude call of the GM function), 'portrait' or 'scene' (AI images, while switched on),
+-- 'memorial' (Hall of the Fallen entries) or 'upload' (uploaded portraits).
 -- user_id: the signed-in or anonymous player who made the call.
 create table if not exists gm_usage (
   day       date    not null,
-  what      text    not null default 'gm' check (what in ('gm', 'portrait', 'scene')),
+  what      text    not null default 'gm' check (what in ('gm', 'portrait', 'scene', 'memorial', 'upload')),
   room_code text    not null,
   ip_hash   text    not null check (ip_hash ~ '^[0-9a-f]{64}$'),
   user_id   uuid    not null,
@@ -36,7 +37,7 @@ create or replace function gm_use(p_day date, p_what text, p_room text, p_ip tex
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare n integer;
 begin
-  if p_day is null or p_room is null or p_user is null or p_ip !~ '^[0-9a-f]{64}$' or p_what not in ('gm', 'portrait', 'scene') then
+  if p_day is null or p_room is null or p_user is null or p_ip !~ '^[0-9a-f]{64}$' or p_what not in ('gm', 'portrait', 'scene', 'memorial', 'upload') then
     return jsonb_build_object('ok', false, 'reason', 'bad_request');
   end if;
   perform pg_advisory_xact_lock(7720, (p_day - date '2000-01-01'));

@@ -7,28 +7,32 @@ const { SUPABASE_URL } = require("../netlify/functions/lib/shared");
 
 // ---------- the fake world ----------
 const DAY = 86400000;
-const db = { rooms: [], characters: [], gm_usage: [], setup: {}, room_members: [] };
+const db = { rooms: [], characters: [], gm_usage: [], setup: {}, room_members: [], fallen_heroes: [], log_entries: [], tags: [] };
 // Session tokens the fake auth server knows: the user id sits in the middle part, like a JWT's payload.
 const tokenFor = (userId) => `eyJ.${Buffer.from(userId).toString("base64url")}.sig`;
 const userOf = (token) => { try { return Buffer.from(String(token).split(".")[1], "base64url").toString(); } catch (e) { return ""; } };
-const calls = { anthropic: 0, openaiImages: 0, moderation: 0, storage: 0 };
+const calls = { anthropic: 0, openaiImages: 0, moderation: 0, storage: 0, storageDeletes: [] };
 
 function resetDb() {
-  db.rooms = []; db.characters = []; db.gm_usage = []; db.setup = {}; db.room_members = [];
+  db.rooms = []; db.characters = []; db.gm_usage = []; db.setup = {}; db.room_members = []; db.fallen_heroes = []; db.log_entries = []; db.tags = [];
   for (const k of Object.keys(calls)) calls[k] = 0;
+  calls.storageDeletes = [];
 }
 const json = (x, status = 200) => new Response(x === undefined ? null : JSON.stringify(x), { status, headers: { "Content-Type": "application/json" } });
 const sum = (rows) => rows.reduce((n, r) => n + r.count, 0);
 const filters = (qs) => {
   const out = {};
-  for (const [k, v] of new URLSearchParams(qs)) if (v.startsWith("eq.")) out[k] = v.slice(3);
+  for (const [k, v] of new URLSearchParams(qs)) {
+    if (v.startsWith("eq.")) out[k] = v.slice(3);
+    else if (v.startsWith("gte.")) out[k] = { gte: v.slice(4) };
+  }
   return out;
 };
-const match = (row, f) => Object.entries(f).every(([k, v]) => String(row[k]) === v);
+const match = (row, f) => Object.entries(f).every(([k, v]) => (typeof v === "object" ? String(row[k]) >= v.gte : String(row[k]) === v));
 
 const RPC = {
   gm_use({ p_day, p_what, p_room, p_ip, p_user, p_room_max, p_ip_max, p_user_max, p_day_max }) {
-    if (!/^[0-9a-f]{64}$/.test(p_ip) || !p_user || !["gm", "portrait", "scene"].includes(p_what)) return { ok: false, reason: "bad_request" };
+    if (!/^[0-9a-f]{64}$/.test(p_ip) || !p_user || !["gm", "portrait", "scene", "memorial", "upload"].includes(p_what)) return { ok: false, reason: "bad_request" };
     const today = db.gm_usage.filter((r) => r.day === p_day && r.what === p_what);
     if (p_room_max > 0 && sum(today.filter((r) => r.room_code === p_room)) >= p_room_max) return { ok: false, reason: "room" };
     if (p_ip_max > 0 && sum(today.filter((r) => r.ip_hash === p_ip)) >= p_ip_max) return { ok: false, reason: "ip" };
@@ -49,6 +53,13 @@ const RPC = {
     db.setup[p_room] = n + 1;
     return true;
   },
+  tag_save({ p_tag, p_data, p_owner }) {
+    const t = db.tags.find((x) => x.id === p_tag);
+    if (!t) return { ok: false, code: "no_tag" };
+    if (t.claimed_by && t.claimed_by !== p_owner) return { ok: false, code: "not_owner" };
+    t.data = p_data; t.claimed_by = t.claimed_by || p_owner; t.updated_at = null; // the fake skips the 5-second gap
+    return { ok: true };
+  },
   cleanup_idle_rooms({ p_days }) {
     const cutoff = Date.now() - p_days * DAY;
     const gone = db.rooms.filter((r) => r.kind === "guest" && r.last_played < cutoff && (r.paused_at == null || r.paused_at < cutoff));
@@ -67,14 +78,19 @@ global.fetch = async (url, opts = {}) => {
   }
   if (url === "https://api.openai.com/v1/moderations") {
     calls.moderation++;
-    return json({ results: [{ category_scores: { sexual: 0.01, "violence/graphic": 0.01 } }] });
+    // Text containing FLAGME is scored as clearly not allowed.
+    const bad = /FLAGME/.test(JSON.stringify(body && body.input));
+    return json({ results: [{ category_scores: bad ? { sexual: 0.99, "sexual/minors": 0.99, "violence/graphic": 0.99 } : { sexual: 0.01, "violence/graphic": 0.01 } }] });
   }
   if (url === `${SUPABASE_URL}/auth/v1/user`) {
     const uid = userOf(String((opts.headers || {}).Authorization || "").replace(/^Bearer /, ""));
     return uid ? json({ id: uid, is_anonymous: true }) : json({ msg: "bad token" }, 401);
   }
   if (url === "https://api.openai.com/v1/images/generations") { calls.openaiImages++; return json({ data: [{ b64_json: "AAAA" }] }); }
-  if (url.startsWith(`${SUPABASE_URL}/storage/v1/object/`)) { calls.storage++; return json({ Key: "ok" }); }
+  if (url.startsWith(`${SUPABASE_URL}/storage/v1/object/`)) {
+    if (method === "DELETE") { calls.storageDeletes.push(url); return json({}); }
+    calls.storage++; return json({ Key: "ok" });
+  }
   if (url.startsWith(`${SUPABASE_URL}/rest/v1/`)) {
     const [table, qs = ""] = url.slice(`${SUPABASE_URL}/rest/v1/`.length).split("?");
     if (table.startsWith("rpc/")) {
@@ -87,6 +103,7 @@ global.fetch = async (url, opts = {}) => {
     const f = filters(qs);
     if (method === "GET") return json(rows.filter((r) => match(r, f)));
     if (method === "PATCH") { rows.filter((r) => match(r, f)).forEach((r) => Object.assign(r, body)); return json(undefined, 204); }
+    if (method === "POST") { rows.push({ created_at: new Date().toISOString(), ...body }); return json(undefined, 201); }
   }
   throw new Error(`unexpected fetch ${method} ${url}`);
 };
@@ -336,6 +353,126 @@ test("cleanup deletes idle guest tables, keeps recently paused, active and accou
   assert.deepStrictEqual(db.characters.map((c) => c.id), ["c2"], "the deleted table's characters went with it");
   assert.strictEqual(roomCleanup.IDLE_DAYS, 30);
 });
+
+// ---------- beta hardening ----------
+test("the GM only takes story and setup requests, and refuses oversized prompts before anything is spent", async () => {
+  setEnv({}); addRoom("SIZE1"); seat("SIZE1", "sizer");
+  const send = (kind, prompt) => gm.handler({ httpMethod: "POST", headers: { "x-nf-client-connection-ip": "203.0.113.40" },
+    body: JSON.stringify({ prompt, roomCode: "SIZE1", kind, playerId: "player0000000000001", accessToken: tokenFor("sizer") }) });
+  assert.strictEqual((await send("", "Write me an essay")).statusCode, 400, "no kind");
+  assert.strictEqual((await send("anything", "Write me an essay")).statusCode, 400, "unknown kind");
+  assert.strictEqual((await send("story", "x".repeat(120001))).statusCode, 400, "story too long");
+  assert.strictEqual((await send("setup", "x".repeat(6001))).statusCode, 400, "setup too long");
+  assert.strictEqual(calls.anthropic, 0);
+  assert.strictEqual(db.gm_usage.length, 0, "refused requests aren't counted");
+  assert.strictEqual((await send("story", "x".repeat(120000))).statusCode, 200, "a long story turn within the cap still works");
+});
+
+const fallenFn = () => require("../netlify/functions/fallen");
+const recordDeath = (room, id, user, ip = "203.0.113.60") => fallenFn().handler({ httpMethod: "POST", headers: { "x-nf-client-connection-ip": ip },
+  body: JSON.stringify({ action: "record", roomCode: room, characterId: id, accessToken: tokenFor(user) }) });
+const deadHero = (room, id, name, diedAt = Date.now() - 1000) => db.characters.push({ id, room_code: room, data: { name, level: 3, race: "Elf", klass: "Wizard", dead: true, diedAt } });
+
+test("Hall of the Fallen: one entry per hero per day, even if they die again", async () => {
+  setEnv({}); addRoom("HALL1"); seat("HALL1", "mourner");
+  deadHero("HALL1", "hero1", "Ilsa");
+  assert.strictEqual((await recordDeath("HALL1", "hero1", "mourner")).statusCode, 200);
+  assert.strictEqual(db.fallen_heroes.length, 1);
+  assert.strictEqual(calls.anthropic, 1, "memorial written once");
+  db.characters[0].data.diedAt = Date.now(); // dies again with a new time
+  const again = await recordDeath("HALL1", "hero1", "mourner");
+  assert.strictEqual(parse(again).already, true);
+  assert.strictEqual(db.fallen_heroes.length, 1, "no second entry");
+  assert.strictEqual(calls.anthropic, 1, "no second Claude call");
+});
+
+test("Hall of the Fallen: a few entries per player a day, then refused", async () => {
+  setEnv({}); addRoom("HALL2"); seat("HALL2", "reaper");
+  for (let i = 1; i <= 4; i++) deadHero("HALL2", `hero${i}`, `Hero ${i}`);
+  const r = await callTimes(4, (i) => recordDeath("HALL2", `hero${i + 1}`, "reaper"));
+  assert.deepStrictEqual(r.map((x) => x.statusCode), [200, 200, 200, 429]);
+  assert.strictEqual(db.fallen_heroes.length, 3);
+  assert.strictEqual(calls.anthropic, 3);
+});
+
+test("Hall of the Fallen: names that fail the text check never reach the public list", async () => {
+  setEnv({}); addRoom("HALL3"); seat("HALL3", "troll");
+  deadHero("HALL3", "hero1", "FLAGME the hero");
+  const r = await recordDeath("HALL3", "hero1", "troll");
+  assert.strictEqual(r.statusCode, 422);
+  assert.strictEqual(db.fallen_heroes.length, 0);
+  assert.strictEqual(calls.anthropic, 0, "no memorial written for it");
+  assert.strictEqual(sum(db.gm_usage), 0, "not counted");
+});
+
+test("Hall of the Fallen: refused (not waved through) until beta-hardening.sql has been run", async () => {
+  setEnv({}); addRoom("HALL4"); seat("HALL4", "early");
+  deadHero("HALL4", "hero1", "Pell");
+  const saved = RPC.gm_use;
+  RPC.gm_use = (a) => (a.p_what === "memorial" ? { ok: false, reason: "bad_request" } : saved(a));
+  try {
+    assert.strictEqual((await recordDeath("HALL4", "hero1", "early")).statusCode, 503);
+    assert.strictEqual(db.fallen_heroes.length, 0);
+  } finally { RPC.gm_use = saved; }
+});
+
+const upload = (room, id, user, ip = "203.0.113.70") => portraitUpload.handler({ httpMethod: "POST", headers: { "x-nf-client-connection-ip": ip },
+  body: JSON.stringify({ roomCode: room, characterId: id, platform: "web", image: "data:image/webp;base64,UklGRgAAAABXRUJQ", accessToken: tokenFor(user) }) });
+
+test("portrait uploads: a new picture replaces the old file, and a player gets 20 a day", async () => {
+  setEnv({}); addRoom("UPLD1"); seat("UPLD1", "artist");
+  db.characters.push({ id: "hero1", room_code: "UPLD1", data: { name: "Vale" } });
+  const realNow = Date.now;
+  let t = 1_800_000_000_000;
+  Date.now = () => t++; // each upload gets its own file name
+  try {
+    const first = parse(await upload("UPLD1", "hero1", "artist"));
+    const second = parse(await upload("UPLD1", "hero1", "artist"));
+    assert.notStrictEqual(first.url, second.url);
+    assert.deepStrictEqual(calls.storageDeletes, [first.url.replace("/object/public/", "/object/")], "the old picture was deleted");
+    await callTimes(18, () => upload("UPLD1", "hero1", "artist"));
+    const r = await upload("UPLD1", "hero1", "artist");
+    assert.strictEqual(r.statusCode, 429);
+    assert.strictEqual(parse(r).reason, "limit");
+    assert.strictEqual(calls.storage, 20, "the 21st was never stored");
+  } finally { Date.now = realNow; }
+});
+
+test("portrait uploads: another character's file is never deleted", async () => {
+  setEnv({}); addRoom("UPLD2"); seat("UPLD2", "artist");
+  db.characters.push({ id: "hero1", room_code: "UPLD2", data: { name: "Vale" }, portrait_url: `${SUPABASE_URL}/storage/v1/object/public/portraits/OTHER/heroX-upload-1.webp` });
+  assert.strictEqual((await upload("UPLD2", "hero1", "artist")).statusCode, 200);
+  assert.deepStrictEqual(calls.storageDeletes, []);
+});
+
+const heroSave = require("../netlify/functions/hero-save");
+const saveMini = (body) => heroSave.handler({ httpMethod: "POST", headers: {}, body: JSON.stringify(body) });
+
+test("saving to a mini needs a session at that table", async () => {
+  setEnv({}); addRoom("MINI1");
+  db.tags.push({ id: "h_abcdefghij01", kind: "hero", status: "active", data: { name: "Brannoc", level: 1, klass: "Fighter", con: 14, maxhp: 12 } });
+  db.characters.push({ id: "hero1", room_code: "MINI1", data: { name: "Brannoc", level: 2, xp: 300, maxhp: 20, heroTag: "h_abcdefghij01" } });
+  const base = { tagId: "h_abcdefghij01", roomCode: "MINI1", characterId: "hero1", playerId: "player0000000000001" };
+  assert.strictEqual((await saveMini(base)).statusCode, 401, "no token");
+  assert.strictEqual((await saveMini({ ...base, accessToken: tokenFor("stranger") })).statusCode, 403, "not at the table");
+  assert.strictEqual(db.tags[0].data.level, 1, "nothing saved");
+  seat("MINI1", "owner");
+  const ok = await saveMini({ ...base, accessToken: tokenFor("owner") });
+  assert.strictEqual(ok.statusCode, 200, ok.body);
+  assert.strictEqual(db.tags[0].data.level, 2);
+});
+
+test("a mini gains at most two levels a day, however often it's saved", async () => {
+  const { progressFrom } = heroSave;
+  const ch = { name: "Brannoc", level: 20, xp: 355000, maxhp: 999 };
+  let t = { name: "Brannoc", level: 1, xp: 0, klass: "Fighter", con: 14, maxhp: 12 };
+  for (let i = 0; i < 10; i++) t = progressFrom(t, ch, "2026-11-16");
+  assert.strictEqual(t.level, 3, "two levels on the first day");
+  for (let i = 0; i < 10; i++) t = progressFrom(t, ch, "2026-11-17");
+  assert.strictEqual(t.level, 5, "two more the next day");
+  assert(t.maxhp <= 12 + 4 * 12, "max HP still grows only by the hit die + CON per level");
+});
+
 
 // ---------- run ----------
 (async () => {

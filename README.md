@@ -82,8 +82,12 @@ gh repo create the-ledger --private --source=. --push
      - `GM_MAX_PER_USER_PER_DAY` (default 80): calls per player session per day.
      - `GM_MAX_PER_DAY` (unset by default = no site-wide cap): calls per day across the whole site.
      - `PORTRAIT_MAX_PER_USER_PER_DAY` and `SCENE_MAX_PER_USER_PER_DAY` (default 5 each): AI images per player per day, when those are switched on.
-   - Every server function that works on a table (GM, portraits, scenes, revive, Hall of the Fallen) takes the player's Supabase session token and only answers players who have joined that table.
+     - `MEMORIAL_MAX_PER_USER_PER_DAY` (default 3): Hall of the Fallen entries per player per day. `UPLOAD_MAX_PER_USER_PER_DAY` (default 20): uploaded portraits per player per day. Both need `supabase/beta-hardening.sql` run once; until then they are refused.
+     - GM requests are only story turns and setup, with a length cap on each (`PROMPT_MAX` in `gm.js`).
+   - Every server function that works on a table (GM, portraits, scenes, revive, Hall of the Fallen, saving to a mini) takes the player's Supabase session token and only answers players who have joined that table.
+   - Security headers (content policy, no framing) are in `public/_headers`. The Supabase library is pinned to one version with an integrity hash in `index.html` and `display.html`; when updating it, change both tags and the hash.
    - optional: `OPENAI_IMAGE_MODEL` (default `gpt-image-2.5-flare`) and `PORTRAIT_MAX_PER_ROOM` (default 10)
+   - optional: `ADMIN_SECRET`, a long random value (at least 32 characters), turns on the admin page at `/admin/` (needs `supabase/admin.sql` run once). Without it the admin function refuses everything. See PROJECT-STATUS.md.
    - optional: `PORTRAIT_MAX_RATING` (JSON) to change the portrait/scene content ceilings (website NC-17, Android R by default; see `netlify/functions/lib/portraits.js`)
    - optional: `SCENE_IMAGES_ENABLED` = `true` turns on AI-painted scene backgrounds (off by default, so they cost nothing until you opt in; hosts then switch them on per table in Field Notes). `SCENE_MAX_PER_ROOM` (default 3) limits painted scenes per table. Uploading your own background works either way. Needs `supabase/scenes.sql` run once.
 4. Deploy. Netlify will build both the static site and the

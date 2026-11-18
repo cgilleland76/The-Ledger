@@ -1,0 +1,17 @@
+# Security headers for every page Netlify serves (the Android app bundles its own copy and ignores this).
+# script-src keeps 'unsafe-inline' because the app uses inline onclick handlers; the rest limits where a
+# page can load from or send data to, and stops other sites framing The Ledger.
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https://jmhgkbeqvbbxrztkvenb.supabase.co; connect-src 'self' https://jmhgkbeqvbbxrztkvenb.supabase.co wss://jmhgkbeqvbbxrztkvenb.supabase.co; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=()
+
+# The admin page (not linked anywhere; everything it does is checked by /api/admin with ADMIN_SECRET).
+/admin
+  X-Robots-Tag: noindex, nofollow
+  Cache-Control: no-store
+/admin/*
+  X-Robots-Tag: noindex, nofollow
+  Cache-Control: no-store
