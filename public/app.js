@@ -418,7 +418,6 @@ function renderCreate() {
         <label>Ruleset</label>
         <select id="ruleset" onchange="setCreateRuleset(this.value)">
           <option value="5e2014" ${createDraft.ruleset === '5e2014' ? 'selected' : ''}>5e (2014 rules, SRD 5.1)</option>
-          <option value="5e2024" ${createDraft.ruleset === '5e2024' ? 'selected' : ''}>5e (2024 rules, SRD 5.2)</option>
           <option value="loose" ${createDraft.ruleset === 'loose' ? 'selected' : ''}>Loose narrative (light rules, GM's judgment)</option>
         </select>
       </div>
@@ -447,7 +446,11 @@ function setSeedMode(m) { createDraft.seedMode = m; renderCreate(); }
 function setCreateName(v) { createDraft.name = v; }
 function setCreateTone(v) { createDraft.tone = v; }
 function setCreateSeed(v) { createDraft.seed = v; }
-function setCreateRuleset(v) { createDraft.ruleset = v; }
+// New tables choose 2014 rules (SRD 5.1) or loose narrative. The app's rules data (classes, spells, monsters,
+// character creation) is all SRD 5.1, so the 2024 option is hidden until that data exists for SRD 5.2.
+// Tables already made with '5e2024' keep it; the GM is still told their ruleset.
+const NEW_TABLE_RULESETS = ['5e2014', 'loose'];
+function setCreateRuleset(v) { createDraft.ruleset = NEW_TABLE_RULESETS.includes(v) ? v : '5e2014'; }
 
 let CREATE_PENDING = false;
 async function submitCreate() {
@@ -456,7 +459,7 @@ async function submitCreate() {
   try {
     const typedName = el('cname').value.trim();
     createDraft.name = typedName || (MODE === 'solo' ? 'Untitled Story' : 'Untitled Campaign');
-    createDraft.ruleset = el('ruleset').value;
+    setCreateRuleset(el('ruleset').value);
     createDraft.tone = el('tone').value.trim();
     if (createDraft.seedMode === 'custom') createDraft.seed = el('seed').value.trim();
     if (createDraft.seedMode === 'custom' && !createDraft.seed) createDraft.seedMode = 'blank'; // an empty premise: the GM invents one
